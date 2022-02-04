@@ -206,8 +206,8 @@ def gp_predict_fun(gp, #X, Y, x_min, x_max,
 #     plt.close()
 
     ax.set(
-        xlabel=f"{replace_kernel_variables(str(x_idx), col_names)}",
-        title=f"{replace_kernel_variables(str(time_idx), col_names)}"
+        xlabel=f"{replace_kernel_variables('['+str(x_idx)+']', col_names).strip('[]')}",
+        #title=f"{replace_kernel_variables(str(x_idx), col_names)}"
     )
     return(ax)
 
@@ -268,7 +268,7 @@ def print_kernel_names2(kernel):
     return names
             
 
-def kernel_test(X, Y, k, num_restarts=1, random_init=True, verbose=False, likelihood='gaussian'):
+def kernel_test(X, Y, k, num_restarts=3, random_init=True, verbose=False, likelihood='gaussian'):
     """
     This function evaluates a particular kernel selection on a set of data. 
     
@@ -453,12 +453,12 @@ def loc_kernel_search(X, Y, kern_list,
                     #    # print('Sum kernel being performed.')
                     try:
                         # Get order correct
-                        # if base_name < k_info:
-                        k = gpflow.kernels.Sum(kernels = [base_kern_, k])
-                        k_info = base_name + '+' + k_info
-                        # else:
-                        #     k = gpflow.kernels.Sum(kernels = [k, base_kern_])
-                        #     k_info = k_info + '+' + base_name 
+                        if base_name < k_info:
+                            k = gpflow.kernels.Sum(kernels = [base_kern_, k])
+                            k_info = base_name + '+' + k_info
+                        else:
+                            k = gpflow.kernels.Sum(kernels = [k, base_kern_])
+                            k_info = k_info + '+' + base_name 
                             
                         # Make sure this is something that hasn't been tested yet
                         if check_if_model_exists(k_info, prev_models):
@@ -497,12 +497,12 @@ def loc_kernel_search(X, Y, kern_list,
                             set_trainable(k.base_kernel.variance, False)
                         
                         # Get order correct
-                        # if base_name < k_info:
-                        k = gpflow.kernels.Product(kernels = [base_kern_, k])
-                        k_info = base_name + '*' + k_info
-                        # else:
-                        #   k = gpflow.kernels.Product(kernels = [k, base_kern_])
-                        #   k_info = k_info + '*' + base_name 
+                        if base_name < k_info:
+                            k = gpflow.kernels.Product(kernels = [base_kern_, k])
+                            k_info = base_name + '*' + k_info
+                        else:
+                            k = gpflow.kernels.Product(kernels = [k, base_kern_])
+                            k_info = k_info + '*' + base_name 
                             
                         # Make sure this is something that hasn't been tested yet
                         if check_if_model_exists(k_info, prev_models):
@@ -574,10 +574,10 @@ def prod_kernel_creation(X, Y, base_kernel, base_name, new_kernel, depth, lik, v
             
             try:
                 # Get order correct
-                # if temp_name[feat] < k_info:
-                temp_name[feat] = temp_name[feat] + '*' + k_info
-                # else:
-                    # temp_name[feat] = k_info + '*' + temp_name[feat]
+                if temp_name[feat] < k_info:
+                    temp_name[feat] = temp_name[feat] + '*' + k_info
+                else:
+                    temp_name[feat] = k_info + '*' + temp_name[feat]
                 k_info = '+'.join(temp_name)
 
                 m, bic = kernel_test(X, Y, temp_kernel, likelihood=lik, verbose=verbose)
@@ -708,6 +708,10 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
     # Create initial dictionaries to insert
     search_dict = {}
     edge_list = []
+    
+    # Make sure the inputs are in the correct format
+    X = X.to_numpy().reshape(-1, X.shape[1])
+    Y = Y.to_numpy().reshape(-1, 1)
     
     # Flag for missing values 
     x_idx = ~np.isnan(X).any(axis=1)
@@ -887,210 +891,6 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
         'var_exp': var_percent
            }
 
-# def pred_kernel_parts(m, k_names, x_idx, lik='gaussian'):#, unit_idx, unit_label):
-#     """
-#     Breaks up kernel in model to plot separate pieces
-#     """
-    
-#     # Get training data out of model
-#     X, Y = m.data
-    
-#     # Get x min and max values
-#     x_min = min(X[:, x_idx])
-#     x_max = max(X[:, x_idx])
-    
-#     # # Build prediction dataset
-#     # x_new = np.zeros_like(m.data[0])
-#     # x_new[:, x_idx] = np.linspace(x_min, x_max, m.data[0].shape[0])
-#     # x_new[:, unit_idx] = unit_label
-    
-#     # Compute residuals
-#     mean_pred, var_pred = m.predict_y(m.data[0])
-#     resids = tf.cast(m.data[1], tf.float64) - mean_pred
-    
-#     # Split kernel names by sum sign
-#     kernel_names = k_names.split('+')
-    
-#     # Get variance pieces
-#     var_contribs = variance_contributions_diag(m, lik)# k_names, lik)
-#     var_percent = [100*round(x/sum(var_contribs),2) for x in var_contribs]
-    
-#     fig, ax = plt.subplots(nrows=len(kernel_names)+1,
-#                            sharex=True,
-# #                            sharey=True,
-#                            figsize=(10,7))
-#     c = 0
-#     if len(kernel_names) > 1: #m.kernel.name in ['sum']:
-#             for k in m.kernel.kernels:
-# #                 temp_m = gpflow.models.GPR(data=m.data,
-# #                                            kernel=k)
-#                 # Specify model
-#                 if lik == 'gaussian':
-#                     temp_m = gpflow.models.GPR(
-# #                     temp_m = gpflow.models.VGP(
-#                         data=(X, Y),
-#                         kernel=k)#,
-#                         # mean_function=m.mean_function)#,
-# #                         likelihood=gpflow.likelihoods.Gaussian())
-#                 elif lik == 'exponential':
-#                     temp_m = gpflow.models.VGP(
-#                         data=(X, Y),
-#                         kernel=k,
-# #                         mean_function=gpflow.mean_functions.Constant(),
-#                         likelihood=gpflow.likelihoods.Exponential())
-#                 elif lik == 'poisson':
-#                     temp_m = gpflow.models.VGP(
-#                         data=(X, Y),
-#                         kernel=k,
-# #                         mean_function=gpflow.mean_functions.Constant(),
-#                         likelihood=gpflow.likelihoods.Poisson())
-#                 elif lik == 'gamma':
-#                     temp_m = gpflow.models.VGP(
-#                         data=(X, Y),
-#                         kernel=k,
-#                         #mean_function=m.mean_function,
-#                         likelihood=gpflow.likelihoods.Gamma())
-#                     temp_m.likelihood.shape.assign(m.likelihood.shape)
-#                 elif lik == 'bernoulli':
-#                     temp_m = gpflow.models.VGP(
-#                         data=(X, Y),
-#                         kernel=k,
-#                         #mean_function=m.mean_function,
-#                         likelihood=gpflow.likelihoods.Bernoulli())
-#                 else:
-#                     print('Unknown likelihood requested.')
-                
-#                 # Plot all possible category means if categorical
-#                 if 'categorical' in kernel_names[c]:
-#                     for cat_idx in re.findall(r'categorical\[(\d+)\]', 
-#                                               kernel_names[c]):
-#                         cat_idx = int(cat_idx)
-#                         for cat_val in np.unique(X[:, cat_idx]):
-#                             x_new = np.zeros_like(X)
-#                             x_new[:, x_idx] = np.linspace(x_min, x_max, m.data[0].shape[0])
-#                             x_new[:, cat_idx] = cat_val
-                            
-#                             mean, var = temp_m.predict_y(x_new)
-#                             ax[c].plot(x_new[:, x_idx],
-#                                        mean.numpy().flatten())
-# #                             ax[c].fill_between(
-# #                                 x_new[:, x_idx],
-# #                                 mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-# #                                 mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-# # #                                 color='lightgreen',
-# #                                 alpha=0.1,
-# #                             )
-                
-#                 # Deal with interaction if two continuous features
-#                 elif '*' in kernel_names[c]:
-#                     x_new = np.zeros_like(X)
-                    
-#                 # Otherwise standard decomposition
-#                 else:
-#                     x_new = np.zeros_like(X)
-#                     x_new[:, x_idx] = np.linspace(x_min, x_max, m.data[0].shape[0])
-#                     mean, var = temp_m.predict_y(x_new)
-#                     ax[c].plot(x_new[:, x_idx],
-#                                mean.numpy().flatten(),
-#                                color='darkgreen',
-#                                linewidth=2.5)
-#                     ax[c].fill_between(
-#                         x_new[:, x_idx],
-#                         mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-#                         mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-#                         color='lightgreen',
-#                         alpha=0.5,
-#                     )
-                    
-#                     # Predict function samples
-#                     samples = temp_m.predict_f_samples(x_new, 10)
-#                     ax[c].plot(x_new[:,x_idx], 
-#                        samples[:, :, 0].numpy().T,# "C0", 
-#                        color='dimgray',
-#                        linewidth=0.5)
-                    
-#                     # # Subtract out mean afterwards
-#                     # Y -= mean.numpy()
-                
-#                 # Add title for specific feature
-#                 ax[c].set(title=f'{kernel_names[c]} ({round(var_percent[c], 1)}%)')
-#                 c+=1
-                
-#                 # Subtract out mean
-#                 Y -= mean.numpy()
-    
-#     else:
-#         # This is if we only have one kernel component
-#         temp_m = m
-                
-#         # Plot all possible category means if categorical
-#         if 'categorical' in kernel_names[c]:
-#             for cat_idx in re.findall(r'categorical\[(\d+)\]', 
-#                                       kernel_names[c]):
-#                 cat_idx = int(cat_idx)
-#                 for cat_val in np.unique(X[:, cat_idx]):
-#                     x_new = np.zeros_like(X)
-#                     x_new[:, x_idx] = np.linspace(x_min, x_max, m.data[0].shape[0])
-#                     x_new[:, cat_idx] = cat_val
-                                        
-#                     mean, var = temp_m.predict_y(x_new)
-#                     ax[c].plot(x_new[:, x_idx],
-#                                mean.numpy().flatten())
-# #                             ax[c].fill_between(
-# #                                 x_new[:, x_idx],
-# #                                 mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-# #                                 mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-# # #                                 color='lightgreen',
-# #                                 alpha=0.1,
-# #                             )
-            
-#         else:
-#             x_new = np.zeros_like(X)
-#             x_new[:, x_idx] = np.linspace(x_min, x_max, m.data[0].shape[0])
-#             mean, var = temp_m.predict_y(x_new)
-#             ax[c].plot(x_new[:, x_idx],
-#                        mean.numpy().flatten(),
-#                        color='darkgreen',
-#                        linewidth=2.5)
-#             ax[c].fill_between(
-#                 x_new[:, x_idx],
-#                 mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-#                 mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-#                 color='lightgreen',
-#                 alpha=0.5,
-#             )
-        
-#         # Add title for specific feature
-#         ax[c].set(title=f'{kernel_names[c]} ({round(var_percent[c], 1)}%)')
-#         c+=1
-    
-#     # Plot residuals
-#     ax[c].plot(x_new[:, x_idx],
-#                np.zeros_like(x_new[:, x_idx]),
-#                color='darkgreen',
-#                linewidth=2.5)
-#     error_sd = np.sqrt(m.parameters[-1].numpy())
-#     ax[c].fill_between(
-#         x_new[:, x_idx],
-#         -1.96 * error_sd,
-#         1.96 * error_sd,
-#         color='lightgreen',
-#         alpha=0.5
-#     )
-#     ax[c].scatter(m.data[0][:, x_idx],
-#                   resids,
-#                   color='black',
-#                   alpha=0.5,
-#                   s=20)
-#     ax[c].set(title=f'residuals ({var_percent[c]}%)')
-    
-#     # Adjust scale if needed
-#     if lik == 'gamma':
-#         for ax_ in ax:
-#             ax_.set_yscale('log')
-    
-#     return fig, ax
-
 def softmax_kernel_selection(bic_list, name_list):
     """
     Takes in BICs, normalizes, and returns an option
@@ -1269,7 +1069,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                             alpha=0.5,
                         )
                 ax[plot_idx].set(
-                    xlabel=f"{replace_kernel_variables(str(time_idx), col_names)}"
+                    xlabel=f"{replace_kernel_variables('['+str(time_idx)+']', col_names).strip('[]')}"
                 )
 
         # Deal with interaction if two continuous features
@@ -1303,6 +1103,9 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                     alpha=0.5,
                 )
             ax[plot_idx].legend()
+            ax[plot_idx].set(
+                xlabel=f"{replace_kernel_variables('['+str(x_idxs[0])+']', col_names).strip('[]')}"
+            )
 
         # Otherwise standard decomposition
         else:
@@ -1380,7 +1183,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                       alpha=0.5,
                       s=20)
     ax[plot_idx].set(title=f'residuals ({round(var_percent[plot_idx], 1)}%)',
-                     xlabel=f"{replace_kernel_variables(str(time_idx), col_names)}")
+                     xlabel=f"{replace_kernel_variables('['+str(time_idx)+']', col_names).strip('[]')}")
     
     # Adjust scale if needed
     if lik == 'gamma':
@@ -1410,6 +1213,16 @@ def variance_contributions(m, k_names, lik='gaussian'):
                 else:
                     prod_var *= k.variance.numpy().round(3)
             variance_list += [prod_var.tolist()]
+        
+        elif m.kernel.name == 'sum':
+            sum_var = 0
+            for k in m.kernel.kernels:
+                if k.name == 'periodic':
+                    sum_var += k.base_kernel.variance.numpy().round(3)
+                else:
+                    sum_var += k.variance.numpy().round(3)
+            variance_list += [sum_var.tolist()]
+            
         elif m.kernel.name == 'periodic':
             variance_list += [m.kernel.base_kernel.variance.numpy().round(3)]
         else:
@@ -1424,8 +1237,19 @@ def variance_contributions(m, k_names, lik='gaussian'):
                     else:
                         prod_var *= k2.variance.numpy().round(3)
                 variance_list += [prod_var.tolist()]
+                
+            elif m.kernel.kernels[k].name == 'sum':
+                sum_var = 0
+                for k2 in m.kernel.kernels[k].kernels:
+                    if k2.name == 'periodic':
+                        sum_var += k2.base_kernel.variance.numpy().round(3)
+                    else:
+                        sum_var += k2.variance.numpy().round(3)
+                variance_list += [sum_var.tolist()]
+                    
             elif m.kernel.kernels[k].name == 'periodic':
                 variance_list += [m.kernel.kernels[k].base_kernel.variance.numpy().round(3).tolist()]
+                
             else:
                 variance_list += [m.kernel.kernels[k].variance.numpy().round(3).tolist()]
         
@@ -1515,7 +1339,7 @@ def replace_kernel_variables(k_name, col_names):
     new_k_name = k_name
     
     for i, c in enumerate(col_names):
-        new_k_name = new_k_name.replace(str(i), c)
+        new_k_name = new_k_name.replace('['+str(i)+']', '['+c+']')
         
     return new_k_name
 
