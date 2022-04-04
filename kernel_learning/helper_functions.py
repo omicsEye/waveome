@@ -996,7 +996,7 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
         print(best_model_name)
     
     # Variance decomposition of best model
-    var_percent = variance_contributions_diag(
+    var_percent = variance_contributions(
        search_dict[best_model_name]['model'], 
        best_model_name,
        lik=lik
@@ -1226,7 +1226,7 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
         print(best_model_name)
     
     # Variance decomposition of best model
-    var_percent = variance_contributions_diag(
+    var_percent = variance_contributions(
        search_dict[best_model_name]['model'], 
        best_model_name,
        lik=lik
@@ -1346,7 +1346,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
     kernel_names = k_names.split('+')
     
     # Get variance pieces
-    var_contribs = variance_contributions_diag(
+    var_contribs = variance_contributions(
         m=m_copy, 
         k_names=k_names,
         lik=lik
