@@ -184,7 +184,7 @@ np.random.seed(9102)
 rates = [100] # [3, 9] #[2, 4, 12] #[5, 10, 20]
 units = [100] #[10, 50, 100] #[10, 30, 50]
 epsilons = [0.1] #, 10]
-iters = 5 #50
+iters = 10 #50
 sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
 np.random.shuffle(sim_settings)
 #print(sim_settings)
@@ -218,7 +218,7 @@ kernel_list = [
 # Run simulation
 start_time = time.time()
 with tqdm_joblib(tqdm(desc="Simulation", total=len(sim_settings))) as progress_bar:
-    sim_out = Parallel(n_jobs=5, verbose=1)(
+    sim_out = Parallel(n_jobs=-1, verbose=1)(
         delayed(run_simulation)(
             rate=r,
             epsilon=e,
