@@ -140,34 +140,34 @@ k1 = (gpflow.kernels.Matern12(variance=1.0,
                               lengthscales=1.0,
                               active_dims=[2]) +
       Categorical(variance=2.0,
-                  active_dims=[0]))
+                       active_dims=[0]))
 
 # Second kernel is time varying unit specific effect + periodic overall effect
-k2 = (gpflow.kernels.Matern12(variance=1.,
+k2 = (gpflow.kernels.Matern12(variance=1.0,
                               lengthscales=0.5,
                               active_dims=[2]) *
-      Categorical(active_dims=[0]) +
+      Categorical(active_dims=[0], variance=1.0) +
       gpflow.kernels.Periodic(
           base_kernel=gpflow.kernels.SquaredExponential(
-              variance=2., active_dims=[2]),
+              variance=2.0, active_dims=[2]),
           period=3.0))
 
 # Third kernel is random unit specific effect + treatment effect
-k3 = (Categorical(active_dims=[0], variance=0.5) +
-      Categorical(active_dims=[1]) *
-      gpflow.kernels.Linear(variance=0.1,
+k3 = (Categorical(active_dims=[0], variance=2.0) +
+      Categorical(active_dims=[1], variance=1.0) *
+      gpflow.kernels.Linear(variance=1.0,
                             active_dims=[2]))
 
 # Fourth kernel is nonlinear random treatment effect over time +
 # nonlinear individual effect over time
 k4 = (Categorical(active_dims=[0], variance=0.5) +
-      Categorical(active_dims=[1], variance=0.0001) *
-      gpflow.kernels.Polynomial(#degree=2,
-                                offset=6.,
-                                variance=1.,
+      Categorical(active_dims=[1], variance=1.0) *
+      gpflow.kernels.Polynomial(degree=1,
+                                offset=3.,
+                                variance=1.0,
                                 active_dims=[2]) +
-      Categorical(active_dims=[0]) *
-      gpflow.kernels.SquaredExponential(variance=1.,
+      Categorical(active_dims=[0], variance=1.0) *
+      gpflow.kernels.SquaredExponential(variance=2.0,
                                         lengthscales=0.5,
                                         active_dims=[2]))
 
@@ -181,10 +181,10 @@ kernel_dictionary = {
 
 # Set options
 np.random.seed(9102)
-rates = [100] # [3, 9] #[2, 4, 12] #[5, 10, 20]
-units = [100] #[10, 50, 100] #[10, 30, 50]
-epsilons = [0.1] #, 10]
-iters = 10 #50
+rates = [5, 10, 20, 50, 100] # [3, 9] #[2, 4, 12] #[5, 10, 20]
+units = [10, 50, 100] #[10, 30, 50]
+epsilons = [0.1, 1.0, 10] # SNR [30, 3, 0.3]
+iters = 100
 sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
 np.random.shuffle(sim_settings)
 #print(sim_settings)
