@@ -110,8 +110,7 @@ def run_simulation(rate, epsilon, units, iters, kernel_list):
             keep_all=False,
             keep_only_best=True,
             lik='gaussian',
-            random_seed=9102,
-            metric_diff=0
+            random_seed=9102
             )
         
 
@@ -218,7 +217,7 @@ kernel_list = [
 # Run simulation
 start_time = time.time()
 with tqdm_joblib(tqdm(desc="Simulation", total=len(sim_settings))) as progress_bar:
-    sim_out = Parallel(n_jobs=10, verbose=1)(
+    sim_out = Parallel(n_jobs=50, verbose=1)(
         delayed(run_simulation)(
             rate=r,
             epsilon=e,
