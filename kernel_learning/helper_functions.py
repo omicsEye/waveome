@@ -1017,7 +1017,7 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
 
 def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                         cat_vars=[], max_depth=5,
-                        keep_all=False, metric_diff=2, early_stopping=True,
+                        keep_all=False, metric_diff=3, early_stopping=True,
                         prune=False, num_restarts=3,
                         lik='gaussian', verbose=False,
                         debug=False, keep_only_best=True,
