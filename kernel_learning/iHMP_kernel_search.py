@@ -112,6 +112,9 @@ df['severity'] = df[['id', 'severity']].\
 df = df[df.severity.notna()]
 df = df.drop(columns=['hbi', 'sccai'])
 
+# Drop UC individuals for now
+df = df.query("diagnosis != 'UC'")
+
 # Store individual information look up vectors
 # Get numerics for each categorical value as well as the lookup index
 df['id'], id_map = pd.factorize(df['id'])
