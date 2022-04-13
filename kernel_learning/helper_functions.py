@@ -346,7 +346,7 @@ def kernel_test(X, Y, k, num_restarts=3, random_init=True,
             gpflow.optimizers.Scipy().minimize(
                 m.training_loss,
                 m.trainable_variables,
-                options={'maxiter': 10000}
+                #options={'maxiter': 10000}
             )
             # adam_opt_params(m)
             # scipy_opt_params(m)
@@ -359,6 +359,14 @@ def kernel_test(X, Y, k, num_restarts=3, random_init=True,
             continue
         
 #         print(opt_results)
+        # Now check to see if this is invertible 
+        try:
+            m_, v_ = m.predict_f(m.data[0])
+        except Exception as e:
+            if verbose:
+                print('Covariance matrix not invertible, removing model.')
+            # If not invertible then revert back to best model
+            m = best_model    
         
         # Check if better values found and save if so
 #         if m.log_marginal_likelihood() > best_loglik:
