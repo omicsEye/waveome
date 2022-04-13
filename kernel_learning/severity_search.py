@@ -141,7 +141,6 @@ df_transform = df_original.copy()
 df_transform.iloc[:, 5:-2] = np.log(df.iloc[:, 5:-2].fillna(0) + 1)
 df_transform['days_from_start'] = df['days_from_start']
 
-%%time
 kernel_list = [gpflow.kernels.SquaredExponential(),
                gpflow.kernels.Matern12(),
                gpflow.kernels.Linear(),
@@ -154,7 +153,8 @@ severity_model = full_kernel_search(
     Y=df_transform.severity,
     kern_list=kernel_list,
     cat_vars=[0, 1, 2, 3],
-    max_depth=3,
+    unit_idx=0,
+    max_depth=5,
     early_stopping=True,
     prune=True,
     keep_all=False,

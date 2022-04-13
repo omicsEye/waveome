@@ -151,9 +151,9 @@ feat_names = col_names = ['id', 'diagnosis',
                           'days_from_max_severity']
 df.shape
 
-# Get percent missing for each column and then only flag metabolites with at least 10% observations missing
+# Get percent missing for each column and then only flag metabolites with at least 1% observations missing
 missing_df = df[mbx_list].isna().mean()
-missing_mbx_list = mbx_list[(missing_df>=0.1).values].reset_index(drop=True)
+missing_mbx_list = mbx_list[(missing_df>=0.01).values].reset_index(drop=True)
 
 # Specify kernels to search over for continuous features
 kernel_list = [gpflow.kernels.SquaredExponential(),
@@ -169,7 +169,7 @@ n_met = len(missing_mbx_list)
 # np.random.seed(9102)
 # Run this process for multiple metabolites independently
 with tqdm_joblib(tqdm(desc="Binomial kernel search", total=n_met)) as progress_bar:
-    binomial_models = Parallel(n_jobs=50, verbose=1)(delayed(split_kernel_search)(
+    binomial_models = Parallel(n_jobs=40, verbose=1)(delayed(split_kernel_search)(
             X=df[feat_names],
             Y=df[[m]].notna().astype(int),
             kern_list=kernel_list,
@@ -198,7 +198,7 @@ n_met = len(mbx_list) #9 #30
 standardized_df = (np.log(df) - np.log(df).mean())/np.log(df).std()
 
 with tqdm_joblib(tqdm(desc="Kernel search", total=n_met)) as progress_bar:
-    gaussian_models = Parallel(n_jobs=50, verbose=1)(delayed(split_kernel_search)(
+    gaussian_models = Parallel(n_jobs=40, verbose=1)(delayed(split_kernel_search)(
             X=df[feat_names], 
             Y=standardized_df[[m]], 
             kern_list=kernel_list,

@@ -327,8 +327,8 @@ def kernel_test(X, Y, k, num_restarts=3, random_init=True,
             print('Unknown likelihood requested.')
         
         # # Set priors
-        # for p in m.parameters:
-        #     p.prior = tfd.Gamma(f64(1), f64(1))
+        for p in m.parameters:
+            p.prior = tfd.Gamma(f64(1), f64(1))
         
         # Randomize initial values if not trained already
         if random_init:

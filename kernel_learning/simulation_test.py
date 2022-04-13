@@ -160,9 +160,9 @@ k3 = (Categorical(active_dims=[0], variance=2.0) +
 # Fourth kernel is nonlinear random treatment effect over time +
 # nonlinear individual effect over time
 k4 = (Categorical(active_dims=[0], variance=0.5) +
-      Categorical(active_dims=[1], variance=1.0) *
-      gpflow.kernels.Polynomial(degree=1,
-                                offset=3.,
+      Categorical(active_dims=[1], variance=0.5) *
+      gpflow.kernels.Polynomial(degree=2,
+                                offset=5.,
                                 variance=1.0,
                                 active_dims=[2]) +
       Categorical(active_dims=[0], variance=1.0) *
@@ -180,10 +180,10 @@ kernel_dictionary = {
 
 # Set options
 np.random.seed(9102)
-rates = [5, 10, 20, 50, 100] # [3, 9] #[2, 4, 12] #[5, 10, 20]
-units = [10, 50, 100] #[10, 30, 50]
-epsilons = [0.1, 1.0, 10] # SNR [30, 3, 0.3]
-iters = 100
+rates = [2, 4, 8, 16, 32, 64] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
+units = [10, 40, 70, 100] #[10, 30, 50]
+epsilons = [0.03, 0.3, 3.0, 30] # SNR [100, 10, 1, 0.1]
+iters = 50
 sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
 np.random.shuffle(sim_settings)
 #print(sim_settings)
@@ -217,7 +217,7 @@ kernel_list = [
 # Run simulation
 start_time = time.time()
 with tqdm_joblib(tqdm(desc="Simulation", total=len(sim_settings))) as progress_bar:
-    sim_out = Parallel(n_jobs=50, verbose=1)(
+    sim_out = Parallel(n_jobs=40, verbose=1)(
         delayed(run_simulation)(
             rate=r,
             epsilon=e,
@@ -248,6 +248,6 @@ end_time = time.time()
 print("----%.2f seconds----"%(end_time - start_time))
 
 # Save output
-f = open("sim_results.pkl", "wb")
+f = open("sim_results_new.pkl", "wb")
 pickle.dump(sim_results, f)
 f.close()
