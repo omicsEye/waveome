@@ -365,8 +365,11 @@ def kernel_test(X, Y, k, num_restarts=3, random_init=True,
         except Exception as e:
             if verbose:
                 print('Covariance matrix not invertible, removing model.')
-            # If not invertible then revert back to best model
-            m = best_model    
+            # If not invertible then revert back to best model, unless last try
+            if best_model == None and i == num_restarts - 1:
+                return best_model, -1*best_loglik
+            else:
+                m = best_model
         
         # Check if better values found and save if so
 #         if m.log_marginal_likelihood() > best_loglik:
