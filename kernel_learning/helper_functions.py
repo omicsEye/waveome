@@ -392,7 +392,7 @@ def kernel_test(X, Y, k, num_restarts=3, random_init=True,
         estimated_loglik = best_model.likelihood.predict_log_density(
             yhat_holdout[0],
             yhat_holdout[1],
-            Y_holdout).numpy()
+            Y_holdout).numpy().sum()
         bic = round(-1*estimated_loglik, 2)
     else:
         estimated_loglik = best_model.log_posterior_density().numpy()
@@ -432,6 +432,7 @@ def loc_kernel_search(X, Y, kern_list,
                       lik='gaussian',
                       verbose=False,
                       num_restarts=3,
+                      random_seed=None,
                       X_holdout=None, Y_holdout=None, split=False):
     """
     This function performs the local kernel search.
@@ -1088,7 +1089,8 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                 verbose=debug,
                 num_restarts=num_restarts,
                 X_holdout=X_holdout,
-                Y_holdout=Y_holdout
+                Y_holdout=Y_holdout,
+                split=True
             )
         else:
             # Create temporary dictionary to hold new results
@@ -1122,7 +1124,8 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                     verbose=debug,
                     num_restarts=num_restarts,
                     X_holdout=X_holdout,
-                    Y_holdout=Y_holdout
+                    Y_holdout=Y_holdout,
+                    split=True
                 )
                 temp_dict.update(new_res)
                 
@@ -1147,7 +1150,8 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                     verbose=debug,
                     num_restarts=num_restarts,
                     X_holdout=X_holdout,
-                    Y_holdout=Y_holdout
+                    Y_holdout=Y_holdout,
+                    split=True
                 )
                 temp_dict.update(new_res)
                 
@@ -1253,7 +1257,11 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
         'models': search_dict,
         'edges': edge_list,
         'best_model': best_model_name,
-        'var_exp': var_percent
+        'var_exp': var_percent,
+        'X_holdout': X_holdout,
+        'Y_holdout': Y_holdout,
+        'X': X,
+        'Y': Y
            }
 
 def softmax_kernel_selection(bic_list, name_list):
