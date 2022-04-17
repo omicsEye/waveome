@@ -64,7 +64,7 @@ def sim_data(rate=12, num_units=30, fixed_num=False,
     )
 
     # Standardize continuous variable
-    # df.time = (df.time - df.time.mean()) / df.time.std()
+    df.time = (df.time - 6) / np.sqrt((1/12.)*(12**2))
 
     if include_output and kern_out is not None:
 
@@ -149,7 +149,7 @@ k2 = (gpflow.kernels.Matern12(variance=1.0,
       gpflow.kernels.Periodic(
           base_kernel=gpflow.kernels.SquaredExponential(
               variance=2.0, active_dims=[2]),
-          period=3.0))
+          period=0.5))
 
 # Third kernel is random unit specific effect + treatment effect
 k3 = (Categorical(active_dims=[0], variance=2.0) +
@@ -160,13 +160,13 @@ k3 = (Categorical(active_dims=[0], variance=2.0) +
 # Fourth kernel is nonlinear random treatment effect over time +
 # nonlinear individual effect over time
 k4 = (Categorical(active_dims=[0], variance=0.5) +
-      Categorical(active_dims=[1], variance=0.5) *
-      gpflow.kernels.Polynomial(degree=2,
-                                offset=5.,
+      Categorical(active_dims=[1], variance=1.5) *
+      gpflow.kernels.Polynomial(degree=3,
+                                offset=0.1,
                                 variance=1.0,
                                 active_dims=[2]) +
       Categorical(active_dims=[0], variance=1.0) *
-      gpflow.kernels.SquaredExponential(variance=2.0,
+      gpflow.kernels.SquaredExponential(variance=1.0,
                                         lengthscales=0.5,
                                         active_dims=[2]))
 

@@ -148,7 +148,7 @@ kernel_list = [gpflow.kernels.SquaredExponential(),
                #gpflow.kernels.ArcCosine(),
                gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())]
 
-severity_model = full_kernel_search(
+severity_model = split_kernel_search(
     X=df_transform.drop(['diagnosis', 'severity', 'days_from_max_severity'], axis=1),
     Y=df_transform.severity,
     kern_list=kernel_list,
