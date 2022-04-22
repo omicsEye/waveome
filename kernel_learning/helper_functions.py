@@ -16,8 +16,47 @@ from joblib import Parallel, delayed
 
 f64 = gpflow.utilities.to_default_float
 
-# Classes
 
+class GPKernelSearch():
+    """Gaussian process kernel search class.
+    
+    Parameters
+    ----------
+    X : pandas.DataFrame
+        Design dataframe including covariates of interest to make up kernel
+    
+    Y : pandas.DataFrame
+        Output dataframe, each column is one output vector
+        
+    Attributes
+    ----------
+    
+    """
+    def __init__(self, X, Y, unit_col, categorical_vars=None):
+        # Check input types
+        if not isinstance(X, pd.DataFrame):
+            raise TypeError("X is not a Pandas DataFrame") 
+        if not isinstance(Y, pd.DataFrame):
+            raise TypeError("Y is not a Pandas DataFrame")
+        
+        self.X = X
+        self.Y = Y
+        self.feat_names = X.columns.tolist()
+        self.out_names = Y.columns.tolist()
+        self.unit_idx = self.feat_names.index(unit_col)
+        self.cat_idx = [self.feat_names.index(x) for x in categorical_vars]
+        
+
+    def run_search(self, kernels):
+        """Run search process given search operator and kernels of interest.
+
+        Parameters:
+
+        Returns:
+
+        """
+        
+        return None
 
 class Categorical(gpflow.kernels.Kernel):
     def __init__(self, active_dims, variance=1.0):
@@ -361,7 +400,7 @@ def kernel_test(X, Y, k, num_restarts=3, random_init=True,
 #         print(opt_results)
         # Now check to see if this is invertible 
         try:
-            m_, v_ = m.predict_f(m.data[0])
+            m_, v_ = m.predict_y(m.data[0])
         except Exception as e:
             if verbose:
                 print('Covariance matrix not invertible, removing model.')
@@ -696,6 +735,7 @@ def keep_top_k(res_dict, depth, metric_diff = 6, split = False):
     best_bic = min([v['bic'] for k,v in res_dict.items() if v['depth'] == depth])
 #     for k,v in res_dict.items():
 #         if v[3] == depth and v[2] < best_bic:
+        
     
     # Only keep results in diff window
     for k, v in res_dict.items():
