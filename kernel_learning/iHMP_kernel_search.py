@@ -166,25 +166,25 @@ kernel_list = [gpflow.kernels.SquaredExponential(),
 # Number of metabolites
 n_met = len(missing_mbx_list)
 
-#for m in missing_mbx_list:
-#	print(m)
-#	out_ = split_kernel_search(
-#		X=df[feat_names],
-#		Y=df[[m]].notna().astype(int),
-#		kern_list=kernel_list,
-#		cat_vars=[0,1,2,3],
-#		unit_idx=0,
-#		max_depth=5,
-#		early_stopping=True,
-#		prune=True,
-#		keep_all=False,
-#		lik='bernoulli',
-#		keep_only_best=True,
-#		random_seed=9012
-#	)
-#print(foo)
+for m in missing_mbx_list[:n_met]:
+	print(m)
+	foo = split_kernel_search(
+		X=df[feat_names],
+		Y=df[[m]].notna().astype(int),
+		kern_list=kernel_list,
+		cat_vars=[0,1,2,3],
+		unit_idx=0,
+		max_depth=5,
+		early_stopping=True,
+		prune=True,
+		keep_all=False,
+		lik='bernoulli',
+		metric_diff=1,
+		random_seed=9012
+)
 
-# np.random.seed(9102)
+print(2+a)
+
 # Run this process for multiple metabolites independently
 with tqdm_joblib(tqdm(desc="Binomial kernel search", total=n_met)) as progress_bar:
     binomial_models = Parallel(n_jobs=40, verbose=1)(delayed(split_kernel_search)(
@@ -198,10 +198,10 @@ with tqdm_joblib(tqdm(desc="Binomial kernel search", total=n_met)) as progress_b
             prune=True,
             keep_all=False,
             lik='bernoulli',
+            metric_diff=1,
             random_seed=9102)
         for m in missing_mbx_list[:n_met])
 
-import pickle 
 # Save output
 f = open("ihmp_binomial_models.pkl","wb")
 pickle.dump(binomial_models, f)
@@ -226,6 +226,7 @@ with tqdm_joblib(tqdm(desc="Kernel search", total=n_met)) as progress_bar:
             prune=True,
             keep_all=False,
             lik='gaussian',
+            metric_diff=1,
             random_seed=9102)
         for m in mbx_list[:n_met])
     
