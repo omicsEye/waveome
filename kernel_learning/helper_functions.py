@@ -863,8 +863,8 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=3):
     
 
 def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5, 
-                       keep_all=False, metric_diff=6, early_stopping=True,
-                       prune=False, num_restarts=3,
+                       keep_all=False, metric_diff=0, early_stopping=True,
+                       prune=True, num_restarts=1,
                        lik='gaussian', verbose=False, 
                        debug=False, keep_only_best=True,
                        softmax_select=False, random_seed=None):
@@ -1069,8 +1069,8 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
 
 def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                         cat_vars=[], max_depth=5,
-                        keep_all=False, metric_diff=3, early_stopping=True,
-                        prune=False, num_restarts=3,
+                        keep_all=False, metric_diff=1, early_stopping=True,
+                        prune=True, num_restarts=1,
                         lik='gaussian', verbose=False,
                         debug=False, keep_only_best=True,
                         softmax_select=False, random_seed=None):
@@ -1468,12 +1468,14 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                     x_new[:, cat_idx] = cat_val
                     mean, var = temp_m.predict_y(x_new)
 
-                    ax[plot_idx].plot(
-                        x_new[:, time_idx],
-                        mean.numpy().flatten(),
-                        alpha=0.5
-                    )
+                    # Decide if we should annotate each category or not
                     if num_unique_cat < 5:
+                        ax[plot_idx].plot(
+                            x_new[:, time_idx],
+                            mean.numpy().flatten(),
+                            alpha=0.5,
+                            label=cat_val
+                        )
                         ax[plot_idx].fill_between(
                             x_new[:, time_idx],
                             mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
@@ -1481,6 +1483,19 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                             color='lightgreen',
                             alpha=0.5,
                         )
+                        
+                        # If last category then add legend to plot
+                        if cat_val == num_unique_cat - 1:
+                            ax[plot_idx].legend(loc="upper right")
+
+                    else:
+                        ax[plot_idx].plot(
+                            x_new[:, time_idx],
+                            mean.numpy().flatten(),
+                            alpha=0.5
+                        )
+                        
+                # Set the subplot title to match the true variable name
                 ax[plot_idx].set(
                     xlabel=f"{replace_kernel_variables('['+str(time_idx)+']', col_names).strip('[]')}"
                 )
