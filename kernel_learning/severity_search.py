@@ -115,6 +115,7 @@ df = df.drop(columns=['hbi', 'sccai'])
 
 # Drop UC individuals for now
 df = df.query("diagnosis != 'UC'")
+df = df.query("diagnosis == 'CD'")
 
 # Store individual information look up vectors
 # Get numerics for each categorical value as well as the lookup index
@@ -148,12 +149,12 @@ kernel_list = [gpflow.kernels.SquaredExponential(),
                #gpflow.kernels.ArcCosine(),
                gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())]
 
-severity_model = split_kernel_search(
-    X=df_transform.drop(['diagnosis', 'severity', 'days_from_max_severity'], axis=1),
+severity_model = full_kernel_search(
+    #X=df_transform.drop(['diagnosis', 'severity', 'days_from_max_severity'], axis=1),
+    X=df_transform[['C38:3 PC', 'heptanoate']],
     Y=df_transform.severity,
     kern_list=kernel_list,
-    cat_vars=[0, 1, 2, 3],
-    unit_idx=0,
+    cat_vars=[], #[0, 1, 2, 3],
     max_depth=5,
     early_stopping=True,
     prune=True,

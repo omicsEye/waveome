@@ -98,18 +98,11 @@ def run_simulation(rate, epsilon, units, iters, kernel_list):
 
     # Run kernel search process
     for i in range(4):
-        search_out = split_kernel_search(
+        search_out = full_kernel_search(
             X=temp_df[['id', 'treat', 'time']],
             Y=temp_df.drop(columns=['id', 'treat', 'time']).iloc[:, i],
             kern_list=kernel_list,
             cat_vars=[0, 1],
-            unit_idx=0,
-            max_depth=5,
-            early_stopping=True,
-            prune=True,
-            keep_all=False,
-            keep_only_best=True,
-            lik='gaussian',
             random_seed=9102
             )
         
@@ -217,7 +210,7 @@ kernel_list = [
 # Run simulation
 start_time = time.time()
 with tqdm_joblib(tqdm(desc="Simulation", total=len(sim_settings))) as progress_bar:
-    sim_out = Parallel(n_jobs=40, verbose=1)(
+    sim_out = Parallel(n_jobs=36, verbose=1)(
         delayed(run_simulation)(
             rate=r,
             epsilon=e,

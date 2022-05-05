@@ -114,11 +114,13 @@ df = df.drop(columns=['hbi', 'sccai'])
 
 # Drop UC individuals for now
 df = df.query("diagnosis != 'UC'")
+df = df.query("diagnosis == 'CD'")
+df = df.drop(columns=['diagnosis'])
 
 # Store individual information look up vectors
 # Get numerics for each categorical value as well as the lookup index
 df['id'], id_map = pd.factorize(df['id'])
-df['diagnosis'], diagnosis_map = pd.factorize(df['diagnosis'])
+# df['diagnosis'], diagnosis_map = pd.factorize(df['diagnosis'])
 df['race'], race_map = pd.factorize(df['race'])
 df['sex'], sex_map = pd.factorize(df['sex'])
 # n_id = df.id.nunique()
@@ -144,7 +146,7 @@ print(df.shape)
 df.head()
 
 # Specify the covariate features of interest
-feat_names = col_names = ['id', 'diagnosis', 
+feat_names = col_names = ['id', # 'diagnosis', 
                           'race', 'sex', 
                           'severity', 
                           'days_from_start', 
@@ -166,39 +168,38 @@ kernel_list = [gpflow.kernels.SquaredExponential(),
 # Number of metabolites
 n_met = len(missing_mbx_list)
 
-for m in missing_mbx_list[:n_met]:
-	print(m)
-	foo = split_kernel_search(
-		X=df[feat_names],
-		Y=df[[m]].notna().astype(int),
-		kern_list=kernel_list,
-		cat_vars=[0,1,2,3],
-		unit_idx=0,
-		max_depth=5,
-		early_stopping=True,
-		prune=True,
-		keep_all=False,
-		lik='bernoulli',
-		metric_diff=1,
-		random_seed=9012
-)
+#for m in missing_mbx_list[:n_met]:
+#	print(m)
+#	foo = split_kernel_search(
+#		X=df[feat_names],
+#		Y=df[[m]].notna().astype(int),
+#		kern_list=kernel_list,
+#		cat_vars=[0,1,2,3],
+#		unit_idx=0,
+#		max_depth=5,
+#		early_stopping=True,
+#		prune=True,
+#		keep_all=False,
+#		lik='bernoulli',
+#		metric_diff=1,
+#		random_seed=9012
+#)
 
-print(2+a)
+#print(2+a)
 
 # Run this process for multiple metabolites independently
 with tqdm_joblib(tqdm(desc="Binomial kernel search", total=n_met)) as progress_bar:
-    binomial_models = Parallel(n_jobs=40, verbose=1)(delayed(split_kernel_search)(
+    binomial_models = Parallel(n_jobs=40, verbose=1)(delayed(full_kernel_search)(
             X=df[feat_names],
             Y=df[[m]].notna().astype(int),
             kern_list=kernel_list,
-            cat_vars=[0, 1, 2, 3],
-            unit_idx=0,
+            cat_vars=[0, 1, 2],
             max_depth=5,
             early_stopping=True,
             prune=True,
             keep_all=False,
             lik='bernoulli',
-            metric_diff=1,
+            metric_diff=0,
             random_seed=9102)
         for m in missing_mbx_list[:n_met])
 
@@ -215,18 +216,17 @@ n_met = len(mbx_list) #9 #30
 standardized_df = (np.log(df) - np.log(df).mean())/np.log(df).std()
 
 with tqdm_joblib(tqdm(desc="Kernel search", total=n_met)) as progress_bar:
-    gaussian_models = Parallel(n_jobs=40, verbose=1)(delayed(split_kernel_search)(
+    gaussian_models = Parallel(n_jobs=40, verbose=1)(delayed(full_kernel_search)(
             X=df[feat_names], 
             Y=standardized_df[[m]], 
             kern_list=kernel_list,
-            cat_vars=[0, 1, 2, 3],
-            unit_idx=0,
+            cat_vars=[0, 1, 2],
             max_depth=5,
             early_stopping=True,
             prune=True,
             keep_all=False,
             lik='gaussian',
-            metric_diff=1,
+            metric_diff=0,
             random_seed=9102)
         for m in mbx_list[:n_met])
     
