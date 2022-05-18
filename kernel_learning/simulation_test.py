@@ -210,7 +210,7 @@ kernel_list = [
 # Run simulation
 start_time = time.time()
 with tqdm_joblib(tqdm(desc="Simulation", total=len(sim_settings))) as progress_bar:
-    sim_out = Parallel(n_jobs=36, verbose=1)(
+    sim_out = Parallel(n_jobs=40, verbose=1)(
         delayed(run_simulation)(
             rate=r,
             epsilon=e,
