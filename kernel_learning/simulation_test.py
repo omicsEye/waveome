@@ -26,7 +26,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # visible_devices = tf.config.get_visible_devices()
 # for device in visible_devices:
 #     assert device.device_type != 'GPU'
-print(tf.config.get_visible_devices())
+# print(tf.config.get_visible_devices())
 # start_time = time.time()
 
 # Functions
@@ -173,8 +173,8 @@ kernel_dictionary = {
 
 # Set options
 np.random.seed(9102)
-rates = [2, 4, 8, 16, 32, 64] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
-units = [20, 40, 60] #[10, 30, 50]
+rates = [2, 4, 8, 16, 32] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
+units = [10, 30, 50]
 epsilons = [0.3, 3.0, 30] # SNR [10, 1, 0.1]
 iters = 50
 sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
