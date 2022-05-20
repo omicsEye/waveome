@@ -174,8 +174,8 @@ kernel_dictionary = {
 # Set options
 np.random.seed(9102)
 rates = [2, 4, 8, 16, 32] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
-units = [10, 30, 50]
-epsilons = [0.3, 3.0, 30] # SNR [10, 1, 0.1]
+units = [3, 9, 27, 81, 243] #[10, 30, 50]
+epsilons = [0, 0.3, 3.0, 30] # SNR [10, 1, 0.1]
 iters = 50
 sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
 np.random.shuffle(sim_settings)
