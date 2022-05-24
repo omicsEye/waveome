@@ -13,9 +13,11 @@ import contextlib
 import joblib
 from tqdm import tqdm
 from joblib import Parallel, delayed
+import pandas as pd
+import os
 
 f64 = gpflow.utilities.to_default_float
-
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class GPKernelSearch():
     """Gaussian process kernel search class.
@@ -32,12 +34,19 @@ class GPKernelSearch():
     ----------
     
     """
-    def __init__(self, X, Y, unit_col, categorical_vars=None):
+    def __init__(self, X, Y, unit_col, 
+                 categorical_vars=None, outcome_likelihood='gaussian'):
         # Check input types
         if not isinstance(X, pd.DataFrame):
             raise TypeError("X is not a Pandas DataFrame") 
         if not isinstance(Y, pd.DataFrame):
             raise TypeError("Y is not a Pandas DataFrame")
+        
+        # TODO: Transform any categorical columns to integers
+        
+        # TODO: Make sure all resulting columns are the same type
+        
+        # TODO: Standardize continuous columns
         
         self.X = X
         self.Y = Y
@@ -45,18 +54,183 @@ class GPKernelSearch():
         self.out_names = Y.columns.tolist()
         self.unit_idx = self.feat_names.index(unit_col)
         self.cat_idx = [self.feat_names.index(x) for x in categorical_vars]
+        self.lik = outcome_likelihood
         
 
-    def run_search(self, kernels):
+    def run_search(self, 
+                   kernels=[gpflow.kernels.SquaredExponential()], 
+                   max_depth=5, early_stopping=True, prune=True,
+                   keep_all=False, metric_diff=0, 
+                   random_seed=None, num_jobs=-2, 
+                   verbose=False, debug=False):
         """Run search process given search operator and kernels of interest.
 
-        Parameters:
+        Parameters
+        ----------
 
-        Returns:
+        Attributes
+        ----------
 
         """
         
+        # Calculate number of output columns
+        num_out = len(self.out_names)
+        
+        # Take min of output or requested jobs for num_jobs
+        if num_jobs <= 0:
+            num_jobs = os.cpu_count + num_jobs + 1
+        num_jobs=min(num_out, num_jobs)
+        
+        with tqdm_joblib(tqdm(desc="Kernel search", total=num_out)) as progress_bar:
+            models_out = Parallel(n_jobs=num_jobs, verbose=1)(delayed(full_kernel_search)(
+                X=self.X,
+                Y=self.Y[self.out_names[i]],
+                kern_list=kernels,
+                cat_vars=self.cat_idx,
+                max_depth=max_depth,
+                early_stopping=early_stopping,
+                prune=prune,
+                keep_all=keep_all,
+                lik=self.lik,
+                metric_diff=metric_diff,
+                random_seed=random_seed,
+                verbose=verbose,
+                debug=debug)
+                for i in range(num_out))
+        
+        # Make dictionary of outcomes as lookups
+        dict_out = {feat: mod for feat, mod in zip(self.out_names, models_out)}
+        
+        self.models = dict_out
+        
         return None
+
+    def plot_heatmap(self, var_cutoff=0.8, feat=None, show_vals=True):
+        
+        # Get the percent of variance explained for each component from models
+        var_components = [x['var_exp'] for x in self.models.values()]
+        
+        # Normalize to get the percentage of variance explained
+        var_percent = [
+            [y/sum(x) if sum(x) > 0 else 0 for y in x][:-1]
+            for x in var_components]
+
+        # Pull off kernel names from best models
+        kernels = [x['best_model'].split('+') 
+                   for x in self.models.values()]
+        distinct_kernels = np.unique([item for sublist in kernels 
+                                      for item in sublist])
+        kernel_array = np.zeros(shape=(len(kernels), len(distinct_kernels)))
+
+        # See where the best kernels coincide with the distinct indicator
+        kernel_idxs = np.vstack(
+            [sum([np.where(distinct_kernels == y, 1, 0) for y in x])
+             for x in kernels])
+
+        # Fill in variance explained 
+        kernel_array[kernel_idxs == 1] = [x for y in var_percent for x in y]
+        
+        # Only keep outcomes that have variance explained or more
+        kernel_array_filtered = kernel_array[kernel_array.sum(axis=1) >= var_cutoff, :]
+        
+        # Check if this results in any kernels
+        if len(kernel_array_filtered) == 0:
+            return "No outcomes meet variance threshold!"
+        
+        # Only keep kernels that can explain anything left over
+        kernel_array_filtered2 = kernel_array_filtered[:, kernel_array_filtered.sum(axis=0) > 0]
+        
+        # Do the same thing for the list of distinct kernel names
+        distinct_kernel_names = distinct_kernels.copy()
+        distinct_kernel_names = distinct_kernel_names[kernel_array_filtered.sum(axis=0) > 0]
+        
+        # Swap out kernel indexes for the feature names
+        for i, c in enumerate(['['+x+']' for x in self.feat_names]):
+            distinct_kernel_names = [x.replace('['+str(i)+']', c) 
+                                     for x in distinct_kernel_names]
+        
+        
+        # Only keep the outcome labels that meet the criteria
+        out_index = np.array(self.out_names)[kernel_array.sum(axis=1) >= var_cutoff]
+        
+        # See if we only want to filter to specific features
+        if feat != None:
+            feat_flag = [feat in x for x in distinct_kernel_names]
+            distinct_kernel_names = np.array(distinct_kernel_names)[feat_flag]
+            kernel_array_filtered2 = kernel_array_filtered2[:, feat_flag]
+            out_index = out_index[kernel_array_filtered2.sum(axis=1) >= var_cutoff]
+            kernel_array_filtered2 = kernel_array_filtered2[
+                kernel_array_filtered2.sum(axis=1) >= var_cutoff, :
+            ]
+        
+        clm = sns.clustermap(
+            pd.DataFrame(kernel_array_filtered2,
+                         index=out_index,
+                         columns=distinct_kernel_names).transpose(),
+            figsize=(15, 5),
+            annot=show_vals,
+            cmap="Greens" #'Greys'
+        )
+        # Adjust text for easier reading
+        plt.setp(
+            clm.ax_heatmap.xaxis.get_majorticklabels(), 
+            rotation=45, 
+            horizontalalignment='right'
+        )
+        
+        # Add text if requested
+        if show_vals == True:
+            for t in clm.ax_heatmap.texts:
+                if float(t.get_text())>0:
+                    t.set_text(t.get_text()) 
+                else:
+                    t.set_text("")
+        
+        return clm
+
+    def plot_parts(self, out_label, x_axis_label):
+        """ Plot independent kernel components.
+        
+        Parameters
+        ----------
+        
+        Attributes
+        ----------
+        
+        """
+        
+        # Pull off specific model from trained models
+        m = self.models[out_label]
+        
+        pkp = pred_kernel_parts(
+            m=m["models"][m["best_model"]]["model"],
+            k_names=m["best_model"],
+            time_idx=self.feat_names.index(x_axis_label),
+            unit_idx=self.unit_idx,
+            col_names=self.feat_names,
+            lik=self.lik
+        )
+        
+        return pkp
+    
+    def plot_marginal(self, out_label, x_axis_label,
+                      unit_label=None,
+                      num_funs=10, ax=None, 
+                      plot_points=True):
+        
+        # Pull off specific model from trained models
+        m = self.models[out_label]
+        
+        gpf = gp_predict_fun(
+            gp=m["models"][m["best_model"]]["model"],
+            x_idx=self.feat_names.index(x_axis_label),
+            unit_idx=self.unit_idx,
+            col_names=self.feat_names,
+            unit_label=unit_label,
+            num_funs=num_funs,
+            ax=ax,
+            plot_points=plot_points
+        )
 
 class Categorical(gpflow.kernels.Kernel):
     def __init__(self, active_dims, variance=1.0):
@@ -307,7 +481,7 @@ def adam_opt_params(m, iterations=500, eps=0.1):
             prev_loss = m.training_loss()
     return None
 
-def kernel_test(X, Y, k, num_restarts=3, random_init=True, 
+def kernel_test(X, Y, k, num_restarts=5, random_init=True, 
                 verbose=False, likelihood='gaussian',
                 X_holdout=None, Y_holdout=None, split=False):
     """
@@ -470,7 +644,7 @@ def loc_kernel_search(X, Y, kern_list,
                       prev_models=None,
                       lik='gaussian',
                       verbose=False,
-                      num_restarts=3,
+                      num_restarts=5,
                       random_seed=None,
                       X_holdout=None, Y_holdout=None, split=False):
     """
@@ -611,7 +785,7 @@ def loc_kernel_search(X, Y, kern_list,
                     
                 elif operation == 'split_product':
                     #print('Split product being tested.')
-                    # Set new variance to 1, don't train
+                    # Set new variance to 1, don't train (need base if periodic)
                     try:
                         set_trainable(k.variance, False)
                     except:
@@ -621,6 +795,7 @@ def loc_kernel_search(X, Y, kern_list,
                                                     base_kernel=base_kern_,
                                                     base_name=base_name,
                                                     new_kernel=k,
+                                                    prev_models=prev_models,
                                                     depth=depth,
                                                     lik=lik,
                                                     num_restarts=num_restarts,
@@ -649,7 +824,7 @@ def loc_kernel_search(X, Y, kern_list,
     return bic_dict
 
 def prod_kernel_creation(X, Y, base_kernel, base_name, new_kernel, depth, lik, 
-                         verbose=False, num_restarts=3,
+                         verbose=False, num_restarts=5, prev_models=[],
                          X_holdout=None, Y_holdout=None, split=False):
     """
     Produce kernel for product operation
@@ -659,7 +834,7 @@ def prod_kernel_creation(X, Y, base_kernel, base_name, new_kernel, depth, lik,
     
     for feat in range(len(base_kernel.kernels)):
         temp_kernel = gpflow.utilities.deepcopy(base_kernel)
-        temp_kernel.kernels[feat] = temp_kernel.kernels[feat] * new_kernel
+        #temp_kernel.kernels[feat] = temp_kernel.kernels[feat] * new_kernel
         temp_name = base_name.split('+')
         k_info = new_kernel.name + str(new_kernel.active_dims)
         # Skip operation if categorical kernel exists
@@ -672,13 +847,38 @@ def prod_kernel_creation(X, Y, base_kernel, base_name, new_kernel, depth, lik,
                 continue
             
             try:
-                # Get order correct
+                # Get order correct of product term, and higher order correct
+                # with the overall sum term
                 if temp_name[feat] < k_info:
                     temp_name[feat] = temp_name[feat] + '*' + k_info
+                    temp_kernel.kernels[feat] = gpflow.kernels.Product(kernels=[temp_kernel.kernels[feat], new_kernel])
+                    
                 else:
-                    temp_name[feat] = k_info + '*' + temp_name[feat]
+                    temp_kernel.kernels[feat] = gpflow.kernels.Product(kernels=[new_kernel, temp_kernel.kernels[feat]])
+                    
+                    # Insert new starting product kernel in the right sum place
+                    # print('Figuring out indexing')
+                    # print(f'temp_name: {temp_name}')
+                    # print(np.where([k_info < x for x in temp_name]))
+                    try:
+                        new_idx = np.where([k_info < x for x in temp_name])[0][0]
+                    except:
+                        new_idx = len(temp_name) - 1
+                    cur_component_name = temp_name.pop(feat)
+                    # print(f'new_idx: {new_idx}')
+                    # print(f'cur_component_name: {cur_component_name}')
+                    cur_component_name = k_info + '*' + cur_component_name
+                    temp_name.insert(new_idx, cur_component_name)
+                    # print(f'temp_name: {temp_name}')
+                                    
+                # Join everything back together
                 k_info = '+'.join(temp_name)
-
+                # print(f'k_info: {k_info}')
+                
+                # Make sure this is something that hasn't been tested yet
+                if check_if_model_exists(k_info, prev_models):
+                    continue
+                # print('fitting model')
                 m, bic = kernel_test(X, Y, temp_kernel, 
                                      likelihood=lik, 
                                      verbose=verbose,
@@ -697,8 +897,9 @@ def prod_kernel_creation(X, Y, base_kernel, base_name, new_kernel, depth, lik,
                     'try_next': True
                 }
                 
-            except:
-                print('Error!')
+            except Exception as e: 
+                print(e)
+                print(f'Error with product kernel test {k_info}')
                 None
         
     return bic_dict
@@ -745,7 +946,7 @@ def keep_top_k(res_dict, depth, metric_diff = 6, split = False):
         
     return out_dict
 
-def prune_best_model(res_dict, depth, lik, verbose=False, num_restarts=3):
+def prune_best_model(res_dict, depth, lik, verbose=False, num_restarts=5):
     
     out_dict = res_dict.copy()
     
@@ -797,7 +998,7 @@ def prune_best_model(res_dict, depth, lik, verbose=False, num_restarts=3):
             }
     return out_dict
 
-def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=3):
+def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
     
     out_dict = res_dict.copy()
     j = 0 # For product counter
@@ -824,11 +1025,20 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=3):
         # Check if this term is a product term, add to end if so
         if '*' in kernel_names[i]:
             # TODO: Deal with product terms
-            k_info += '+' + kernel_names[i].split('*')[j]
-            kerns += [best_model.kernel.kernels[i].kernels[j]]
+            new_piece = kernel_names[i].split('*')[j]
+            order_set = np.argsort([k_info, new_piece])
+            k_info = '+'.join(np.array([k_info, new_piece])[order_set])
+            # print(f'kerns: {kerns}')
+            # print(f'other kernel: {best_model.kernel.kernels[i].kernels[j]}')
+            kerns = list(np.array(kerns+[ best_model.kernel.kernels[i].kernels[j]])[order_set])
+            
+            # k_info += '+' + kernel_names[i].split('*')[j]
+            # kerns += [best_model.kernel.kernels[i].kernels[j]]
+            # Deal with product index, if first one then redo same component
             if j == 0:
                 j += 1
                 i -= 1
+            # Otherwise reset the product index
             else:
                 j = 0
             
@@ -864,7 +1074,7 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=3):
 
 def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5, 
                        keep_all=False, metric_diff=0, early_stopping=True,
-                       prune=True, num_restarts=1,
+                       prune=True, num_restarts=5,
                        lik='gaussian', verbose=False, 
                        debug=False, keep_only_best=True,
                        softmax_select=False, random_seed=None):
@@ -881,7 +1091,10 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
     edge_list = []
     
     # Make sure the inputs are in the correct format
-    X = X.to_numpy().reshape(-1, X.shape[1])
+    x_dim = 1
+    if len(X.shape) == 2:
+        x_dim = X.shape[1]
+    X = X.to_numpy().reshape(-1, x_dim)
     Y = Y.to_numpy().reshape(-1, 1)
     
     # Flag for missing values 
@@ -1027,6 +1240,8 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
         
         # Prune best model
         if prune:
+            if verbose:
+                print("Pruning now")
             search_dict = prune_best_model2(
                 search_dict, 
                 depth=d, 
@@ -1036,16 +1251,21 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
             )
     
         if verbose:
+            # Look for best model
+            best_model_name = min([(i['bic'], i['depth'], k) 
+                                   for k, i in search_dict.items()])[2]
+            print(f'Best model for depth {d} is {best_model_name}')
             if d == max_depth:
                 print('Reached max depth, ending search.')
             else:
                 print('-----------\n')
         
+            
     # Look for best model
     # best_model_name = min([(i[2], k) for k, i in search_dict.items()])[1]
     best_model_name = min([(i['bic'], i['depth'], k) for k, i in search_dict.items()])[2]
     if verbose:
-        print(best_model_name)
+        print(f'Best model for depth {d} is {best_model_name}')
     
     # Variance decomposition of best model
     var_percent = variance_contributions(
@@ -1070,7 +1290,7 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
 def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                         cat_vars=[], max_depth=5,
                         keep_all=False, metric_diff=1, early_stopping=True,
-                        prune=True, num_restarts=1,
+                        prune=True, num_restarts=5,
                         lik='gaussian', verbose=False,
                         debug=False, keep_only_best=True,
                         softmax_select=False, random_seed=None):
