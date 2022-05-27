@@ -104,6 +104,23 @@ class GPKernelSearch():
         self.models = dict_out
         
         return None
+    
+    def plot_variance_explained(self, var_cutoff=0.8, feat=None):
+        
+        # Subset to models that have feats of interest
+        
+        # Get percent of variance explained for each component 
+        
+        # Normalize to get the percentage of variance explained
+        
+        # Plot
+        f, ax = plt.subplots(figsize=(6, 15))
+        bp = sns.barplot(
+            x=[var_explained[x] for x in np.argsort(var_explained)[::-1]], 
+            y=missing_mbx_list[:n_met][np.argsort(var_explained)[::-1]],
+            color='black',
+        )
+        return bp
 
     def plot_heatmap(self, var_cutoff=0.8, feat=None, show_vals=True):
         
@@ -349,8 +366,8 @@ def gp_predict_fun(gp,  # X, Y, x_min, x_max,
         lower_ci = gp.likelihood.invlink(mean_f - 1.96*np.sqrt(var_f)).numpy().flatten()
         # print('lower:', lower_ci[:5])
     else:
-        lower_ci = mean[:, 0] - 1.96 * np.sqrt(var[:, 0])
-        upper_ci = mean[:, 0] + 1.96 * np.sqrt(var[:, 0])
+        lower_ci = mean_f[:, 0] - 1.96 * np.sqrt(var_f[:, 0])
+        upper_ci = mean_f[:, 0] + 1.96 * np.sqrt(var_f[:, 0])
     # Generate plot
 #     p = plt.figure(figsize=(10, 5))
     if ax == None:
@@ -1022,25 +1039,26 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
         kerns = [k_ for i_, k_ in enumerate(best_model.kernel.kernels) 
                            if i_ != i]
         
-        # Check if this term is a product term, add to end if so
-        if '*' in kernel_names[i]:
-            # TODO: Deal with product terms
-            new_piece = kernel_names[i].split('*')[j]
-            order_set = np.argsort([k_info, new_piece])
-            k_info = '+'.join(np.array([k_info, new_piece])[order_set])
-            # print(f'kerns: {kerns}')
-            # print(f'other kernel: {best_model.kernel.kernels[i].kernels[j]}')
-            kerns = list(np.array(kerns+[ best_model.kernel.kernels[i].kernels[j]])[order_set])
+        # TODO: Still can't figure out product term issue
+#         # Check if this term is a product term, add to end if so
+#         if '*' in kernel_names[i]:
+#             # TODO: Deal with product terms
+#             new_piece = kernel_names[i].split('*')[j]
+#             order_set = np.argsort([k_info, new_piece])
+#             k_info = '+'.join(np.array([k_info, new_piece])[order_set])
+#             # print(f'kerns: {kerns}')
+#             # print(f'other kernel: {best_model.kernel.kernels[i].kernels[j]}')
+#             kerns = list(np.array(kerns+[ best_model.kernel.kernels[i].kernels[j]])[order_set])
             
-            # k_info += '+' + kernel_names[i].split('*')[j]
-            # kerns += [best_model.kernel.kernels[i].kernels[j]]
-            # Deal with product index, if first one then redo same component
-            if j == 0:
-                j += 1
-                i -= 1
-            # Otherwise reset the product index
-            else:
-                j = 0
+#             # k_info += '+' + kernel_names[i].split('*')[j]
+#             # kerns += [best_model.kernel.kernels[i].kernels[j]]
+#             # Deal with product index, if first one then redo same component
+#             if j == 0:
+#                 j += 1
+#                 i -= 1
+#             # Otherwise reset the product index
+#             else:
+#                 j = 0
             
         if len(kerns) > 1:
             k = gpflow.kernels.Sum(kernels = kerns)
@@ -1686,7 +1704,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                 num_unique_cat = len(np.unique(X[:, cat_idx]))
                 for cat_val in np.unique(X[:, cat_idx]):                    
                     x_new[:, cat_idx] = cat_val
-                    mean, var = temp_m.predict_y(x_new)
+                    mean, var = temp_m.predict_f(x_new)
 
                     # Decide if we should annotate each category or not
                     if num_unique_cat < 5:
@@ -1735,7 +1753,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
             # Get quantiles of the others (five number summary)
             for i in np.percentile(X[:, x_idxs[1]], q=[0, 25, 50, 75, 100]):
                 x_new[:, x_idxs[1]] = i
-                mean, var = temp_m.predict_y(x_new)
+                mean, var = temp_m.predict_f(x_new)
                 
                 ax[plot_idx].plot(
                     x_new[:, x_idxs[0]],
