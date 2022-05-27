@@ -6,6 +6,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os 
+import sys
 import tensorflow as tf
 # tf.config.set_visible_devices([], 'GPU')
 # tf.get_logger().setLevel('ERROR')
@@ -106,6 +107,9 @@ def run_simulation(rate, epsilon, units, iters, kernel_list):
             random_seed=9102
             )
         
+        # Drop the data information from that kernel
+        if iters != 0:
+            search_out['models'][search_out['best_model']]['model'].data = None
 
 
         # Save resulting kernels and information
@@ -127,120 +131,111 @@ def run_simulation(rate, epsilon, units, iters, kernel_list):
     return sim_out.reset_index(drop=True)
 
 
-# First kernel is just a simple time varying covariance structure + unit offset
-k1 = (gpflow.kernels.Matern12(variance=1.0,
-                              lengthscales=1.0,
-                              active_dims=[2]) +
-      Categorical(variance=2.0,
-                       active_dims=[0]))
+if __name__ == "__main__":
+    
+    # Get arg imputs
+    task_id = int(sys.argv[1])
 
-# Second kernel is time varying unit specific effect + periodic overall effect
-k2 = (gpflow.kernels.Matern12(variance=1.0,
-                              lengthscales=0.5,
-                              active_dims=[2]) *
-      Categorical(active_dims=[0], variance=1.0) +
-      gpflow.kernels.Periodic(
-          base_kernel=gpflow.kernels.SquaredExponential(
-              variance=2.0, active_dims=[2]),
-          period=0.5))
+    # First kernel is just a simple time varying covariance structure + unit offset
+    k1 = (gpflow.kernels.Matern12(variance=1.0,
+                                  lengthscales=1.0,
+                                  active_dims=[2]) +
+          Categorical(variance=2.0,
+                           active_dims=[0]))
 
-# Third kernel is random unit specific effect + treatment effect
-k3 = (Categorical(active_dims=[0], variance=2.0) +
-      Categorical(active_dims=[1], variance=1.0) *
-      gpflow.kernels.Linear(variance=1.0,
-                            active_dims=[2]))
+    # Second kernel is time varying unit specific effect + periodic overall effect
+    k2 = (gpflow.kernels.Matern12(variance=1.0,
+                                  lengthscales=0.5,
+                                  active_dims=[2]) *
+          Categorical(active_dims=[0], variance=1.0) +
+          gpflow.kernels.Periodic(
+              base_kernel=gpflow.kernels.SquaredExponential(
+                  variance=2.0, active_dims=[2]),
+              period=0.5))
 
-# Fourth kernel is nonlinear random treatment effect over time +
-# nonlinear individual effect over time
-k4 = (Categorical(active_dims=[0], variance=0.5) +
-      Categorical(active_dims=[1], variance=1.5) *
-      gpflow.kernels.Polynomial(degree=3,
-                                offset=0.1,
-                                variance=1.0,
-                                active_dims=[2]) +
-      Categorical(active_dims=[0], variance=1.0) *
-      gpflow.kernels.SquaredExponential(variance=1.0,
-                                        lengthscales=0.5,
-                                        active_dims=[2]))
+    # Third kernel is random unit specific effect + treatment effect
+    k3 = (Categorical(active_dims=[0], variance=2.0) +
+          Categorical(active_dims=[1], variance=1.0) *
+          gpflow.kernels.Linear(variance=1.0,
+                                active_dims=[2]))
 
-# Kernel dictionary
-kernel_dictionary = {
-    'y1': {'model': k1},
-    'y2': {'model': k2},
-    'y3': {'model': k3},
-    'y4': {'model': k4}
-}
+    # Fourth kernel is nonlinear random treatment effect over time +
+    # nonlinear individual effect over time
+    k4 = (Categorical(active_dims=[0], variance=0.5) +
+          Categorical(active_dims=[1], variance=1.5) *
+          gpflow.kernels.Polynomial(degree=3,
+                                    offset=0.1,
+                                    variance=1.0,
+                                    active_dims=[2]) +
+          Categorical(active_dims=[0], variance=1.0) *
+          gpflow.kernels.SquaredExponential(variance=1.0,
+                                            lengthscales=0.5,
+                                            active_dims=[2]))
 
-# Set options
-np.random.seed(9102)
-rates = [2, 4, 8, 16, 32] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
-units = [10, 30, 50, 70, 100]
-epsilons = [0, 0.3, 3.0, 30] # SNR [\inf, 10, 1, 0.1]
-iters = 50
-sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
-np.random.shuffle(sim_settings)
-#print(sim_settings)
-kernel_list = [
-    gpflow.kernels.SquaredExponential(),
-    gpflow.kernels.Matern12(),
-    gpflow.kernels.Linear(),
-    gpflow.kernels.Polynomial(),
-    gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())
-]
+    # Kernel dictionary
+    kernel_dictionary = {
+        'y1': {'model': k1},
+        'y2': {'model': k2},
+        'y3': {'model': k3},
+        'y4': {'model': k4}
+    }
 
-# # THIS SECTION IS TESTING IF GPU ON/OFF IS WORKING
-# df = sim_data(
-#     num_units=100,
-#     rate=20,
-#     include_output=True,
-#     kern_out=kernel_dictionary,
-#     set_seed=False
-# )
+    # Set options
+    np.random.seed(9102+task_id)
+    rates = [2, 4, 8, 16, 32] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
+    units = [10, 30, 50, 70, 100]
+    epsilons = [0, 0.3, 3.0, 30] # SNR [\inf, 10, 1, 0.1]
+    iters = 10
+    sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
+    np.random.shuffle(sim_settings)
+    #print(sim_settings)
+    kernel_list = [
+        gpflow.kernels.SquaredExponential(),
+        gpflow.kernels.Matern12(),
+        gpflow.kernels.Linear(),
+        gpflow.kernels.Polynomial(),
+        gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())
+    ]
 
-# foo = kernel_test(
-#     X=df[['id', 'treat', 'time']],
-#     Y=df['y1'],
-#     k=gpflow.kernels.SquaredExponential(active_dims=[2]) + Categorical(active_dims=[0])
-# )
-# print(foo)
-# import sys
-# sys.exit('Finished')
-# Rate = 9, unit = 10, 5 jobs with 5 tasks, CPU = 2.55min, GPU = locks on last task
+    # # THIS SECTION IS TESTING IF GPU ON/OFF IS WORKING
+    # df = sim_data(
+    #     num_units=100,
+    #     rate=20,
+    #     include_output=True,
+    #     kern_out=kernel_dictionary,
+    #     set_seed=False
+    # )
 
-# Run simulation
-start_time = time.time()
-with tqdm_joblib(tqdm(desc="Simulation", total=len(sim_settings))) as progress_bar:
-    sim_out = Parallel(n_jobs=40, verbose=1)(
-        delayed(run_simulation)(
-            rate=r,
-            epsilon=e,
-            units=u,
-            iters=i,
-            kernel_list=kernel_list
+    # foo = kernel_test(
+    #     X=df[['id', 'treat', 'time']],
+    #     Y=df['y1'],
+    #     k=gpflow.kernels.SquaredExponential(active_dims=[2]) + Categorical(active_dims=[0])
+    # )
+    # print(foo)
+    # import sys
+    # sys.exit('Finished')
+    # Rate = 9, unit = 10, 5 jobs with 5 tasks, CPU = 2.55min, GPU = locks on last task
+
+    # Run simulation
+    start_time = time.time()
+    with tqdm_joblib(tqdm(desc="Simulation", total=len(sim_settings))) as progress_bar:
+        sim_out = Parallel(n_jobs=40, verbose=1)(
+            delayed(run_simulation)(
+                rate=r,
+                epsilon=e,
+                units=u,
+                iters=i,
+                kernel_list=kernel_list
+            )
+            for r, e, u, i in sim_settings
         )
-        for r, e, u, i in sim_settings
-    )
-# from dask.distributed import Client
-# client = Client(processes=False)
-# import joblib
-# with joblib.parallel_backend('dask', n_jobs=5):
-#     sim_out = joblib.Parallel(verbose=1)(
-#         joblib.delayed(run_simulation)(
-#             rate=r, epsilon=e, 
-#             units=u, iters=i, 
-#             kernel_list=kernel_list)
-#     for r, e, u, i in sim_settings
-#     )
 
-#start_time = time.time()
-#sim_results = run_simulation(rates, epsilons, units, iters, kernel_list, start_time)
+    # Collapse output
+    sim_results = pd.concat(sim_out)
+    end_time = time.time()
+    print("----%.2f seconds----"%(end_time - start_time))
 
-# Collapse output
-sim_results = pd.concat(sim_out)
-end_time = time.time()
-print("----%.2f seconds----"%(end_time - start_time))
-
-# Save output
-f = open("sim_results_052322.pkl", "wb")
-pickle.dump(sim_results, f)
-f.close()
+    # Save output
+    f = open("sim_results_part"+str(task_id)+".pkl", "wb")
+    pickle.dump(sim_results, f)
+    f.close()
