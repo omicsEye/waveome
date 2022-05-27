@@ -185,7 +185,7 @@ if __name__ == "__main__":
     rates = [4, 8, 16, 32] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
     units = [20, 40, 60, 80]
     epsilons = [0, 0.3, 3.0, 30] # SNR [\inf, 10, 1, 0.1]
-    iters = 5
+    iters = 10
     sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
     np.random.shuffle(sim_settings)
     #print(sim_settings)
