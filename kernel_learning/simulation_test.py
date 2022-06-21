@@ -78,7 +78,7 @@ def sim_data(rate=12, num_units=30, fixed_num=False,
             )[0]
 
             # Add noise
-            df[k] = f_ + np.random.normal(loc=0, scale=eps, size=len(f_))
+            df[k] = f_ + np.random.normal(loc=0, scale=np.sqrt(eps), size=len(f_))
 
     return df
 
@@ -118,7 +118,7 @@ def run_simulation(rate, epsilon, units, iters, kernel_list):
             'eps': [epsilon], #4*[eps],
             'units': [units], #4*[u],
             'iter': [iters], #4*[i],
-            'output': ['y'+str(i)], #['y1', 'y2', 'y3', 'y4'],
+            'output': ['y'+str(i+1)], #['y1', 'y2', 'y3', 'y4'],
             'kernel': [search_out['best_model']], #[x['best_model'] for x in search_out],
             'model': [search_out['models'][search_out['best_model']]]
             #[x['models'][x['best_model']] for x in search_out]

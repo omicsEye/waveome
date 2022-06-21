@@ -199,7 +199,7 @@ with tqdm_joblib(tqdm(desc="Binomial kernel search", total=n_met)) as progress_b
             prune=True,
             keep_all=False,
             lik='bernoulli',
-            metric_diff=0,
+            metric_diff=6,
             random_seed=9102)
         for m in missing_mbx_list[:n_met])
 
@@ -226,7 +226,7 @@ with tqdm_joblib(tqdm(desc="Kernel search", total=n_met)) as progress_bar:
             prune=True,
             keep_all=False,
             lik='gaussian',
-            metric_diff=0,
+            metric_diff=6,
             random_seed=9102)
         for m in mbx_list[:n_met])
     

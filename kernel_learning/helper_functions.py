@@ -78,7 +78,7 @@ class GPKernelSearch():
         
         # Take min of output or requested jobs for num_jobs
         if num_jobs <= 0:
-            num_jobs = os.cpu_count + num_jobs + 1
+            num_jobs = os.cpu_count() + num_jobs + 1
         num_jobs=min(num_out, num_jobs)
         
         with tqdm_joblib(tqdm(desc="Kernel search", total=num_out)) as progress_bar:
@@ -122,7 +122,8 @@ class GPKernelSearch():
         )
         return bp
 
-    def plot_heatmap(self, var_cutoff=0.8, feat=None, show_vals=True):
+    def plot_heatmap(self, var_cutoff=0.8, feat=None, 
+                     show_vals=True, figsize=(15, 5)):
         
         # Get the percent of variance explained for each component from models
         var_components = [x['var_exp'] for x in self.models.values()]
@@ -184,7 +185,7 @@ class GPKernelSearch():
             pd.DataFrame(kernel_array_filtered2,
                          index=out_index,
                          columns=distinct_kernel_names).transpose(),
-            figsize=(15, 5),
+            figsize=figsize,
             annot=show_vals,
             cmap="Greens" #'Greys'
         )
@@ -259,8 +260,12 @@ class Categorical(gpflow.kernels.Kernel):
     def K(self, X, X2=None):
         if X2 is None:
             X2 = X
-        # X = X[:, self.active_dims[0]]
-        # X2 = X2[:, self.active_dims[0]]
+            
+        # Select the single dimension if needed 
+        if X.shape[1] > 1:
+            # print(f"X: {X}, shape(X): {(X.shape)}")
+            X = tf.reshape(X[:, self.active_index], (-1, 1))
+            X2 = tf.reshape(X2[:, self.active_index], (-1, 1))
         # matches = tf.cast(tf.equal(tf.cast(X, tf.int64), 
         #                   tf.transpose(tf.cast(X2, tf.int64))), 
         #                   tf.float64)
@@ -420,7 +425,7 @@ def gp_predict_fun(gp,  # X, Y, x_min, x_max,
            samples,#[:, :, 0].numpy().T,# "C0", 
            color='dimgray',
            linewidth=0.5,
-           alpha=0.5)
+           alpha=0.2)
 #     plt.close()
 
     ax.set(
@@ -1091,7 +1096,7 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
     
 
 def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5, 
-                       keep_all=False, metric_diff=0, early_stopping=True,
+                       keep_all=False, metric_diff=6, early_stopping=True,
                        prune=True, num_restarts=5,
                        lik='gaussian', verbose=False, 
                        debug=False, keep_only_best=True,
