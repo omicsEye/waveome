@@ -168,24 +168,24 @@ kernel_list = [gpflow.kernels.SquaredExponential(),
 # Number of metabolites
 n_met = len(missing_mbx_list)
 
-#for m in missing_mbx_list[:n_met]:
-#	print(m)
-#	foo = split_kernel_search(
-#		X=df[feat_names],
-#		Y=df[[m]].notna().astype(int),
-#		kern_list=kernel_list,
-#		cat_vars=[0,1,2,3],
-#		unit_idx=0,
-#		max_depth=5,
-#		early_stopping=True,
-#		prune=True,
-#		keep_all=False,
-#		lik='bernoulli',
-#		metric_diff=1,
-#		random_seed=9012
-#)
+for m in missing_mbx_list[:n_met]:
+	print(m)
+	foo = full_kernel_search(
+		X=df[feat_names],
+		Y=df[[m]].notna().astype(int),
+		kern_list=kernel_list,
+		cat_vars=[0,1,2],
+		max_depth=5,
+		early_stopping=True,
+		prune=True,
+		keep_all=False,
+		lik='bernoulli',
+		metric_diff=6,
+		random_seed=9012,
+		verbose=True
+)
 
-#print(2+a)
+print(2+a)
 
 # Run this process for multiple metabolites independently
 with tqdm_joblib(tqdm(desc="Binomial kernel search", total=n_met)) as progress_bar:
