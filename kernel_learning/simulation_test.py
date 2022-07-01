@@ -190,9 +190,9 @@ if __name__ == "__main__":
     np.random.shuffle(sim_settings)
     #print(sim_settings)
     kernel_list = [
+        Lin(),
         gpflow.kernels.SquaredExponential(),
         gpflow.kernels.Matern12(),
-        gpflow.kernels.Linear(),
         gpflow.kernels.Polynomial(),
         gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())
     ]

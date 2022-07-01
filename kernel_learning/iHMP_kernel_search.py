@@ -153,14 +153,15 @@ feat_names = col_names = ['id', # 'diagnosis',
                           'days_from_max_severity']
 df.shape
 
-# Get percent missing for each column and then only flag metabolites with at least 1% observations missing
+# Get percent missing for each column and then only flag metabolites with at least 
+# 10% of observations missing
 missing_df = df[mbx_list].isna().mean()
-missing_mbx_list = mbx_list[(missing_df>=0.01).values].reset_index(drop=True)
+missing_mbx_list = mbx_list[(missing_df>=0.1).values].reset_index(drop=True)
 
 # Specify kernels to search over for continuous features
-kernel_list = [gpflow.kernels.SquaredExponential(),
+kernel_list = [Lin(),
+               gpflow.kernels.SquaredExponential(),
                gpflow.kernels.Matern12(),
-               gpflow.kernels.Linear(),
                gpflow.kernels.Polynomial(),
                # gpflow.kernels.ArcCosine(),
                gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())]
@@ -168,24 +169,24 @@ kernel_list = [gpflow.kernels.SquaredExponential(),
 # Number of metabolites
 n_met = len(missing_mbx_list)
 
-for m in missing_mbx_list[:n_met]:
-	print(m)
-	foo = full_kernel_search(
-		X=df[feat_names],
-		Y=df[[m]].notna().astype(int),
-		kern_list=kernel_list,
-		cat_vars=[0,1,2],
-		max_depth=5,
-		early_stopping=True,
-		prune=True,
-		keep_all=False,
-		lik='bernoulli',
-		metric_diff=6,
-		random_seed=9012,
-		verbose=True
-)
+# for m in missing_mbx_list[:n_met]:
+# 	print(m)
+# 	foo = full_kernel_search(
+# 		X=df[feat_names],
+# 		Y=df[[m]].notna().astype(int),
+# 		kern_list=kernel_list,
+# 		cat_vars=[0,1,2],
+# 		max_depth=5,
+# 		early_stopping=True,
+# 		prune=True,
+# 		keep_all=False,
+# 		lik='bernoulli',
+# 		metric_diff=6,
+# 		random_seed=9012,
+# 		verbose=True
+# )
 
-print(2+a)
+# print(2+a)
 
 # Run this process for multiple metabolites independently
 with tqdm_joblib(tqdm(desc="Binomial kernel search", total=n_met)) as progress_bar:

@@ -250,6 +250,27 @@ class GPKernelSearch():
             plot_points=plot_points
         )
 
+class Lin(gpflow.kernels.Kernel):
+    def __init__(self, active_dims, variance=1.0): # , center=0.0):
+        super().__init__(active_dims=active_dims)
+        self.variance = gpflow.Parameter(variance, transform=positive())
+        # self.center = gpflow.Parameter(center)
+        self.active_index = active_dims[0]
+        
+    def K(self, X, X2 = None) -> tf.Tensor:
+        if X.shape[1] > 1:
+            X = tf.cast(tf.reshape(X[:, self.active_index], (-1, 1)), tf.float64)
+        if X2 is None:
+            # return tf.matmul((X-self.center) * self.variance, (X-self.center), transpose_b=True)
+            return self.variance * tf.matmul(X, X, transpose_b=True)
+        else:
+            return tf.tensordot(X * self.variance, X2, [[-1], [-1]])
+
+    def K_diag(self, X) -> tf.Tensor:
+        if len(X.shape) > 1 and X.shape[1] > 1:
+            X = X[:, self.active_index]
+        return self.variance * tf.cast(tf.reshape(tf.square(X), (-1,)), tf.float64)
+        
 class Categorical(gpflow.kernels.Kernel):
     def __init__(self, active_dims, variance=1.0):
         super().__init__(active_dims=active_dims)
@@ -505,6 +526,7 @@ def adam_opt_params(m, iterations=500, eps=0.1):
 
 def kernel_test(X, Y, k, num_restarts=5, random_init=True, 
                 verbose=False, likelihood='gaussian',
+                use_priors=True,
                 X_holdout=None, Y_holdout=None, split=False):
     """
     This function evaluates a particular kernel selection on a set of data. 
@@ -562,8 +584,13 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
             print('Unknown likelihood requested.')
         
         # # Set priors
-        for p in m.parameters:
-            p.prior = tfd.Gamma(f64(1), f64(1))
+        if use_priors == True:
+            for p in m.parameters:
+                if p.name == "identity":
+                    p.prior = tfd.Uniform(f64(-100), f64(100))
+                else:
+                    p.prior = tfd.Uniform(f64(0), f64(100))
+                    # p.prior = tfd.Gamma(f64(1), f64(0.5))
         
         # Randomize initial values if not trained already
         if random_init:
@@ -630,7 +657,7 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
             Y_holdout).numpy().sum()
         bic = round(-1*estimated_loglik, 2)
     else:
-        estimated_loglik = best_model.log_posterior_density().numpy()
+        estimated_loglik = best_model.log_marginal_likelihood().numpy()
         
         bic = round(calc_bic(
     #         loglik=best_model.log_marginal_likelihood().numpy(),
@@ -1291,9 +1318,9 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
         print(f'Best model for depth {d} is {best_model_name}')
     
     # Variance decomposition of best model
-    var_percent = variance_contributions(
+    var_percent = variance_contributions_diag(
        search_dict[best_model_name]['model'], 
-       best_model_name,
+       # best_model_name,
        lik=lik
     )
     
@@ -1524,9 +1551,9 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
         print(best_model_name)
     
     # Variance decomposition of best model
-    var_percent = variance_contributions(
+    var_percent = variance_contributions_diag(
        search_dict[best_model_name]['model'], 
-       best_model_name,
+       # best_model_name,
        lik=lik
     )
     
@@ -1648,9 +1675,9 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
     kernel_names = k_names.split('+')
     
     # Get variance pieces
-    var_contribs = variance_contributions(
+    var_contribs = variance_contributions_diag(
         m=m_copy, 
-        k_names=k_names,
+        # k_names=k_names,
         lik=lik
     )
     var_percent = [100*round(x/sum(var_contribs),2) for x in var_contribs]
