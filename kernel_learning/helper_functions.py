@@ -251,7 +251,7 @@ class GPKernelSearch():
         )
 
 class Lin(gpflow.kernels.Kernel):
-    def __init__(self, active_dims, variance=1.0): # , center=0.0):
+    def __init__(self, active_dims=[0], variance=1.0): # , center=0.0):
         super().__init__(active_dims=active_dims)
         self.variance = gpflow.Parameter(variance, transform=positive())
         # self.center = gpflow.Parameter(center)
@@ -272,7 +272,7 @@ class Lin(gpflow.kernels.Kernel):
         return self.variance * tf.cast(tf.reshape(tf.square(X), (-1,)), tf.float64)
         
 class Categorical(gpflow.kernels.Kernel):
-    def __init__(self, active_dims, variance=1.0):
+    def __init__(self, active_dims=[0], variance=1.0):
         super().__init__(active_dims=active_dims)
         self.variance = gpflow.Parameter(variance, transform=positive())
         # self.rho = gpflow.Parameter(1.0, transform=positive())'
