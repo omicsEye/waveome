@@ -657,7 +657,7 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
             Y_holdout).numpy().sum()
         bic = round(-1*estimated_loglik, 2)
     else:
-        estimated_loglik = best_model.log_marginal_likelihood().numpy()
+        estimated_loglik = best_model.log_posterior_density().numpy()
         
         bic = round(calc_bic(
     #         loglik=best_model.log_marginal_likelihood().numpy(),
