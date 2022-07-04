@@ -586,16 +586,18 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
         # # Set priors
         if use_priors == True:
             for p in m.parameters:
-                if p.name == "identity":
-                    p.prior = tfd.Uniform(f64(-100), f64(100))
-                else:
-                    p.prior = tfd.Uniform(f64(0), f64(100))
-                    # p.prior = tfd.Gamma(f64(1), f64(0.5))
+                # We don't want to mess with the Q points in VGP model
+                if len(p.shape) <= 1:
+                    if p.name == "identity":
+                        p.prior = tfd.Uniform(f64(-100), f64(100))
+                    else:
+                        p.prior = tfd.Uniform(f64(0), f64(100))
+                        # p.prior = tfd.Gamma(f64(1), f64(0.5))
         
         # Randomize initial values if not trained already
         if random_init:
             for p in m.kernel.trainable_parameters:
-                if p.numpy() == 1:
+                if p.numpy() == 1 and len(p.shape) <= 1:
                     unconstrain_vals = np.random.normal(
                         size=p.numpy().size
                         ).reshape(p.numpy().shape)
@@ -1317,11 +1319,11 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
     if verbose:
         print(f'Best model for depth {d} is {best_model_name}')
     
-    # Variance decomposition of best model
-    var_percent = variance_contributions_diag(
-       search_dict[best_model_name]['model'], 
+    # Calc R2 of best model
+    var_percent = calc_rsquare(
+       search_dict[best_model_name]['model'] # , 
        # best_model_name,
-       lik=lik
+       # lik=lik
     )
     
     # Keep only the final best model?
@@ -1551,10 +1553,10 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
         print(best_model_name)
     
     # Variance decomposition of best model
-    var_percent = variance_contributions_diag(
-       search_dict[best_model_name]['model'], 
+    var_percent = calc_rsquare(
+       search_dict[best_model_name]['model'] # , 
        # best_model_name,
-       lik=lik
+       # lik=lik
     )
     
     # Keep only the final best model?
@@ -1675,10 +1677,10 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
     kernel_names = k_names.split('+')
     
     # Get variance pieces
-    var_contribs = variance_contributions_diag(
-        m=m_copy, 
+    var_contribs = calc_rsquare(
+        m=m_copy # , 
         # k_names=k_names,
-        lik=lik
+        # lik=lik
     )
     var_percent = [100*round(x/sum(var_contribs),2) for x in var_contribs]
     
@@ -1706,7 +1708,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
             temp_m = gpflow.models.GPR(
                 data=(X, Y), #m_copy.data,
                 kernel=k,
-                noise_variance=m_copy.likelihood.variance
+                noise_variance=2e-6 # m_copy.likelihood.variance
             )
         elif m_name == 'vgp':
             temp_m = gpflow.models.VGP(
@@ -1736,7 +1738,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                 num_unique_cat = len(np.unique(X[:, cat_idx]))
                 for cat_val in np.unique(X[:, cat_idx]):                    
                     x_new[:, cat_idx] = cat_val
-                    mean, var = temp_m.predict_f(x_new)
+                    mean, var = temp_m.predict_y(x_new)
 
                     # Decide if we should annotate each category or not
                     if num_unique_cat < 5:
@@ -1785,7 +1787,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
             # Get quantiles of the others (five number summary)
             for i in np.percentile(X[:, x_idxs[1]], q=[0, 25, 50, 75, 100]):
                 x_new[:, x_idxs[1]] = i
-                mean, var = temp_m.predict_f(x_new)
+                mean, var = temp_m.predict_y(x_new)
                 
                 ax[plot_idx].plot(
                     x_new[:, x_idxs[0]],
@@ -1988,6 +1990,46 @@ def variance_contributions_diag(m, lik='gaussian'):
     else:
         variance_list += [np.std(calc_residuals(m))**2]
     return variance_list
+
+def calc_rsquare(m):
+    """
+    Calculate the r-squared values of each kernel component.
+    """
+    
+    # Save output list
+    rsq = []
+    
+    # Pull off data from stored model
+    X = m.data[0].numpy()
+    Y = m.data[1].numpy()
+    
+    # Make copy of model
+    m_copy = gpflow.utilities.deepcopy(m)
+    
+    # Calculate the mean of the outcome
+    Y_bar = Y.mean()
+    
+    # Calculate sum of squares
+    sse = np.sum((Y - Y_bar)**2)
+    
+    # For each kernel component gather predictions
+    k = m.kernel
+    if k.name == 'sum':
+        for k_sub in k.kernels:
+            # Break off kernel component
+            m_copy.kernel = k_sub
+            mu_hat, var_hat = m_copy.predict_y(X)
+            ssr = np.sum((Y - mu_hat)**2)
+            rsq += [np.round((1 - ssr/sse), 2)]
+    else:
+        mu_hat, var_hat = m_copy.predict_y(X)
+        ssr = np.sum((Y - mu_hat)**2)
+        rsq += [np.round((1 - ssr/sse), 2)]
+        
+    # Gather the final bit for noise
+    rsq += [np.round(1 - sum(rsq),2)]
+
+    return rsq
 
 def calc_residuals(m):
     """
