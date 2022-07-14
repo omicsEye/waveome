@@ -107,9 +107,11 @@ def run_simulation(rate, epsilon, units, iters, kernel_list):
             random_seed=9102
             )
         
-        # Drop the data information from that kernel
-        if iters != 0:
-            search_out['models'][search_out['best_model']]['model'].data = None
+        # We might want to keep this for this time being to derive metrics
+        # after the fact
+        # # Drop the data information from that kernel
+        # if iters != 0:
+        #     search_out['models'][search_out['best_model']]['model'].data = None
 
 
         # Save resulting kernels and information

@@ -365,7 +365,7 @@ def gp_predict_fun(gp,  # X, Y, x_min, x_max,
         X_train[:, x_idx].max(),
         1000
     )
-
+    
     # Predict mean and variance on new data
 #     mean, var = gp.predict_f(x_new)
     mean, var = gp.predict_y(x_new)
@@ -649,6 +649,10 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
 #     for l in range(len(m.trainable_parameters)):
 #         print(best_params[l])
 #         m.trainable_parameters[l].assign(best_params[l])    
+
+    # Return none and worst BIC if we can't fit a single 
+    if best_model == None:
+        return best_model, -1*best_loglik
 
     # Calculate information criteria
     if split:
@@ -1058,46 +1062,64 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
     best_bic, best_model_name, best_model = min(
         [(i['bic'], k, i['model']) for k, i in res_dict.items()]
         )
-#     print(f'Best model: {best_model_name}')
+    # print(f'Best model: {best_model_name}')
     
     # Split kernel name to sum pieces 
-    kernel_names = best_model_name.split('+')
+    kernel_names = re.split("\+", best_model_name)
+    # print(kernel_names)
     
     # Loop through each kernel piece and prune out refit and evaluate
-    if len(kernel_names) <= 1:
-#         print('No compound terms to prune!')
+    if len(kernel_names) <= 1 and "*" not in kernel_names[0]:
+        # print('No compound terms to prune!')
         return res_dict
     
     for i in range(len(kernel_names)):
+        if verbose:
+            print(f"Current kernel component: {kernel_names[i]}")
+        # Glue together the kernel pieces that are not currently being pruned
         k_info = '+'.join([x_ for i_,x_ in enumerate(kernel_names) if i_ != i])
         kerns = [k_ for i_, k_ in enumerate(best_model.kernel.kernels) 
                            if i_ != i]
         
         # TODO: Still can't figure out product term issue
-#         # Check if this term is a product term, add to end if so
-#         if '*' in kernel_names[i]:
-#             # TODO: Deal with product terms
-#             new_piece = kernel_names[i].split('*')[j]
-#             order_set = np.argsort([k_info, new_piece])
-#             k_info = '+'.join(np.array([k_info, new_piece])[order_set])
-#             # print(f'kerns: {kerns}')
-#             # print(f'other kernel: {best_model.kernel.kernels[i].kernels[j]}')
-#             kerns = list(np.array(kerns+[ best_model.kernel.kernels[i].kernels[j]])[order_set])
-            
-#             # k_info += '+' + kernel_names[i].split('*')[j]
-#             # kerns += [best_model.kernel.kernels[i].kernels[j]]
-#             # Deal with product index, if first one then redo same component
-#             if j == 0:
-#                 j += 1
-#                 i -= 1
-#             # Otherwise reset the product index
-#             else:
-#                 j = 0
+        # Check if this term is a product term, add to end if so
+        if '*' in kernel_names[i]:
+            if verbose:
+                print("Currently dealing with product terms!")
+                
+            # Deal with a single product term versus multiple terms
+            if len(kernel_names) == 1:
+                prod_kernel=best_model.kernel
+                other_kernel=None
+                other_name=""
+            else:
+                prod_kernel=best_model.kernel.kernels[i]
+                other_kernel=kerns
+                other_name=k_info
+
+            out_dict = prune_prod_kernel(
+                prod_kernel=prod_kernel,
+                prod_name=kernel_names[i],
+                res_dict=out_dict,
+                best_model=best_model,
+                best_bic=best_bic,
+                best_model_name=best_model_name,
+                depth=depth,
+                other_kernel=other_kernel,
+                other_name=other_name,
+                lik=lik,
+                verbose=verbose,
+                num_restarts=num_restarts
+            )
             
         if len(kerns) > 1:
             k = gpflow.kernels.Sum(kernels = kerns)
         else:
             k = kerns[0]
+        
+        # Reset parameters
+        for p in k.trainable_parameters:
+            p.assign(f64(1))
             
         # Check to see if this model has already been fit previously
         if check_if_model_exists(k_info, list(res_dict.keys())):
@@ -1109,7 +1131,7 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
                              num_restarts=num_restarts)
         # If better model found then save it
         if bic < best_bic:
-#             print(f'New better model found: {k_info}')
+            print(f'New better model found: {k_info}')
             #out_dict[k_info] = [k, m, bic, depth, best_model_name]
             out_dict[k_info] = {
                 'kernel': m.kernel,
@@ -1120,9 +1142,66 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
                 'try_next': True
             }
     return out_dict
+
+def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model, 
+                      best_bic, best_model_name,
+                      depth, other_kernel = None, other_name = "", 
+                      lik="gaussian", verbose=False, 
+                      num_restarts=5, **kwargs):
+    
+    out_dict = res_dict.copy()
+    other_kernel = gpflow.utilities.deepcopy(other_kernel)
+    
+    # Split product kernel name
+    kernel_parts = prod_name.split("*")
+    
+    # Loop through each kernel piece
+    for i in range(len(prod_kernel.kernels)):
         
-    
-    
+        # Get new kernel name
+        new_piece = kernel_parts[i]
+        
+        if other_name == "":
+            k_info = new_piece
+            k = prod_kernel.kernels[i]
+        else:
+            order_set = np.argsort([other_name, new_piece])
+            k_info = '+'.join(np.array([other_name, new_piece])[order_set])
+        
+            # Get new kernel piece
+            print(other_kernel)
+            if not isinstance(other_kernel, list):
+                other_kernel = [other_kernel]
+            kerns = list(np.array(other_kernel + [prod_kernel.kernels[i]])[order_set])
+            k = gpflow.kernels.Sum(kernels=kerns)
+            for p in k.trainable_parameters:
+                p.assign(f64(1))
+        
+        
+        # Check to see if kernel has already been tested
+        if check_if_model_exists(k_info, list(res_dict.keys())):
+            continue
+        else:
+            # Test kernel if appropriate
+            m, bic = kernel_test(X=best_model.data[0], 
+                                 Y=best_model.data[1], 
+                                 k=k,
+                                 likelihood=lik,
+                                 verbose=verbose,
+                                 num_restarts=num_restarts)
+        # Save if better kernel
+        if bic < best_bic:
+            print(f"Found better kernel! {k_info}")
+            out_dict[k_info] = {
+                'kernel': m.kernel,
+                'model': m,
+                'bic': bic,
+                'depth': depth,
+                'parent': best_model_name,
+                'try_next': True
+            }
+            
+    return out_dict
 
 def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5, 
                        keep_all=False, metric_diff=6, early_stopping=True,
@@ -1254,6 +1333,8 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
                     print('No better kernel found in layer, exiting search!')
                 # Prune best model
                 if prune:
+                    if verbose:
+                        print("Pruning now")
                     search_dict = prune_best_model2(
                         search_dict, 
                         depth=d, 
@@ -1319,12 +1400,14 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
     if verbose:
         print(f'Best model for depth {d} is {best_model_name}')
     
-    # Calc R2 of best model
-    var_percent = calc_rsquare(
-       search_dict[best_model_name]['model'] # , 
-       # best_model_name,
-       # lik=lik
-    )
+    # TODO: Fix this and then turn back on 
+    # # Calc R2 of best model
+    # var_percent = calc_rsquare(
+    #    search_dict[best_model_name]['model'] # , 
+    #    # best_model_name,
+    #    # lik=lik
+    # )
+    var_percent = [np.nan]
     
     # Keep only the final best model?
     if keep_only_best:
@@ -1708,7 +1791,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
             temp_m = gpflow.models.GPR(
                 data=(X, Y), #m_copy.data,
                 kernel=k,
-                noise_variance=2e-6 # m_copy.likelihood.variance
+                noise_variance=m_copy.likelihood.variance
             )
         elif m_name == 'vgp':
             temp_m = gpflow.models.VGP(
@@ -2015,10 +2098,15 @@ def calc_rsquare(m):
     # For each kernel component gather predictions
     k = m.kernel
     if k.name == 'sum':
-        for k_sub in k.kernels:
+        for k_idx in range(len(k.kernels)):
             # Break off kernel component
-            m_copy.kernel = k_sub
-            mu_hat, var_hat = m_copy.predict_y(X)
+            # m_copy.kernel = k_sub
+            # mu_hat, var_hat = m_copy.predict_y(X)
+            mu_hat, var_hat, samps, cov_hat = individual_kernel_predictions(
+                model=m,
+                kernel_idx=k_idx,
+                X=m.data[0]
+            )
             ssr = np.sum((Y - mu_hat)**2)
             rsq += [np.round((1 - ssr/sse), 2)]
     else:
@@ -2150,3 +2238,66 @@ def tqdm_joblib(tqdm_object):
     finally:
         joblib.parallel.BatchCompletionCallBack = old_batch_callback
         tqdm_object.close()  
+
+def individual_kernel_predictions(model, kernel_idx, 
+                                  X=None, predict_y=False,
+                                  num_samples=10):
+    """Predict contribution from individual kernel component.
+    
+    Parameters
+    ----------
+    model : gpflow.model
+    
+    kernel_idx : Integer
+    
+    X : Numpy array for prediction points
+    
+    likelihood_noise : Boolean
+                       Add Gaussian noise from likelihood function?
+                       
+    num_samples : Integer
+                  Number of samples to draw from the posterior component
+        
+    Attributes
+    ----------
+    
+    """
+    # Build each part of the covariance matrix
+    sigma_22 = model.kernel.K(X=model.data[0])
+    sigma_21 = model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X)
+    sigma_12 = tf.transpose(sigma_21)
+    sigma_11 = model.kernel.kernels[kernel_idx].K(X=X)
+        
+    # Add likelihood noise if requested - otherwise small constant for invertibility
+    if predict_y:
+        sigma_22 += tf.linalg.diag(tf.repeat(model.likelihood.variance, model.data[0].shape[0]))
+        sigma_11 += tf.linalg.diag(tf.repeat(model.likelihood.variance, X.shape[0]))
+    else:
+        sigma_22 += tf.linalg.diag(tf.repeat(f64(5e-4), model.data[0].shape[0]))
+        sigma_11 += tf.linalg.diag(tf.repeat(f64(5e-4), X.shape[0]))
+
+    # Now put all of the pieces together into one matrix
+    sigma_full = tf.concat([tf.concat(values=[sigma_11, sigma_12], axis=1), 
+                            tf.concat(values=[sigma_21, sigma_22], axis=1)], 
+                           axis=0)
+    
+    # Now calculate mean and variance
+    pred_mu = (np.zeros((X.shape[0], 1)) + 
+               tf.matmul(a=tf.matmul(a=sigma_12, b=tf.linalg.inv(sigma_22)), 
+                         b=(model.data[1] - np.zeros((model.data[0].shape[0], 1)))))
+
+    # Covariance function
+    pred_cov = (sigma_11 - tf.matmul(a=sigma_12,
+                                     b=tf.matmul(a=tf.linalg.inv(sigma_22), b=sigma_21)))
+    # Variance component
+    pred_var = tf.linalg.diag_part(pred_cov)
+
+    # Also pull some function samples
+    posterior_dist = tfp.distributions.MultivariateNormalFullCovariance(
+        loc=tf.transpose(pred_mu),
+        covariance_matrix=pred_cov,
+        )
+    sample_fns = posterior_dist.sample(sample_shape=num_samples)
+    sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
+    
+    return pred_mu, pred_var, sample_fns, pred_cov
