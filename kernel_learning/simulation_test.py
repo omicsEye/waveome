@@ -158,18 +158,17 @@ if __name__ == "__main__":
     # Third kernel is random unit specific effect + treatment effect
     k3 = (Categorical(active_dims=[0], variance=2.0) +
           Categorical(active_dims=[1], variance=1.0) *
-          gpflow.kernels.Linear(variance=1.0,
-                                active_dims=[2]))
+          Lin(variance=1.0,
+              active_dims=[2]))
 
     # Fourth kernel is nonlinear random treatment effect over time +
     # nonlinear individual effect over time
-    k4 = (Categorical(active_dims=[0], variance=0.5) +
-          Categorical(active_dims=[1], variance=1.5) *
+    k4 = (Categorical(active_dims=[1], variance=1.5) *
           gpflow.kernels.Polynomial(degree=3,
                                     offset=0.1,
                                     variance=1.0,
                                     active_dims=[2]) +
-          Categorical(active_dims=[0], variance=1.0) *
+          Categorical(active_dims=[0], variance=1.5) *
           gpflow.kernels.SquaredExponential(variance=1.0,
                                             lengthscales=0.5,
                                             active_dims=[2]))
@@ -187,7 +186,7 @@ if __name__ == "__main__":
     rates = [3, 6, 12, 24] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
     units = [30, 60, 120, 240]
     epsilons = [0, 0.3, 3.0, 30] # SNR [\inf, 10, 1, 0.1]
-    iters = 3
+    iters = 1
     sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
     np.random.shuffle(sim_settings)
     #print(sim_settings)
