@@ -60,7 +60,7 @@ class GPKernelSearch():
     def run_search(self, 
                    kernels=[gpflow.kernels.SquaredExponential()], 
                    max_depth=5, early_stopping=True, prune=True,
-                   keep_all=False, metric_diff=0, 
+                   keep_all=False, metric_diff=6, 
                    random_seed=None, num_jobs=-2, 
                    verbose=False, debug=False):
         """Run search process given search operator and kernels of interest.
@@ -259,16 +259,19 @@ class Lin(gpflow.kernels.Kernel):
         
     def K(self, X, X2 = None) -> tf.Tensor:
         if X.shape[1] > 1:
-            X = tf.cast(tf.reshape(X[:, self.active_index], (-1, 1)), tf.float64)
+            X = tf.cast(tf.reshape(X[:, self.active_dims[0]], (-1, 1)), tf.float64)
         if X2 is None:
             # return tf.matmul((X-self.center) * self.variance, (X-self.center), transpose_b=True)
             return self.variance * tf.matmul(X, X, transpose_b=True)
         else:
-            return tf.tensordot(X * self.variance, X2, [[-1], [-1]])
+            if X2.shape[1] > 1:
+                X2 = tf.cast(tf.reshape(X2[:, self.active_dims[0]], (-1, 1)), tf.float64)
+            return self.variance * tf.matmul(X, X2, transpose_b=True)
+            # return tf.tensordot(X * self.variance, X2, [[-1], [-1]])
 
     def K_diag(self, X) -> tf.Tensor:
         if len(X.shape) > 1 and X.shape[1] > 1:
-            X = X[:, self.active_index]
+            X = X[:, self.active_dims[0]]
         return self.variance * tf.cast(tf.reshape(tf.square(X), (-1,)), tf.float64)
         
 class Categorical(gpflow.kernels.Kernel):
@@ -597,7 +600,9 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
         # Randomize initial values if not trained already
         if random_init:
             for p in m.kernel.trainable_parameters:
-                if p.numpy() == 1 and len(p.shape) <= 1:
+                # Should we actually not have this requirement?
+                # if p.numpy() == 1 and 
+                if len(p.shape) <= 1:
                     unconstrain_vals = np.random.normal(
                         size=p.numpy().size
                         ).reshape(p.numpy().shape)
@@ -675,6 +680,9 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
     # Print out info if requested
     if verbose:
         print(f'Model: {print_kernel_names(k)}, BIC: {bic}')
+        
+    # Delete data from model object
+    best_model.data = None
     
     # Return fitted GP model and bic
     # Predictions
@@ -1151,15 +1159,23 @@ def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model,
     
     out_dict = res_dict.copy()
     other_kernel = gpflow.utilities.deepcopy(other_kernel)
+    prod_kernel = gpflow.utilities.deepcopy(prod_kernel)
     
     # Split product kernel name
     kernel_parts = prod_name.split("*")
+    
+    # Try to check if there are other kernels in the prod piece
+    if prod_kernel.name != 'product':
+        if verbose:
+            print(f"Prod kernel issues with {prod_kernel}. Exiting.\n")
+        return out_dict
     
     # Loop through each kernel piece
     for i in range(len(prod_kernel.kernels)):
         
         # Get new kernel name
         new_piece = kernel_parts[i]
+        if verbose: print(f"New kernel piece being tested: {new_piece}")
         
         if other_name == "":
             k_info = new_piece
@@ -1169,7 +1185,7 @@ def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model,
             k_info = '+'.join(np.array([other_name, new_piece])[order_set])
         
             # Get new kernel piece
-            print(other_kernel)
+            # print(other_kernel)
             if not isinstance(other_kernel, list):
                 other_kernel = [other_kernel]
             kerns = list(np.array(other_kernel + [prod_kernel.kernels[i]])[order_set])
@@ -1177,9 +1193,11 @@ def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model,
             for p in k.trainable_parameters:
                 p.assign(f64(1))
         
-        
+        if verbose: print(f"Model about to be fit: {k_info}")
         # Check to see if kernel has already been tested
         if check_if_model_exists(k_info, list(res_dict.keys())):
+            if verbose:
+                print(f"{k_info} has already been fit. Skipping!")
             continue
         else:
             # Test kernel if appropriate
@@ -1189,6 +1207,10 @@ def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model,
                                  likelihood=lik,
                                  verbose=verbose,
                                  num_restarts=num_restarts)
+            
+            if verbose:
+                print(f"model = {k_info}, BIC = {bic}")
+            
         # Save if better kernel
         if bic < best_bic:
             print(f"Found better kernel! {k_info}")
@@ -1321,7 +1343,23 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
             
             # Overwrite search dictionary with temporary results
             search_dict = temp_dict
-            
+        
+        # What is the best model we have right now?
+        # [x['bic'] for x in model_dict.values() if x['depth'] == (depth)]
+        
+        best_model_name = min([(i['bic'], i['depth'], k) for k, i in search_dict.items() if i['depth'] == d])[2]
+        if verbose:
+            print(f'Best model for depth {d} is {best_model_name}')
+        
+        # Add data back in for the best model
+        search_dict[best_model_name]['model'].data = (tf.convert_to_tensor(X), 
+                                                      tf.convert_to_tensor(Y))
+        
+        # If the best model is constant then end search
+        if best_model_name == 'constant':
+            if verbose: print('Best model is constant, going to stop searching now')
+            break
+        
         # Early stopping?
         if early_stopping and d > 1:
             found_better = check_if_better_metric(model_dict=search_dict, 
@@ -1384,10 +1422,10 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
             )
     
         if verbose:
-            # Look for best model
-            best_model_name = min([(i['bic'], i['depth'], k) 
-                                   for k, i in search_dict.items()])[2]
-            print(f'Best model for depth {d} is {best_model_name}')
+            # # Look for best model
+            # best_model_name = min([(i['bic'], i['depth'], k) 
+            #                        for k, i in search_dict.items()])[2]
+            # print(f'Best model for depth {d} is {best_model_name}')
             if d == max_depth:
                 print('Reached max depth, ending search.')
             else:
@@ -1399,15 +1437,17 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
     best_model_name = min([(i['bic'], i['depth'], k) for k, i in search_dict.items()])[2]
     if verbose:
         print(f'Best model for depth {d} is {best_model_name}')
+        
+    # Add data back in for the best model
+    search_dict[best_model_name]['model'].data = (tf.convert_to_tensor(X), 
+                                                  tf.convert_to_tensor(Y))
     
-    # TODO: Fix this and then turn back on 
-    # # Calc R2 of best model
-    # var_percent = calc_rsquare(
-    #    search_dict[best_model_name]['model'] # , 
-    #    # best_model_name,
-    #    # lik=lik
-    # )
-    var_percent = [np.nan]
+    # Calc R2 of best model
+    var_percent = calc_rsquare(
+       search_dict[best_model_name]['model'] # , 
+       # best_model_name,
+       # lik=lik
+    )
     
     # Keep only the final best model?
     if keep_only_best:
@@ -1741,6 +1781,240 @@ def softmax_kernel_search(X, Y, kern_list, num_trials=5, cat_vars=[], max_depth=
         
     return best_search_dict, best_edge_list, best_final_name, best_var_percent, search_book
 
+# def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian'):
+#     """
+#     Breaks up kernel in model to plot separate pieces
+#     """
+    
+#     # Copy model
+#     m_copy = gpflow.utilities.deepcopy(m)
+#     m_name = m_copy.name
+#     X = m_copy.data[0].numpy()
+#     Y = m_copy.data[1].numpy()
+    
+#     # Compute residuals
+#     mean_pred, var_pred = m.predict_y(m.data[0])
+#     resids = calc_residuals(m) #tf.cast(m.data[1], tf.float64) - mean_pred
+    
+#     # Split kernel names by sum sign
+#     kernel_names = k_names.split('+')
+    
+#     # Get variance pieces
+#     var_contribs = calc_rsquare(
+#         m=m_copy # , 
+#         # k_names=k_names,
+#         # lik=lik
+#     )
+#     var_percent = [100*round(x/sum(var_contribs),2) for x in var_contribs]
+    
+#     fig, ax = plt.subplots(ncols=len(kernel_names)+1,
+#                            # sharex=True,
+#                            sharey=True,
+#                            figsize=(5*(len(kernel_names)+1), 5))
+#     plot_idx = 0
+#     kernel_idx = 0
+#     for k_name in kernel_names: #m_copy.kernel.kernels:
+                
+#         # Pull off specific kernel component
+#         if '*' in k_name and len(kernel_names) == 1:
+#             k = m_copy.kernel #.kernels[kernel_idx]
+#                 #m_copy.kernel.kernels[kernel_idx] * m_copy.kernel.kernels[kernel_idx+1]
+#             kernel_idx += 1
+#         elif len(kernel_names) == 1:
+#             k = m_copy.kernel
+#         else:
+#             k = m_copy.kernel.kernels[kernel_idx]
+#             kernel_idx += 1
+            
+#         # Specify model type for specific kernel component
+#         if m_name == 'gpr':
+#             temp_m = gpflow.models.GPR(
+#                 data=(X, Y), #m_copy.data,
+#                 kernel=k,
+#                 noise_variance=m_copy.likelihood.variance
+#             )
+#         elif m_name == 'vgp':
+#             temp_m = gpflow.models.VGP(
+#                 data=(X, Y), #m_copy.data,
+#                 kernel=k,
+#                 likelihood=m_copy.likelihood
+#             )
+#             temp_m.q_mu = m_copy.q_mu
+#             temp_m.q_sqrt = m_copy.q_sqrt
+#         else:
+#             print('Unknown model type requested.')
+                
+#         # Plot all possible category means if categorical
+#         if 'categorical' in k_name: #kernel_names[c]:
+#             for cat_idx in re.findall(r'categorical\[(\d+)\]', 
+#                                       k_name): #kernel_names[c]):
+#                 cat_idx = int(cat_idx)
+#                 # Set up empyty dataset with domain support
+#                 x_new = np.zeros((1000, m.data[0].shape[1]))
+#                 x_new[:, time_idx] = np.linspace(
+#                         X[:, time_idx].min(), 
+#                         X[:, time_idx].max(), 
+#                         1000
+#                 ) 
+                
+#                 # For each unique level of category replace and predict values
+#                 num_unique_cat = len(np.unique(X[:, cat_idx]))
+#                 for cat_val in np.unique(X[:, cat_idx]):                    
+#                     x_new[:, cat_idx] = cat_val
+#                     mean, var = temp_m.predict_y(x_new)
+
+#                     # Decide if we should annotate each category or not
+#                     if num_unique_cat < 5:
+#                         ax[plot_idx].plot(
+#                             x_new[:, time_idx],
+#                             mean.numpy().flatten(),
+#                             alpha=0.5,
+#                             label=cat_val
+#                         )
+#                         ax[plot_idx].fill_between(
+#                             x_new[:, time_idx],
+#                             mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+#                             mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+#                             color='lightgreen',
+#                             alpha=0.5,
+#                         )
+                        
+#                         # If last category then add legend to plot
+#                         if cat_val == num_unique_cat - 1:
+#                             ax[plot_idx].legend(loc="upper right")
+
+#                     else:
+#                         ax[plot_idx].plot(
+#                             x_new[:, time_idx],
+#                             mean.numpy().flatten(),
+#                             alpha=0.5
+#                         )
+                        
+#                 # Set the subplot title to match the true variable name
+#                 ax[plot_idx].set(
+#                     xlabel=f"{replace_kernel_variables('['+str(time_idx)+']', col_names).strip('[]')}"
+#                 )
+
+#         # Deal with interaction if two continuous features
+#         # but only if the two continuous features aren't the same 
+#         elif '*' in k_name and len(np.unique(re.findall(r'\[(\d+)\]', k_name))) > 1:
+#             # Grab all of the variable indexes
+#             x_idxs = [int(x) for x in re.findall(r'\[(\d+)\]', k_name)]
+#             x_new = np.zeros((1000, m.data[0].shape[1]))
+#             # Choose the first one as the main support
+#             x_new[:, x_idxs[0]] = np.linspace(
+#                 X[:, x_idxs[0]].min(), 
+#                 X[:, x_idxs[0]].max(), 
+#                 1000
+#             )         
+#             # Get quantiles of the others (five number summary)
+#             for i in np.percentile(X[:, x_idxs[1]], q=[0, 25, 50, 75, 100]):
+#                 x_new[:, x_idxs[1]] = i
+#                 mean, var = temp_m.predict_y(x_new)
+                
+#                 ax[plot_idx].plot(
+#                     x_new[:, x_idxs[0]],
+#                     mean.numpy().flatten(),
+#                     alpha=0.5,
+#                     label=round(i, 1)
+#                 )
+#                 ax[plot_idx].fill_between(
+#                     x_new[:, x_idxs[0]],
+#                     mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+#                     mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+#                     color='lightgreen',
+#                     alpha=0.5,
+#                 )
+#             ax[plot_idx].legend()
+#             ax[plot_idx].set(
+#                 xlabel=f"{replace_kernel_variables('['+str(x_idxs[0])+']', col_names).strip('[]')}"
+#             )
+
+#         # Otherwise standard decomposition
+#         else:
+#             # Grab variable index
+#             if 'constant' in k_name:
+#                 var_idx = time_idx
+#             else:
+#                 var_idx = int(re.findall(r'\[(\d+)\]', k_name)[0]) #kernel_names[c])[0])
+#             gp_predict_fun(
+#                 gp=temp_m,
+#                 x_idx=var_idx,
+#                 unit_idx=unit_idx,
+#                 ax=ax[plot_idx],
+#                 plot_points=False,
+#                 col_names=col_names
+#             )
+            
+
+#         # Add title for specific feature
+#         ax[plot_idx].set(title=f'{replace_kernel_variables(k_name, col_names)} ({round(var_percent[plot_idx], 1)}%)')
+#         plot_idx+=1
+
+#         # Subtract out mean
+#         # Y -= mean.numpy()
+
+#     # # Add title for specific feature
+#     # ax[c].set(title=f'{kernel_names[c]} ({round(var_percent[c], 1)}%)')
+#     # c+=1
+    
+#     # Plot residuals
+#     if lik == 'gaussian':
+#         x_resid = np.linspace(X[:, time_idx].min(), X[:, time_idx].max(), 1000)
+#         ax[plot_idx].plot(
+#             x_resid, #x_new[:, time_idx],
+#             np.zeros(len(x_resid)), #np.zeros_like(x_new[:, time_idx]),
+#             color='darkgreen',
+#             linewidth=2.5
+#         )
+#         # error_sd = np.sqrt(m.parameters[-1].numpy())
+#         # Calculate the model residuals to get the standard deviation
+#         error_sd = np.std(calc_residuals(m))
+#         ax[plot_idx].fill_between(
+#             x_resid, #x_new[:, time_idx],
+#             -1.96 * error_sd,
+#             1.96 * error_sd,
+#             color='lightgreen',
+#             alpha=0.5
+#         )
+#         ax[plot_idx].scatter(m.data[0][:, time_idx],
+#                       resids,
+#                       color='black',
+#                       alpha=0.5,
+#                       s=20)
+#     else:
+#         x_resid = np.linspace(X[:, time_idx].min(), X[:, time_idx].max(), 1000)
+#         ax[plot_idx].plot(
+#             x_resid, #x_new[:, time_idx],
+#             m.likelihood.invlink(np.zeros(len(x_resid))),
+#             color='darkgreen',
+#             linewidth=2.5
+#         )
+#         # error_sd = np.sqrt(m.parameters[-1].numpy())
+#         # Calculate the model residuals to get the standard deviation
+#         error_sd = np.std(calc_residuals(m))
+#         ax[plot_idx].fill_between(
+#             x_resid, #x_new[:, time_idx],
+#             m.likelihood.invlink(-1.96 * error_sd),
+#             m.likelihood.invlink(1.96 * error_sd),
+#             color='lightgreen',
+#             alpha=0.5
+#         )
+#         ax[plot_idx].scatter(m.data[0][:, time_idx],
+#                       m.likelihood.invlink(resids),
+#                       color='black',
+#                       alpha=0.5,
+#                       s=20)
+#     ax[plot_idx].set(title=f'residuals ({round(var_percent[plot_idx], 1)}%)',
+#                      xlabel=f"{replace_kernel_variables('['+str(time_idx)+']', col_names).strip('[]')}")
+    
+#     # Adjust scale if needed
+#     if lik == 'gamma':
+#         for ax_ in ax:
+#             ax_.set_yscale('log')
+    
+#     return fig, ax
+
 def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian'):
     """
     Breaks up kernel in model to plot separate pieces
@@ -1765,7 +2039,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
         # k_names=k_names,
         # lik=lik
     )
-    var_percent = [100*round(x/sum(var_contribs),2) for x in var_contribs]
+    var_percent = [100*round(x/sum(var_contribs),3) for x in var_contribs]
     
     fig, ax = plt.subplots(ncols=len(kernel_names)+1,
                            # sharex=True,
@@ -1774,7 +2048,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
     plot_idx = 0
     kernel_idx = 0
     for k_name in kernel_names: #m_copy.kernel.kernels:
-                
+        # print(f'k_name={k_name}')
         # Pull off specific kernel component
         if '*' in k_name and len(kernel_names) == 1:
             k = m_copy.kernel #.kernels[kernel_idx]
@@ -1785,24 +2059,6 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
         else:
             k = m_copy.kernel.kernels[kernel_idx]
             kernel_idx += 1
-            
-        # Specify model type for specific kernel component
-        if m_name == 'gpr':
-            temp_m = gpflow.models.GPR(
-                data=(X, Y), #m_copy.data,
-                kernel=k,
-                noise_variance=m_copy.likelihood.variance
-            )
-        elif m_name == 'vgp':
-            temp_m = gpflow.models.VGP(
-                data=(X, Y), #m_copy.data,
-                kernel=k,
-                likelihood=m_copy.likelihood
-            )
-            temp_m.q_mu = m_copy.q_mu
-            temp_m.q_sqrt = m_copy.q_sqrt
-        else:
-            print('Unknown model type requested.')
                 
         # Plot all possible category means if categorical
         if 'categorical' in k_name: #kernel_names[c]:
@@ -1821,20 +2077,26 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                 num_unique_cat = len(np.unique(X[:, cat_idx]))
                 for cat_val in np.unique(X[:, cat_idx]):                    
                     x_new[:, cat_idx] = cat_val
-                    mean, var = temp_m.predict_y(x_new)
+                    # mean, var = temp_m.predict_y(x_new)
+                    mean, var, samps, cov = individual_kernel_predictions(
+                        model=m_copy,
+                        kernel_idx=np.argwhere([x == k_name for x in kernel_names])[0][0],
+                        X=x_new)
+                    mean = mean.numpy().flatten()
+                    var = var.numpy().flatten()
 
                     # Decide if we should annotate each category or not
                     if num_unique_cat < 5:
                         ax[plot_idx].plot(
                             x_new[:, time_idx],
-                            mean.numpy().flatten(),
+                            mean,
                             alpha=0.5,
                             label=cat_val
                         )
                         ax[plot_idx].fill_between(
                             x_new[:, time_idx],
-                            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-                            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+                            mean - 1.96 * np.sqrt(var),
+                            mean + 1.96 * np.sqrt(var),
                             color='lightgreen',
                             alpha=0.5,
                         )
@@ -1846,7 +2108,7 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                     else:
                         ax[plot_idx].plot(
                             x_new[:, time_idx],
-                            mean.numpy().flatten(),
+                            mean,
                             alpha=0.5
                         )
                         
@@ -1870,18 +2132,24 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
             # Get quantiles of the others (five number summary)
             for i in np.percentile(X[:, x_idxs[1]], q=[0, 25, 50, 75, 100]):
                 x_new[:, x_idxs[1]] = i
-                mean, var = temp_m.predict_y(x_new)
+                # mean, var = temp_m.predict_y(x_new)
+                mean, var, samps, cov = individual_kernel_predictions(
+                    model=m_copy,
+                    kernel_idx=np.argwhere([x == k_name for x in kernel_names])[0][0],
+                    X=x_new)
+                mean = mean.numpy().flatten()
+                var = var.numpy().flatten()
                 
                 ax[plot_idx].plot(
                     x_new[:, x_idxs[0]],
-                    mean.numpy().flatten(),
+                    mean,
                     alpha=0.5,
                     label=round(i, 1)
                 )
                 ax[plot_idx].fill_between(
                     x_new[:, x_idxs[0]],
-                    mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-                    mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+                    mean - 1.96 * np.sqrt(var),
+                    mean + 1.96 * np.sqrt(var),
                     color='lightgreen',
                     alpha=0.5,
                 )
@@ -1897,26 +2165,76 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                 var_idx = time_idx
             else:
                 var_idx = int(re.findall(r'\[(\d+)\]', k_name)[0]) #kernel_names[c])[0])
-            gp_predict_fun(
-                gp=temp_m,
-                x_idx=var_idx,
-                unit_idx=unit_idx,
-                ax=ax[plot_idx],
-                plot_points=False,
-                col_names=col_names
+            # if unit_idx != None:
+            #     x_new = np.tile(
+            #         A=np.median(
+            #             X[X[:, unit_idx] == unit_label, ],
+            #             axis=0
+            #         ),
+            #         reps=(1000, 1)
+            #     )
+            # else:
+            #     x_new = np.tile(
+            #         A=np.median(
+            #             X,
+            #             axis=0
+            #         ),
+            #         reps=(1000, 1)
+            #     )
+            # Add full range of x axis
+            x_new = np.zeros((1000, m.data[0].shape[1]))
+            x_new[:, var_idx] = np.linspace(
+                X[:, var_idx].min(),
+                X[:, var_idx].max(),
+                1000
             )
+            
+            # Pull predictions from specific component
+            mean, var, samps, cov = individual_kernel_predictions(
+                model=m_copy,
+                kernel_idx=np.argwhere([x == k_name for x in kernel_names])[0][0],
+                X=x_new)
+            mean = mean.numpy().flatten()
+            var = var.numpy().flatten()
+            
+            p = sns.lineplot(x=x_new[:, var_idx],
+#                  y=mean.numpy().flatten(),
+             y=mean,
+             linewidth=2.5,
+                color='darkgreen',
+                ax=ax[plot_idx])
+
+            ax[plot_idx].fill_between(
+                x_new[:, var_idx],
+                mean - 1.96 * np.sqrt(var),
+                mean + 1.96 * np.sqrt(var),
+                color='lightgreen',
+                alpha=0.5,
+            )
+            ax[plot_idx].plot(x_new[:, var_idx], 
+                   samps,#[:, :, 0].numpy().T,# "C0", 
+                   color='dimgray',
+                   linewidth=0.5,
+                   alpha=0.2)
+        #     plt.close()
+
+            ax[plot_idx].set(
+                xlabel=f"{replace_kernel_variables('['+str(var_idx)+']', col_names).strip('[]')}",
+                #title=f"{replace_kernel_variables(str(x_idx), col_names)}"
+            )
+            # gp_predict_fun(
+            #     gp=temp_m,
+            #     x_idx=var_idx,
+            #     unit_idx=unit_idx,
+            #     ax=ax[plot_idx],
+            #     plot_points=False,
+            #     col_names=col_names
+            # )
             
 
         # Add title for specific feature
         ax[plot_idx].set(title=f'{replace_kernel_variables(k_name, col_names)} ({round(var_percent[plot_idx], 1)}%)')
         plot_idx+=1
-
-        # Subtract out mean
-        # Y -= mean.numpy()
-
-    # # Add title for specific feature
-    # ax[c].set(title=f'{kernel_names[c]} ({round(var_percent[c], 1)}%)')
-    # c+=1
     
     # Plot residuals
     if lik == 'gaussian':
@@ -2057,8 +2375,13 @@ def variance_contributions_diag(m, lik='gaussian'):
     
     # Extract variance from kernel components
     if k.name == 'sum':
-        for k_sub in k.kernels:
-            variance_list += [np.mean(k_sub.K_diag(m.data[0]))]
+        for i in range(len(k.kernels)):
+            mu_, var_, samps_, cov_ = individual_kernel_predictions(
+                model=m,
+                kernel_idx=i,
+                X=m.data[0])
+        # for k_sub in k.kernels:
+            # variance_list += [np.mean(k_sub.K_diag(m.data[0]))]
     elif k.name == 'product':
         temp_prod = np.ones_like(m.data[0][:,0])
         for k_sub in k.kernels:
@@ -2073,6 +2396,51 @@ def variance_contributions_diag(m, lik='gaussian'):
     else:
         variance_list += [np.std(calc_residuals(m))**2]
     return variance_list
+
+# def calc_rsquare(m):
+#     """
+#     Calculate the r-squared values of each kernel component.
+#     """
+    
+#     # Save output list
+#     rsq = []
+    
+#     # Pull off data from stored model
+#     X = m.data[0].numpy()
+#     Y = m.data[1].numpy()
+    
+#     # Make copy of model
+#     m_copy = gpflow.utilities.deepcopy(m)
+    
+#     # Calculate the mean of the outcome
+#     Y_bar = Y.mean()
+    
+#     # Calculate sum of squares
+#     sse = np.sum((Y - Y_bar)**2)
+    
+#     # For each kernel component gather predictions
+#     k = m.kernel
+#     if k.name == 'sum':
+#         for k_idx in range(len(k.kernels)):
+#             # Break off kernel component
+#             # m_copy.kernel = k_sub
+#             # mu_hat, var_hat = m_copy.predict_y(X)
+#             mu_hat, var_hat, samps, cov_hat = individual_kernel_predictions(
+#                 model=m,
+#                 kernel_idx=k_idx,
+#                 X=m.data[0]
+#             )
+#             ssr = np.sum((Y - mu_hat)**2)
+#             rsq += [np.round((1 - ssr/sse), 2)]
+#     else:
+#         mu_hat, var_hat = m_copy.predict_y(X)
+#         ssr = np.sum((Y - mu_hat)**2)
+#         rsq += [np.round((1 - ssr/sse), 2)]
+        
+#     # Gather the final bit for noise
+#     rsq += [np.round(1 - sum(rsq),2)]
+
+#     return rsq
 
 def calc_rsquare(m):
     """
@@ -2092,10 +2460,16 @@ def calc_rsquare(m):
     # Calculate the mean of the outcome
     Y_bar = Y.mean()
     
-    # Calculate sum of squares
+    # Calculate sum of squares error
     sse = np.sum((Y - Y_bar)**2)
     
+    # Calculate overall model predictions
+    mu_all_hat, var_all_hat = m.predict_y(X)
+    ssr_total = np.sum((Y-mu_all_hat)**2)
+    total_rsq = 1 - (ssr_total/sse)
+    
     # For each kernel component gather predictions
+    ssr_list = []
     k = m.kernel
     if k.name == 'sum':
         for k_idx in range(len(k.kernels)):
@@ -2107,15 +2481,18 @@ def calc_rsquare(m):
                 kernel_idx=k_idx,
                 X=m.data[0]
             )
-            ssr = np.sum((Y - mu_hat)**2)
-            rsq += [np.round((1 - ssr/sse), 2)]
+            ssr_list += [np.sum((mu_all_hat - mu_hat)**2)]
+        
+        for k_idx in range(len(k.kernels)):
+            rsq += [np.round(total_rsq*(1 - ssr_list[k_idx]/sum(ssr_list)), 3)]
     else:
         mu_hat, var_hat = m_copy.predict_y(X)
-        ssr = np.sum((Y - mu_hat)**2)
-        rsq += [np.round((1 - ssr/sse), 2)]
+        ssr = np.sum((mu_all_hat - mu_hat)**2)
+        rsq += [np.round(total_rsq, 3)]
         
     # Gather the final bit for noise
-    rsq += [np.round(1 - sum(rsq),2)]
+    # rsq += [np.round(1 - sum(rsq),3)]
+    rsq += [np.round(1 - total_rsq, 3)]
 
     return rsq
 
@@ -2263,40 +2640,56 @@ def individual_kernel_predictions(model, kernel_idx,
     
     """
     # Build each part of the covariance matrix
+    if model.kernel.name == "sum":
+        sigma_21 = model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X)
+        sigma_11 = model.kernel.kernels[kernel_idx].K(X=X)
+    else:
+        sigma_21 = model.kernel.K(X=model.data[0], X2=X)
+        sigma_11 = model.kernel.K(X=X)
+        
     sigma_22 = model.kernel.K(X=model.data[0])
-    sigma_21 = model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X)
     sigma_12 = tf.transpose(sigma_21)
-    sigma_11 = model.kernel.kernels[kernel_idx].K(X=X)
         
     # Add likelihood noise if requested - otherwise small constant for invertibility
     if predict_y:
         sigma_22 += tf.linalg.diag(tf.repeat(model.likelihood.variance, model.data[0].shape[0]))
         sigma_11 += tf.linalg.diag(tf.repeat(model.likelihood.variance, X.shape[0]))
     else:
-        sigma_22 += tf.linalg.diag(tf.repeat(f64(5e-4), model.data[0].shape[0]))
-        sigma_11 += tf.linalg.diag(tf.repeat(f64(5e-4), X.shape[0]))
+        sigma_22 += tf.linalg.diag(tf.repeat(f64(1e-4), model.data[0].shape[0]))
+        sigma_11 += tf.linalg.diag(tf.repeat(f64(1e-4), X.shape[0]))
 
     # Now put all of the pieces together into one matrix
     sigma_full = tf.concat([tf.concat(values=[sigma_11, sigma_12], axis=1), 
                             tf.concat(values=[sigma_21, sigma_22], axis=1)], 
                            axis=0)
     
+    # Invert sigma_22
+    inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
+    
     # Now calculate mean and variance
     pred_mu = (np.zeros((X.shape[0], 1)) + 
-               tf.matmul(a=tf.matmul(a=sigma_12, b=tf.linalg.inv(sigma_22)), 
+               tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
+                                     b=inv_sigma_22),
                          b=(model.data[1] - np.zeros((model.data[0].shape[0], 1)))))
 
     # Covariance function
     pred_cov = (sigma_11 - tf.matmul(a=sigma_12,
-                                     b=tf.matmul(a=tf.linalg.inv(sigma_22), b=sigma_21)))
+                                     b=tf.matmul(a=inv_sigma_22, 
+                                                 #a=tf.linalg.inv(sigma_22),
+                                                 b=sigma_21)))
     # Variance component
     pred_var = tf.linalg.diag_part(pred_cov)
 
     # Also pull some function samples
-    posterior_dist = tfp.distributions.MultivariateNormalFullCovariance(
+    # posterior_dist = tfp.distributions.MultivariateNormalFullCovariance(
+    #     loc=tf.transpose(pred_mu),
+    #     covariance_matrix=pred_cov,
+    #     )
+    # Need to update this to silence tensorflow warning
+    posterior_dist = tfp.distributions.MultivariateNormalTriL(
         loc=tf.transpose(pred_mu),
-        covariance_matrix=pred_cov,
-        )
+        scale_tril=tf.linalg.cholesky(pred_cov)
+    )
     sample_fns = posterior_dist.sample(sample_shape=num_samples)
     sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
     
