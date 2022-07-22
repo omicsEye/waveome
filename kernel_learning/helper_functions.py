@@ -1139,7 +1139,8 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
                              num_restarts=num_restarts)
         # If better model found then save it
         if bic < best_bic:
-            print(f'New better model found: {k_info}')
+            if verbose:
+                print(f'New better model found: {k_info}')
             #out_dict[k_info] = [k, m, bic, depth, best_model_name]
             out_dict[k_info] = {
                 'kernel': m.kernel,
@@ -2641,13 +2642,13 @@ def individual_kernel_predictions(model, kernel_idx,
     """
     # Build each part of the covariance matrix
     if model.kernel.name == "sum":
-        sigma_21 = model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X)
-        sigma_11 = model.kernel.kernels[kernel_idx].K(X=X)
+        sigma_21 = tf.cast(model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X), tf.float64)
+        sigma_11 = tf.cast(model.kernel.kernels[kernel_idx].K(X=X), tf.float64)
     else:
-        sigma_21 = model.kernel.K(X=model.data[0], X2=X)
-        sigma_11 = model.kernel.K(X=X)
+        sigma_21 = tf.cast(model.kernel.K(X=model.data[0], X2=X), tf.float64)
+        sigma_11 = tf.cast(model.kernel.K(X=X), tf.float64)
         
-    sigma_22 = model.kernel.K(X=model.data[0])
+    sigma_22 = tf.cast(model.kernel.K(X=model.data[0]),tf.float64)
     sigma_12 = tf.transpose(sigma_21)
         
     # Add likelihood noise if requested - otherwise small constant for invertibility
