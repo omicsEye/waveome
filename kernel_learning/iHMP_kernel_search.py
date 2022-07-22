@@ -19,8 +19,8 @@ mbx = pd.read_csv('../examples/iHMP/data/iHMP_labeled_metabolomics.csv')
 mbx_list = mbx.Metabolite
 # Reshape metabolites for merge
 mbx = mbx.iloc[:,7:].transpose().rename(columns = mbx_list)
-# Only keep metabolites that have at least 20% non-missing values
-mbx_list = mbx_list[(mbx.notna().mean() >= 0.2).values]
+## Only keep metabolites that have at least 20% non-missing values
+# mbx_list = mbx_list[(mbx.notna().mean() >= 0.2).values]
 mbx = mbx[mbx_list]
 
 # Read in metadata for timing of samples
