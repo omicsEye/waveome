@@ -2695,3 +2695,31 @@ def individual_kernel_predictions(model, kernel_idx,
     sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
     
     return pred_mu, pred_var, sample_fns, pred_cov
+
+def calc_bhattacharyya_dist(model1, model2, X):
+    """
+    Calculate the Bhattacharyya distance between two resulting MVNormal distributions.
+    """
+    
+    # Calculate means and variances
+    mu1, var1 = model1.predict_f(X)
+    mu2, var2 = model2.predict_f(X)
+    
+    # Also calculate covariance matrices
+    # Pull kernel covariance matrices
+    cov1 = model1.kernel.K(X)
+    cov2 = model2.kernel.K(X)
+    
+    # Then add likelihood noise if necessary
+    if model1.name == 'gpr' and model2.name == 'gpr':
+        cov1 += tf.linalg.diag(tf.repeat(model1.likelihood.variance, X.shape[0]))
+        cov2 += tf.linalg.diag(tf.repeat(model2.likelihood.variance, X.shape[0]))
+    
+    # Calculate average sigma
+    cov_all = (cov1 + cov2)/2.
+    
+    # After that calculate closed form of Bhattacharyya distance
+    dist_b = ((1/8.) * tf.transpose(mu1 - mu2)@tf.linalg.inv(cov_all)@(mu1 - mu2) + 
+              0.5 * np.log(tf.linalg.det(cov_all)/np.sqrt(tf.linalg.det(cov1)*tf.linalg.det(cov2))))
+    
+    return dist_b.numpy()

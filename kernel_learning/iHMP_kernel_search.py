@@ -192,7 +192,7 @@ n_met = len(missing_mbx_list)
 with tqdm_joblib(tqdm(desc="Binomial kernel search", total=n_met)) as progress_bar:
     binomial_models = Parallel(n_jobs=40, verbose=1)(delayed(full_kernel_search)(
             X=df[feat_names],
-            Y=df[[m]].notna().astype(int),
+            Y=df[[m]].notna().astype(float),
             kern_list=kernel_list,
             cat_vars=[0, 1, 2],
             max_depth=5,
