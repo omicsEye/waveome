@@ -1124,19 +1124,18 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
             k = gpflow.kernels.Sum(kernels = kerns)
         else:
             k = kerns[0]
-        
-        # Reset parameters
-        for p in k.trainable_parameters:
-            p.assign(f64(1))
             
         # Check to see if this model has already been fit previously
         if check_if_model_exists(k_info, list(res_dict.keys())):
             continue
-            
-        m, bic = kernel_test(best_model.data[0], best_model.data[1], k, 
-                             likelihood=lik, 
-                             verbose=verbose,
-                             num_restarts=num_restarts)
+        else:
+            # Reset parameters
+            for p in k.trainable_parameters:
+                p.assign(f64(1))
+            m, bic = kernel_test(best_model.data[0], best_model.data[1], k, 
+                                 likelihood=lik, 
+                                 verbose=verbose,
+                                 num_restarts=num_restarts)
         # If better model found then save it
         if bic < best_bic:
             if verbose:
@@ -1191,8 +1190,6 @@ def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model,
                 other_kernel = [other_kernel]
             kerns = list(np.array(other_kernel + [prod_kernel.kernels[i]])[order_set])
             k = gpflow.kernels.Sum(kernels=kerns)
-            for p in k.trainable_parameters:
-                p.assign(f64(1))
         
         if verbose: print(f"Model about to be fit: {k_info}")
         # Check to see if kernel has already been tested
@@ -1200,7 +1197,13 @@ def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model,
             if verbose:
                 print(f"{k_info} has already been fit. Skipping!")
             continue
+            
         else:
+            
+            # Reset kernel parameters
+            for p in k.trainable_parameters:
+                p.assign(f64(1))
+            
             # Test kernel if appropriate
             m, bic = kernel_test(X=best_model.data[0], 
                                  Y=best_model.data[1], 
@@ -2085,6 +2088,15 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                         X=x_new)
                     mean = mean.numpy().flatten()
                     var = var.numpy().flatten()
+                    
+                    # Deal with transforming output if needed
+                    if m_copy.likelihood.name != 'gaussian':
+                        mean = m_copy.likelihood.invlink(mean).numpy().flatten()
+                        upper_ci = m_copy.likelihood.invlink(mean + 1.96 * np.sqrt(var))
+                        lower_ci = m_copy.likelihood.invlink(mean - 1.96 * np.sqrt(var))
+                    else:
+                        upper_ci = mean + 1.96 * np.sqrt(var)
+                        lower_ci = mean - 1.96 * np.sqrt(var)
 
                     # Decide if we should annotate each category or not
                     if num_unique_cat < 5:
@@ -2096,8 +2108,8 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                         )
                         ax[plot_idx].fill_between(
                             x_new[:, time_idx],
-                            mean - 1.96 * np.sqrt(var),
-                            mean + 1.96 * np.sqrt(var),
+                            lower_ci, # mean - 1.96 * np.sqrt(var),
+                            upper_ci, # mean + 1.96 * np.sqrt(var),
                             color='lightgreen',
                             alpha=0.5,
                         )
@@ -2141,6 +2153,15 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                 mean = mean.numpy().flatten()
                 var = var.numpy().flatten()
                 
+                # Deal with transforming output if needed
+                if m_copy.likelihood.name != 'gaussian':
+                    mean = m_copy.likelihood.invlink(mean).numpy().flatten()
+                    upper_ci = m_copy.likelihood.invlink(mean + 1.96 * np.sqrt(var))
+                    lower_ci = m_copy.likelihood.invlink(mean - 1.96 * np.sqrt(var))
+                else:
+                    upper_ci = mean + 1.96 * np.sqrt(var)
+                    lower_ci = mean - 1.96 * np.sqrt(var)
+                
                 ax[plot_idx].plot(
                     x_new[:, x_idxs[0]],
                     mean,
@@ -2149,8 +2170,8 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
                 )
                 ax[plot_idx].fill_between(
                     x_new[:, x_idxs[0]],
-                    mean - 1.96 * np.sqrt(var),
-                    mean + 1.96 * np.sqrt(var),
+                    lower_ci, # mean - 1.96 * np.sqrt(var),
+                    upper_ci, # mean + 1.96 * np.sqrt(var),
                     color='lightgreen',
                     alpha=0.5,
                 )
@@ -2198,6 +2219,16 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
             mean = mean.numpy().flatten()
             var = var.numpy().flatten()
             
+            # Deal with transforming output if needed
+            if m_copy.likelihood.name != 'gaussian':
+                mean = m_copy.likelihood.invlink(mean).numpy().flatten()
+                upper_ci = m_copy.likelihood.invlink(mean + 1.96 * np.sqrt(var))
+                lower_ci = m_copy.likelihood.invlink(mean - 1.96 * np.sqrt(var))
+                samps = m_copy.likelihood.invlink(samps)
+            else:
+                upper_ci = mean + 1.96 * np.sqrt(var)
+                lower_ci = mean - 1.96 * np.sqrt(var)
+            
             p = sns.lineplot(x=x_new[:, var_idx],
 #                  y=mean.numpy().flatten(),
              y=mean,
@@ -2207,8 +2238,8 @@ def pred_kernel_parts(m, k_names, time_idx, unit_idx, col_names, lik='gaussian')
 
             ax[plot_idx].fill_between(
                 x_new[:, var_idx],
-                mean - 1.96 * np.sqrt(var),
-                mean + 1.96 * np.sqrt(var),
+                lower_ci, # mean - 1.96 * np.sqrt(var),
+                upper_ci, # mean + 1.96 * np.sqrt(var),
                 color='lightgreen',
                 alpha=0.5,
             )
@@ -2655,9 +2686,9 @@ def individual_kernel_predictions(model, kernel_idx,
     if predict_y:
         sigma_22 += tf.linalg.diag(tf.repeat(model.likelihood.variance, model.data[0].shape[0]))
         sigma_11 += tf.linalg.diag(tf.repeat(model.likelihood.variance, X.shape[0]))
-    else:
-        sigma_22 += tf.linalg.diag(tf.repeat(f64(1e-4), model.data[0].shape[0]))
-        sigma_11 += tf.linalg.diag(tf.repeat(f64(1e-4), X.shape[0]))
+    else: # Was adding 1e-4 noise, might not need that though
+        sigma_22 += tf.linalg.diag(tf.repeat(f64(1e-6), model.data[0].shape[0]))
+        sigma_11 += tf.linalg.diag(tf.repeat(f64(1e-6), X.shape[0]))
 
     # Now put all of the pieces together into one matrix
     sigma_full = tf.concat([tf.concat(values=[sigma_11, sigma_12], axis=1), 
@@ -2665,8 +2696,12 @@ def individual_kernel_predictions(model, kernel_idx,
                            axis=0)
     
     # Invert sigma_22
-    inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
-    
+    # Try LU decomposition first
+    try:
+        inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
+    except:
+        inv_sigma_22 = tfp.math.linalg.pinv(sigma_22)
+        
     # Now calculate mean and variance
     pred_mu = (np.zeros((X.shape[0], 1)) + 
                tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
