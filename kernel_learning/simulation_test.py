@@ -183,9 +183,9 @@ if __name__ == "__main__":
 
     # Set options
     np.random.seed(9102+task_id)
-    rates = [3, 6, 12, 24] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
-    units = [30, 60, 120, 240]
-    epsilons = [0, 0.3, 3.0, 30] # SNR [\inf, 10, 1, 0.1]
+    rates = [5, 10, 15, 20] #[3, 6, 12, 24] #[5, 10, 20, 50] # [3, 9] #[2, 4, 12]
+    units = [10, 40, 70, 100] #[30, 60, 120, 240]
+    epsilons = [0.3, 3.0, 30.0] #[0, 0.3, 3.0, 30] # SNR [\inf, 10, 1, 0.1]
     iters = 1
     sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
     np.random.shuffle(sim_settings)
@@ -237,6 +237,6 @@ if __name__ == "__main__":
     print("----%.2f seconds----"%(end_time - start_time))
 
     # Save output
-    f = open("sim_results_part"+str(task_id)+".pkl", "wb")
+    f = open("sim_results_small_part"+str(task_id)+".pkl", "wb")
     pickle.dump(sim_results, f)
     f.close()

@@ -2754,7 +2754,7 @@ def calc_bhattacharyya_dist(model1, model2, X):
     cov_all = (cov1 + cov2)/2.
     
     # After that calculate closed form of Bhattacharyya distance
-    dist_b = ((1/8.) * tf.transpose(mu1 - mu2)@tf.linalg.inv(cov_all)@(mu1 - mu2) + 
-              0.5 * np.log(tf.linalg.det(cov_all)/np.sqrt(tf.linalg.det(cov1)*tf.linalg.det(cov2))))
+    dist_b = (#(1/8.) * tf.transpose(mu1 - mu2)@tf.linalg.inv(cov_all)@(mu1 - mu2) + 
+              0.5 * np.log(tf.linalg.det(cov_all)/(np.sqrt(tf.linalg.det(cov1)*tf.linalg.det(cov2)) + 1e-6)))
     
-    return dist_b.numpy()
+    return dist_b
