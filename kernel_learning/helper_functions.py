@@ -149,7 +149,7 @@ class GPKernelSearch():
         kernel_array[kernel_idxs == 1] = [x for y in var_percent for x in y]
         
         # Only keep outcomes that have variance explained or more
-        kernel_array_filtered = kernel_array[kernel_array.sum(axis=1) >= var_cutoff, :]
+        kernel_array_filtered = kernel_array[kernel_array.sum(axis=1) > var_cutoff, :]
         
         # Check if this results in any kernels
         if len(kernel_array_filtered) == 0:
@@ -169,18 +169,18 @@ class GPKernelSearch():
         
         
         # Only keep the outcome labels that meet the criteria
-        out_index = np.array(self.out_names)[kernel_array.sum(axis=1) >= var_cutoff]
+        out_index = np.array(self.out_names)[kernel_array.sum(axis=1) > var_cutoff]
         
         # See if we only want to filter to specific features
         if feat != None:
             feat_flag = [feat in x for x in distinct_kernel_names]
             distinct_kernel_names = np.array(distinct_kernel_names)[feat_flag]
             kernel_array_filtered2 = kernel_array_filtered2[:, feat_flag]
-            out_index = out_index[kernel_array_filtered2.sum(axis=1) >= var_cutoff]
+            out_index = out_index[kernel_array_filtered2.sum(axis=1) > var_cutoff]
             kernel_array_filtered2 = kernel_array_filtered2[
-                kernel_array_filtered2.sum(axis=1) >= var_cutoff, :
+                kernel_array_filtered2.sum(axis=1) > var_cutoff, :
             ]
-        
+                
         clm = sns.clustermap(
             pd.DataFrame(kernel_array_filtered2,
                          index=out_index,
@@ -1072,6 +1072,9 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
         )
     # print(f'Best model: {best_model_name}')
     
+    # Copy so as not to overwrite best current model
+    best_model = gpflow.utilities.deepcopy(best_model)
+    
     # Split kernel name to sum pieces 
     kernel_names = re.split("\+", best_model_name)
     # print(kernel_names)
@@ -1119,6 +1122,9 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
                 verbose=verbose,
                 num_restarts=num_restarts
             )
+            
+            # Skip the rest of the iteration if product was involved
+            continue
             
         if len(kerns) > 1:
             k = gpflow.kernels.Sum(kernels = kerns)
@@ -1217,7 +1223,8 @@ def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model,
             
         # Save if better kernel
         if bic < best_bic:
-            print(f"Found better kernel! {k_info}")
+            if verbose:
+                print(f"Found better kernel! {k_info}")
             out_dict[k_info] = {
                 'kernel': m.kernel,
                 'model': m,
