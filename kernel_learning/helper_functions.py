@@ -2707,7 +2707,7 @@ def individual_kernel_predictions(model, kernel_idx,
     try:
         inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
     except:
-        inv_sigma_22 = tfp.math.linalg.pinv(sigma_22)
+        inv_sigma_22 = tf.linalg.pinv(sigma_22)
         
     # Now calculate mean and variance
     pred_mu = (np.zeros((X.shape[0], 1)) + 
