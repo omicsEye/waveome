@@ -160,10 +160,10 @@ missing_mbx_list = mbx_list[(missing_df>=0.1).values].reset_index(drop=True)
 
 # Specify kernels to search over for continuous features
 kernel_list = [Lin(),
+               Poly(),
                gpflow.kernels.SquaredExponential(),
                gpflow.kernels.Matern12(),
-               gpflow.kernels.Polynomial(),
-               # gpflow.kernels.ArcCosine(),
+               gpflow.kernels.ArcCosine(),
                gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())]
 
 # Number of metabolites

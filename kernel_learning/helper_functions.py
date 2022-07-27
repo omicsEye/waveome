@@ -273,6 +273,38 @@ class Lin(gpflow.kernels.Kernel):
         if len(X.shape) > 1 and X.shape[1] > 1:
             X = X[:, self.active_dims[0]]
         return self.variance * tf.cast(tf.reshape(tf.square(X), (-1,)), tf.float64)
+
+class Poly(gpflow.kernels.Kernel):
+    def __init__(self, active_dims=[0], variance=1.0, offset=1.0, degree=3): # , center=0.0):
+        super().__init__(active_dims=active_dims)
+        self.variance = gpflow.Parameter(variance, transform=positive())
+        self.offset = gpflow.Parameter(offset, transform=positive())
+        # self.degree = gpflow.Parameter(degree, transform=positive(), prior=tfp.distributions.Uniform(0.0, 3.0))
+        self.degree = degree
+        self.active_index = active_dims[0]
+        
+    def K(self, X, X2 = None) -> tf.Tensor:
+        if X.shape[1] > 1:
+            X = tf.cast(tf.reshape(X[:, self.active_dims[0]], (-1, 1)), tf.float64)
+        if X2 is None:
+            # return tf.matmul((X-self.center) * self.variance, (X-self.center), transpose_b=True)
+            return ((self.variance * 
+                    tf.matmul(X, X, transpose_b=True) + 
+                    self.offset) ** self.degree)
+        else:
+            if X2.shape[1] > 1:
+                X2 = tf.cast(tf.reshape(X2[:, self.active_dims[0]], (-1, 1)), tf.float64)
+            return ((self.variance * 
+                    tf.matmul(X, X2, transpose_b=True) + 
+                    self.offset) ** self.degree)
+            # return tf.tensordot(X * self.variance, X2, [[-1], [-1]])
+
+    def K_diag(self, X) -> tf.Tensor:
+        if len(X.shape) > 1 and X.shape[1] > 1:
+            X = X[:, self.active_dims[0]]
+        return ((self.variance * 
+                tf.cast(tf.reshape(tf.square(X), (-1,)), tf.float64) +
+                self.offset) ** self.degree)
         
 class Categorical(gpflow.kernels.Kernel):
     def __init__(self, active_dims=[0], variance=1.0):
@@ -529,7 +561,7 @@ def adam_opt_params(m, iterations=500, eps=0.1):
 
 def kernel_test(X, Y, k, num_restarts=5, random_init=True, 
                 verbose=False, likelihood='gaussian',
-                use_priors=True,
+                use_priors=True, keep_data=False,
                 X_holdout=None, Y_holdout=None, split=False):
     """
     This function evaluates a particular kernel selection on a set of data. 
@@ -682,7 +714,8 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
         print(f'Model: {print_kernel_names(k)}, BIC: {bic}')
         
     # Delete data from model object
-    best_model.data = None
+    if not keep_data:
+        best_model.data = None
     
     # Return fitted GP model and bic
     # Predictions
@@ -1068,7 +1101,7 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
     
     # Get best model from current depth
     best_bic, best_model_name, best_model = min(
-        [(i['bic'], k, i['model']) for k, i in res_dict.items()]
+        [(i['bic'], k, i['model']) for k, i in res_dict.items() if i['depth'] == depth]
         )
     # print(f'Best model: {best_model_name}')
     
@@ -1419,6 +1452,11 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
                     if v['depth'] == d and k != model_name_selected:
                         v['try_next'] = False
                         #search_dict.pop(k)
+        
+        # Add data back in for the best model
+        best_model_name = min([(i['bic'], i['depth'], k) for k, i in search_dict.items() if i['depth'] == d])[2]
+        search_dict[best_model_name]['model'].data = (tf.convert_to_tensor(X), 
+                                                      tf.convert_to_tensor(Y))
         
         # Prune best model
         if prune:
@@ -2694,8 +2732,8 @@ def individual_kernel_predictions(model, kernel_idx,
         sigma_22 += tf.linalg.diag(tf.repeat(model.likelihood.variance, model.data[0].shape[0]))
         sigma_11 += tf.linalg.diag(tf.repeat(model.likelihood.variance, X.shape[0]))
     else: # Was adding 1e-4 noise, might not need that though
-        sigma_22 += tf.linalg.diag(tf.repeat(f64(1e-6), model.data[0].shape[0]))
-        sigma_11 += tf.linalg.diag(tf.repeat(f64(1e-6), X.shape[0]))
+        sigma_22 += tf.linalg.diag(tf.repeat(f64(1e-3), model.data[0].shape[0]))
+        sigma_11 += tf.linalg.diag(tf.repeat(f64(1e-3), X.shape[0]))
 
     # Now put all of the pieces together into one matrix
     sigma_full = tf.concat([tf.concat(values=[sigma_11, sigma_12], axis=1), 
@@ -2762,6 +2800,6 @@ def calc_bhattacharyya_dist(model1, model2, X):
     
     # After that calculate closed form of Bhattacharyya distance
     dist_b = (#(1/8.) * tf.transpose(mu1 - mu2)@tf.linalg.inv(cov_all)@(mu1 - mu2) + 
-              0.5 * np.log(tf.linalg.det(cov_all)/(np.sqrt(tf.linalg.det(cov1)*tf.linalg.det(cov2)) + 1e-6)))
+              0.5 * np.log(tf.linalg.det(cov_all)/(np.sqrt(tf.linalg.det(cov1)*tf.linalg.det(cov2)))))
     
     return dist_b

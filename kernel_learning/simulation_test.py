@@ -164,10 +164,10 @@ if __name__ == "__main__":
     # Fourth kernel is nonlinear random treatment effect over time +
     # nonlinear individual effect over time
     k4 = (Categorical(active_dims=[1], variance=1.5) *
-          gpflow.kernels.Polynomial(degree=3,
-                                    offset=0.1,
-                                    variance=1.0,
-                                    active_dims=[2]) +
+          Poly(degree=3,
+               offset=0.1,
+               variance=1.0,
+               active_dims=[2]) +
           Categorical(active_dims=[0], variance=1.5) *
           gpflow.kernels.SquaredExponential(variance=1.0,
                                             lengthscales=0.5,
@@ -192,9 +192,10 @@ if __name__ == "__main__":
     #print(sim_settings)
     kernel_list = [
         Lin(),
+        Poly(),
         gpflow.kernels.SquaredExponential(),
         gpflow.kernels.Matern12(),
-        gpflow.kernels.Polynomial(),
+        gpflow.kernels.ArcCosine(),
         gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())
     ]
 
