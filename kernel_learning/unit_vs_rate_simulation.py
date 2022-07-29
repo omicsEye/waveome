@@ -172,8 +172,11 @@ if __name__ == "__main__":
     units = [2**x for x in range(10)]
     rates = units[::-1]
     epsilons = [3.0]
-    iters = 1
-    sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
+    iters = 4
+    nested_settings = [[(r, e, u, i) for i in range(iters)] 
+                       for r, e, u in zip(rates, epsilons, units)]
+    sim_settings = [item for sublist in nested_settings for item in sublist]
+    # sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
     np.random.shuffle(sim_settings)
     #print(sim_settings)
     kernel_list = [
