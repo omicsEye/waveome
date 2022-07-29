@@ -205,6 +205,6 @@ if __name__ == "__main__":
     print("----%.2f seconds----"%(end_time - start_time))
 
     # Save output
-    f = open("sim_results_unit_vs_rate"+str(task_id)+".pkl", "wb")
+    f = open("./unit_vs_rate_output/sim_results_unit_vs_rate"+str(task_id)+".pkl", "wb")
     pickle.dump(sim_results, f)
     f.close()
