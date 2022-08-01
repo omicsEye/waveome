@@ -1213,7 +1213,11 @@ def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model,
     for i in range(len(prod_kernel.kernels)):
         
         # Get new kernel name
-        new_piece = kernel_parts[i]
+        try:
+            new_piece = kernel_parts[i]
+        except IndexError:
+            print(f"IndexError with index {i} in kernel_parts {kernel_parts}")
+            return out_dict
         if verbose: print(f"New kernel piece being tested: {new_piece}")
         
         if other_name == "":

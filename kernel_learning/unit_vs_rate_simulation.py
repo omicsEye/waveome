@@ -74,7 +74,9 @@ def sim_data(rate=12, num_units=30, fixed_num=False,
     return df
 
 def run_simulation(rate, epsilon, units, iters, kernel_list):
-        
+    
+    print(rate, epsilon, units, iters)
+    
     # Prep output dataset
     sim_out = pd.DataFrame()
 
@@ -178,7 +180,7 @@ if __name__ == "__main__":
     sim_settings = [item for sublist in nested_settings for item in sublist]
     # sim_settings = list(itertools.product(*[rates, epsilons, units, list(range(0, iters))]))
     np.random.shuffle(sim_settings)
-    print(sim_settings)
+    # print(sim_settings)
     kernel_list = [
         Lin(),
         Poly(),
