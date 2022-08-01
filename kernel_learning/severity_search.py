@@ -153,7 +153,7 @@ kernel_list = [gpflow.kernels.SquaredExponential(),
 start_time = time.time()
 
 severity_model = full_kernel_search(
-    X=df_transform.drop(['diagnosis', 'severity', 'days_from_max_severity'], axis=1),
+    X=df_transform.drop(['severity', 'days_from_max_severity'], axis=1),
     Y=df.severity,
     kern_list=kernel_list,
     cat_vars=[0, 1, 2, 3],
