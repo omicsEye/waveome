@@ -4,6 +4,7 @@ import numpy as np
 import gpflow 
 import pickle
 from helper_functions import *
+import time
 
 # Options
 import os
@@ -19,8 +20,8 @@ mbx = pd.read_csv('../examples/iHMP/data/iHMP_labeled_metabolomics.csv')
 mbx_list = mbx.Metabolite
 # Reshape metabolites for merge
 mbx = mbx.iloc[:,7:].transpose().rename(columns = mbx_list)
-# Only keep metabolites that have at least 20% non-missing values
-mbx_list = mbx_list[(mbx.notna().mean() >= 0.2).values]
+## Only keep metabolites that have at least 20% non-missing values
+# mbx_list = mbx_list[(mbx.notna().mean() >= 0.2).values]
 mbx = mbx[mbx_list]
 
 # Read in metadata for timing of samples
@@ -28,8 +29,7 @@ meta = pd.read_csv('../examples/iHMP/data/iHMP_metadata.csv')
 # Subset metadata to appropriate samples and columns of interest
 meta = meta[meta['External ID'].isin(mbx.index)][['External ID', 'Participant ID', 
                                                   'date_of_receipt', 'diagnosis',
-                                                  'hbi', 'sccai', 
-                                                  'race', 'sex',
+                                                  'hbi', 'sccai', 'race', 'sex',
                                                   #'Age at diagnosis', 'consent_age',
                                                   #'site_name'
                                                  ]]
@@ -116,11 +116,12 @@ df = df.drop(columns=['hbi', 'sccai'])
 # Drop UC individuals for now
 df = df.query("diagnosis != 'UC'")
 df = df.query("diagnosis == 'CD'")
+df = df.drop(columns=['diagnosis'])
 
 # Store individual information look up vectors
 # Get numerics for each categorical value as well as the lookup index
 df['id'], id_map = pd.factorize(df['id'])
-df['diagnosis'], diagnosis_map = pd.factorize(df['diagnosis'])
+# df['diagnosis'], diagnosis_map = pd.factorize(df['diagnosis'])
 df['race'], race_map = pd.factorize(df['race'])
 df['sex'], sex_map = pd.factorize(df['sex'])
 # n_id = df.id.nunique()
@@ -135,26 +136,27 @@ df_original = df.copy()
 # Standardize severity and days for convergence properties
 df.days_from_start = (df.days_from_start - df.days_from_start.mean())/df.days_from_start.std()
 df.days_from_max_severity = (df.days_from_max_severity - df.days_from_max_severity.mean())/df.days_from_max_severity.std()
-df.severity = (df.severity - df.severity.mean())/df.severity.std()
+# df.severity = (df.severity - df.severity.mean())/df.severity.std()
 
 # Fill in zeros and transform input metabolite data
 df_transform = df_original.copy()
-df_transform.iloc[:, 5:-2] = np.log(df.iloc[:, 5:-2].fillna(0) + 1)
+df_transform.iloc[:, 5:-2] = (np.log(df.iloc[:, 5:-2].fillna(0) + 1) - np.log(df.iloc[:, 5:-2].fillna(0) + 1).mean())/np.log(df.iloc[:, 5:-2].fillna(0) + 1).std()
 df_transform['days_from_start'] = df['days_from_start']
 
 kernel_list = [gpflow.kernels.SquaredExponential(),
                gpflow.kernels.Matern12(),
-               gpflow.kernels.Linear(),
-               gpflow.kernels.Polynomial(),
-               #gpflow.kernels.ArcCosine(),
+               Lin(),
+               Poly(),
+               gpflow.kernels.ArcCosine(),
                gpflow.kernels.Periodic(base_kernel=gpflow.kernels.SquaredExponential())]
 
+start_time = time.time()
+
 severity_model = full_kernel_search(
-    #X=df_transform.drop(['diagnosis', 'severity', 'days_from_max_severity'], axis=1),
-    X=df_transform[['C38:3 PC', 'heptanoate']],
-    Y=df_transform.severity,
+    X=df_transform.drop(['diagnosis', 'severity', 'days_from_max_severity'], axis=1),
+    Y=df.severity,
     kern_list=kernel_list,
-    cat_vars=[], #[0, 1, 2, 3],
+    cat_vars=[0, 1, 2, 3],
     max_depth=5,
     early_stopping=True,
     prune=True,
@@ -165,7 +167,9 @@ severity_model = full_kernel_search(
     random_seed=9102
 )
 
-import pickle 
+end_time = time.time()
+print("----%.2f seconds----"%(end_time - start_time))
+
 # Save output
 f = open("severity_model.pkl","wb")
 pickle.dump(severity_model, f)
