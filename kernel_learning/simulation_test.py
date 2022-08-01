@@ -237,7 +237,9 @@ if __name__ == "__main__":
     end_time = time.time()
     print("----%.2f seconds----"%(end_time - start_time))
 
-    # Save output
-    f = open("sim_results_small_part"+str(task_id)+".pkl", "wb")
+    # Save output - create folder if needed
+    if not os.path.exists('sim_results'):
+        os.makedirs('sim_results')
+    f = open("./sim_results/sim_results_small_part"+str(task_id)+".pkl", "wb")
     pickle.dump(sim_results, f)
     f.close()
