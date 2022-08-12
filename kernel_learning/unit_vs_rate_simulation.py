@@ -170,7 +170,7 @@ if __name__ == "__main__":
 
     # Set options
     np.random.seed(9102+task_id)
-    # Total number of observations 2^9 = 512
+    # Total number of observations 2^10 = 1024
     units = [2**x for x in range(11)]
     rates = units[::-1]
     epsilons = 11*[3.0]
