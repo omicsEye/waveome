@@ -13,3 +13,8 @@ To install the package it is suggested that you create a new conda environment
 `conda activate waveome`   
 and then pip install _waveome_ using    
 `pip install git+https://github.com/omicsEye/waveome.git`.
+
+Warning: If you are using an M1 Mac then before `pip install` you should run `conda install -c conda-forge grpcio`!
+
+## Jupyter Notebook
+If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new waveome environment. This can be done with `conda install ipykernel` and then `python -m ipykernel install --user --name=waveome`.
