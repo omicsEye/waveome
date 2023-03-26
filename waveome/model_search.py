@@ -62,13 +62,13 @@ class GPKernelSearch:
         float_match = X.columns.isin(
             X.columns.isin(X.select_dtypes(include=[float]).columns)
         )
-        if min(float_match) is False:
-            raise TypeError(f"X columns must all be float type. Cast {X.columns[~float_match]} to float")
+        if not min(float_match):
+            raise TypeError(f"X columns must all be float type. Cast {X.columns[~float_match]} to float. Perhaps use pandas.factorize() and pandas.DataFrame.astype().")
         float_match = Y.columns.isin(
             Y.columns.isin(Y.select_dtypes(include=[float]).columns)
         )
-        if min(float_match) is False:
-            raise TypeError(f"Y columns must all be float type. Cast {Y.columns[~float_match]} to float")
+        if not min(float_match):
+            raise TypeError(f"Y columns must all be float type. Cast {Y.columns[~float_match]} to float. Perhaps use pandas.factorize() and pandas.DataFrame.astype().")
         
         # TODO: Standardize continuous columns
         
