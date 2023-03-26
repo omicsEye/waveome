@@ -59,6 +59,16 @@ class GPKernelSearch:
         # TODO: Transform any categorical columns to integers
         
         # TODO: Make sure all resulting columns are the same type
+        float_match = X.columns.isin(
+            X.columns.isin(X.select_dtypes(include=[float]).columns)
+        )
+        if min(float_match) is False:
+            raise TypeError(f"X columns must all be float type. Cast {X.columns[~float_match]} to float")
+        float_match = Y.columns.isin(
+            Y.columns.isin(Y.select_dtypes(include=[float]).columns)
+        )
+        if min(float_match) is False:
+            raise TypeError(f"Y columns must all be float type. Cast {Y.columns[~float_match]} to float")
         
         # TODO: Standardize continuous columns
         
@@ -2134,7 +2144,7 @@ def pred_kernel_parts(m, x_idx, unit_idx, col_names,
     if type(kernel_list) != list:
         k_names = kernel_list
     else:
-        k_names = '+'.join()
+        k_names = '+'.join(kernel_list)
     
     # Set bounds on x-axis if not specified
     x_idx_min = X[:, x_idx].min() if x_idx_min == None else x_idx_min
