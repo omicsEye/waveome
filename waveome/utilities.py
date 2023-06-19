@@ -350,7 +350,9 @@ def individual_kernel_predictions(
         X=None, 
         white_noise_amt=1e-6,
         predict_y=False,
-        num_samples=10
+        num_samples=100,
+        model_data=None,
+        latent=False
     ):
     """Predict contribution from individual kernel component.
     
@@ -375,22 +377,45 @@ def individual_kernel_predictions(
     ----------
     
     """
-    
-    # conditional = gpflow.conditionals.base_conditional
-    # f_mean_zero, f_var = conditional(
-    #     kmn, kmm_plus_s, knn, err, full_cov=full_cov, white=False
-    # ) 
+
+    # Set model data if not supplied
+    if hasattr(model, "data") is False:
+        if latent is True:
+            model_data = (
+                model.inducing_variable.inducing_variable_list[kernel_idx].Z.numpy(),
+                model.q_mu.numpy()[:, kernel_idx].reshape(-1, 1)
+            )
+        else:
+            assert model_data is not None, "Need to supply model_data argument for this model type."
+    else:
+        model_data = model.data
     
     # Build each part of the covariance matrix
-    if model.kernel.name == "sum":
+    if latent is True:
+        sigma_21 = tf.cast(model.kernel.latent_kernels[kernel_idx].K(X=model_data[0], X2=X), tf.float64)
+        sigma_11 = tf.cast(model.kernel.latent_kernels[kernel_idx].K(X=X), tf.float64)
+    elif model.kernel.name == "sum":
         sigma_21 = tf.cast(model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X), tf.float64)
         sigma_11 = tf.cast(model.kernel.kernels[kernel_idx].K(X=X), tf.float64)
     else:
         sigma_21 = tf.cast(model.kernel.K(X=model.data[0], X2=X), tf.float64)
         sigma_11 = tf.cast(model.kernel.K(X=X), tf.float64)
         
-    sigma_22 = tf.cast(model.kernel.K(X=model.data[0]),tf.float64)
+    if latent is True:
+        sigma_22 = tf.cast(model.kernel.latent_kernels[kernel_idx](X=model_data[0]),tf.float64)
+    else:
+        sigma_22 = tf.cast(model.kernel.K(X=model_data[0]),tf.float64)
     sigma_12 = tf.transpose(sigma_21)
+
+    # Figure out white noise amount to add to diag if none given
+    if white_noise_amt is None:
+        # Get min eigenvalue to make sure we can invert the matrix
+            min_ev = np.min(np.linalg.eigvalsh(sigma_22))
+            if min_ev < 0:
+                white_noise_amt = abs(min_ev)
+            else:
+                white_noise_amt = 0
+            # white_noise_amt = np.tril(sigma_11, k=-1).max()
         
     # Add likelihood noise if requested - otherwise small constant for invertibility
     if predict_y:
@@ -398,7 +423,7 @@ def individual_kernel_predictions(
         sigma_11 += tf.linalg.diag(tf.repeat(model.likelihood.variance, X.shape[0]))
     else: # Was adding 1e-4 noise, might not need that though 
         sigma_22 += tf.linalg.diag(tf.repeat(f64(white_noise_amt), model.data[0].shape[0]))
-        sigma_11 += tf.linalg.diag(tf.repeat(f64(white_noise_amt), X.shape[0]))
+        # sigma_11 += tf.linalg.diag(tf.repeat(f64(white_noise_amt), X.shape[0]))
 
     # Now put all of the pieces together into one matrix
     sigma_full = tf.concat([tf.concat(values=[sigma_11, sigma_12], axis=1), 
@@ -414,10 +439,21 @@ def individual_kernel_predictions(
         inv_sigma_22 = tf.linalg.pinv(sigma_22)
         
     # Now calculate mean and variance
-    pred_mu = (np.zeros((X.shape[0], 1)) + 
-               tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
-                                     b=inv_sigma_22),
-                         b=(model.data[1] - np.zeros((model.data[0].shape[0], 1)))))
+    if latent is True:
+        pred_mu = (np.zeros((X.shape[0], 1)) + 
+                tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
+                                        b=inv_sigma_22),
+                          b=(model.q_mu.numpy()[:, kernel_idx].reshape(-1, 1) 
+                             - np.zeros((model_data[0].shape[0], 1)))))
+    else:
+        pred_mu = (np.zeros((X.shape[0], 1)) + 
+                tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
+                                        b=inv_sigma_22),
+                            b=(model_data[1] - np.zeros((model_data[0].shape[0], 1)))))
+    # pred_mu = (np.zeros((X.shape[0], 1)) + 
+    #            tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
+    #                                  b=inv_sigma_22),
+    #                      b=(model.data[1] - np.zeros((model.data[0].shape[0], 1)))))
 
     # Covariance function
     pred_cov = (sigma_11 - tf.matmul(a=sigma_12,
@@ -441,3 +477,27 @@ def individual_kernel_predictions(
     sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
     
     return pred_mu, pred_var, sample_fns, pred_cov
+
+def freeze_variance_parameters(kernel):
+    if hasattr(kernel, "variance"):
+        gpflow.utilities.set_trainable(kernel.variance, False)
+        return None
+    elif kernel.name in ["sum", "linear_coregionalization"]:
+        for k in kernel.kernels:
+            # print(f"working on kernel {k}")
+            freeze_variance_parameters(k)
+    elif kernel.name == "periodic":
+        freeze_variance_parameters(kernel.base_kernel)
+
+def gp_likelihood_crosswalk(likelihood_str):
+    if likelihood_str == "gaussian":
+        return gpflow.likelihoods.Gaussian()
+    elif likelihood_str == "poisson":
+        return gpflow.likelihoods.Poisson()
+    elif likelihood_str in ["binomial", "bernoulli"]:
+        return gpflow.likelihoods.Bernoulli()
+    elif likelihood_str == "gamma":
+        return gpflow.likelihoods.Gamma()
+    else:
+        print("Not sure what likelihood requested. Can use 'gaussian', 'poisson', 'binomial', and 'gamma'.")
+        return None
