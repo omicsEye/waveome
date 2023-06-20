@@ -330,11 +330,11 @@ def kernel_test_reg(X, Y, k, num_restarts=5, random_init=True,
 
     for i in range(num_restarts):
         
-        # Check to see if it worthwhile to keep restarting
-        if better_model_seen is False and i > ceil((i+1)/2):
-            if verbose:
-                print(f'Tried {i+1} restarts and nothing better seen, stopping!')
-            break
+        # # Check to see if it worthwhile to keep restarting
+        # if better_model_seen is False and i > ceil((i+1)/2):
+        #     if verbose:
+        #         print(f'Tried {i+1} restarts and nothing better seen, stopping!')
+        #     break
         
         # Specify model
         if lasso:
@@ -376,19 +376,19 @@ def kernel_test_reg(X, Y, k, num_restarts=5, random_init=True,
                 base_variances=base_variances,
                 likelihood=gp_likelihood,
                 # num_inducing_points=kwargs["num_inducing_points"]
-                # inducing_variable=gpflow.inducing_variables.SeparateIndependentInducingVariables(
-                #     [gpflow.inducing_variables.InducingPoints(
-                #         # X_[:kwargs["num_inducing_points"],:]
-                #         X_[np.random.randint(low=0, high=X.shape[0], size=kwargs["num_inducing_points"]), :]
-                #         ) 
-                #         for X_ in [X.copy() for _ in range(num_latent)]
-                #     ]
-                # ),
-                inducing_variable=gpflow.inducing_variables.SharedIndependentInducingVariables(
-                    gpflow.inducing_variables.InducingPoints(
-                        X[np.random.randint(low=0, high=X.shape[0], size=kwargs["num_inducing_points"]), :].copy()
-                    )
+                inducing_variable=gpflow.inducing_variables.SeparateIndependentInducingVariables(
+                    [gpflow.inducing_variables.InducingPoints(
+                        # X_[:kwargs["num_inducing_points"],:]
+                        X_[np.random.randint(low=0, high=X.shape[0], size=kwargs["num_inducing_points"]), :]
+                        ) 
+                        for X_ in [X.copy() for _ in range(num_latent)]
+                    ]
                 ),
+                # inducing_variable=gpflow.inducing_variables.SharedIndependentInducingVariables(
+                #     gpflow.inducing_variables.InducingPoints(
+                #         X[np.random.randint(low=0, high=X.shape[0], size=kwargs["num_inducing_points"]), :].copy()
+                #     )
+                # ),
                 num_latent_gps=num_latent
             )
         elif likelihood == 'gaussian':
@@ -468,6 +468,15 @@ def kernel_test_reg(X, Y, k, num_restarts=5, random_init=True,
                         p.transform_fn(unconstrain_vals)
                     )
             
+            for p in m.likelihood.trainable_parameters:
+                if len(p.shape) <= 1:
+                    unconstrain_vals = np.random.normal(
+                        size=p.numpy().size
+                        ).reshape(p.numpy().shape)
+                    p.assign(
+                        p.transform_fn(unconstrain_vals)
+                    )
+            
             # m.q_mu = np.random.normal(size=m.q_mu.shape)
         
         # Set prior on W
@@ -494,7 +503,8 @@ def kernel_test_reg(X, Y, k, num_restarts=5, random_init=True,
 
             # Check if model converged
             if opt_res["success"] is False:
-                print("Warning: optimizer did not converge!")
+                if verbose:
+                    print("Warning: optimizer did not converge!")
 
         except Exception as e:
             if verbose:
@@ -577,7 +587,7 @@ def lam_search(kernel, X, Y,
                lam_list = None, num_lams=20, 
                gam_list = [0.], num_inducing_points=500,
                freeze_inducing = False, freeze_variances = False,
-               k_fold=10, max_iter=50000,
+               k_fold=5, max_iter=50000,
             #    strata = None, 
                unit_col = None,
                likelihood="gaussian",
@@ -687,7 +697,8 @@ def lam_search(kernel, X, Y,
             break
         
         for g, g_val in enumerate(gam_list):
-            print(f"lambda value = {l_val}, gamma value = {g_val}")
+            if verbose:
+                print(f"lambda value = {l_val}, gamma value = {g_val}")
 
             # Fit each fold in parallel
             if max_jobs == -1:
@@ -724,14 +735,16 @@ def lam_search(kernel, X, Y,
                     /np.sqrt(k_fold)
                 )
                 best_log_lik = np.mean(val_log_lik[l_val][g_val])
-                print(f"ll = {best_log_lik}, se = {best_se}")
+                if verbose:
+                    print(f"ll = {best_log_lik}, se = {best_se}")
                 
             # Check to see if we have passed the best options already
             if early_stopping:
                 if np.mean(val_log_lik[l_val][g_val]) < (best_log_lik - 1.96*best_se):
-                    print("Stopping early!")
-                    print(np.mean(val_log_lik[l_val][g_val]))
-                    print((best_log_lik - 1.96*best_se))
+                    if verbose:
+                        print("Stopping early!")
+                        print(np.mean(val_log_lik[l_val][g_val]))
+                        print((best_log_lik - 1.96*best_se))
                     stop_now = True
 
     # Prepare output dictionary

@@ -398,6 +398,15 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
                     p.assign(
                         p.transform_fn(unconstrain_vals)
                     )
+            
+            for p in m.likelihood.trainable_parameters:
+                if len(p.shape) <= 1:
+                    unconstrain_vals = np.random.normal(
+                        size=p.numpy().size
+                        ).reshape(p.numpy().shape)
+                    p.assign(
+                        p.transform_fn(unconstrain_vals)
+                    )
         
         # Optimization step for hyperparameters
         try:
