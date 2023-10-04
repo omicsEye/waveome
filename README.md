@@ -1,7 +1,11 @@
 # Waveome
 
+<!-- ![waveome logo](./figures/hex-waveome.png) -->
+<!-- <img src="./figures/hex-waveome.png" width="200" height="200"> -->
 
 ## Overview
+<img style="float: right;" width="200" height="200" src="./figures/hex-waveome.png">
+
 This repository houses code for the _Waveome_ package - an easy to use and powerful Python library that analyzes longitudinal data using Gaussian processes. 
 
 ## General Usage
