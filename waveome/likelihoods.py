@@ -30,6 +30,14 @@ class NegativeBinomial(ScalarLikelihood):
     def _conditional_variance(self, X: TensorType, F: TensorType) -> tf.Tensor:
         m = self.invlink(F) * self.scale
         return m + m ** 2 * self.alpha
+    
+    def return_p(self, F: TensorType) -> tf.Tensor:
+        m = self.invlink(F) * self.scale
+        r = 1 / self.alpha
+        return (r / (m + r))
+
+    def return_r(self) -> tf.Tensor:
+        return 1 / self.alpha
 
 
 def negative_binomial(m, Y, alpha):
@@ -45,6 +53,18 @@ def negative_binomial(m, Y, alpha):
         - k * tf.math.log(1 + m * alpha)
     )
 
+# def negative_binomial(m, Y, alpha):
+#     """
+#     P(X=k) = Gamma(r + k) / (k! Gamma(r)) * (r/(r+m))^r * (m/(r+m))^(k)
+#     """
+#     r = 1 / alpha
+#     return (
+#         tf.math.lgamma(r + Y)
+#         - tf.math.lgamma(Y + 1)
+#         - tf.math.lgamma(r)
+#         + r * tf.math.log(r / (r + m))
+#         + Y * tf.math.log(m / (r + m))
+#     )
 
 class ZeroInflatedNegativeBinomial(ScalarLikelihood):
     """
@@ -64,7 +84,7 @@ class ZeroInflatedNegativeBinomial(ScalarLikelihood):
         
         """
         m = self.invlink(F)
-        psi = 1.0 - (m / (self.km + m)) # estimete the zeros using Michaelis-Menten equation
+        psi = 1.0 - (m / (self.km + m)) # estimate the zeros using Michaelis-Menten equation
         comparison = tf.equal(Y, 0)
         nb_zero = -tf.math.log(1.0 + m * self.alpha) / self.alpha
         log_p_zero = tf.reduce_logsumexp(

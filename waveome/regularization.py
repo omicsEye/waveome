@@ -12,181 +12,20 @@ from gpflow.utilities import add_likelihood_noise_cov, set_trainable
 from gpflow.logdensities import multivariate_normal
 from gpflow.base import RegressionData
 from .kernels import Categorical
+from .model_fitting import kernel_test_reg
+from .model_types_DEPR import PGPR, SVPGPR
 from .utilities import (
     calc_bic,
     print_kernel_names,
+    find_variance_components,
     freeze_variance_parameters,
-    gp_likelihood_crosswalk
+    gp_likelihood_crosswalk,
+    f64
 )
 
-f64 = gpflow.utilities.to_default_float
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-class PGPR(gpflow.models.GPR):
-    def __init__(self, data, kernel, mean_function = None, 
-                 noise_variance = 1.0, lam = 1.0, 
-                 base_variances = None, gam = 1.0):
-        super().__init__(data, kernel, mean_function, noise_variance)
-        self.lam = lam
-        self.gam = gam        
-        
-        # Set base variances to ones if none given
-        if base_variances is None:
-            num_vars = len(find_variance_components(kernel, sum_reduce=False))
-            self.base_variances = np.ones(shape=num_vars)
-        else:
-            self.base_variances = base_variances
-
-    def set_lambda(self, new_lam):
-        self.lam = new_lam
-        
-    def set_gamma(self, new_gam):
-        self.gam = new_gam
-        
-    def log_marginal_likelihood(self, penalize=True) -> tf.Tensor:
-        """
-        Computes the log marginal likelihood.
-        .. math::
-            \log p(Y | \theta).
-        """
-        
-        X, Y = self.data
-        K = self.kernel(X)
-        ks = add_likelihood_noise_cov(K, self.likelihood, X)
-        L = tf.linalg.cholesky(ks)
-        m = self.mean_function(X)
-
-        # [R,] log-likelihoods for each independent dimension of Y
-        log_prob = multivariate_normal(Y, m, L)
-        pen_log_prob = (tf.reduce_mean(log_prob) -
-            tf.reduce_sum((len(X)) * self.lam *
-                          (1/(self.base_variances)**self.gam) * 
-                          find_variance_components(self.kernel, sum_reduce=False)))
-        # print("Original log prob:", tf.reduce_sum(log_prob))
-        # print("Penalized log prob:", pen_log_prob)
-        if penalize:
-            return pen_log_prob
-        else:
-            return log_prob
-        
-class SVPGPR(gpflow.models.SVGP):
-    def __init__(self, X, Y, kernel, 
-                 inducing_variable=None,
-                 likelihood=gpflow.likelihoods.Gaussian(),
-                 mean_function = None, num_inducing_points = 500,
-                 noise_variance = 1.0, lam = 1.0, 
-                 base_variances = None, gam = 1.0, 
-                 **kwargs):
-        
-        # Set inducing variables if needed
-        fix_inducing_points = False
-        if inducing_variable is None:
-            if num_inducing_points >= len(X):
-                fix_inducing_points = True
-                inducing_variable = gpflow.inducing_variables.InducingPoints(X)
-            else:
-                sample_points = np.random.choice(len(X), num_inducing_points)
-                inducing_variable = gpflow.inducing_variables.InducingPoints(X[sample_points, :])
-
-        super().__init__(
-            kernel=kernel, 
-            likelihood=likelihood, 
-            inducing_variable=inducing_variable, 
-            mean_function=mean_function,
-            **kwargs 
-        )
-        self.lam = lam
-        self.gam = gam        
-        self.data = (
-            tf.convert_to_tensor(X, dtype=tf.float64),
-            tf.convert_to_tensor(Y, dtype=tf.float64)
-        )
-
-        # Set inducing points
-        if fix_inducing_points is True:
-            gpflow.utilities.set_trainable(self.inducing_variable, False)
-        
-        # Set base variances to ones if none given
-        self.base_variances = base_variances
-        # if base_variances is None:
-        #     num_vars = len(find_variance_components(kernel, sum_reduce=False))
-        #     self.base_variances = np.ones(shape=num_vars)
-        # else:
-        #     self.base_variances = base_variances
-
-    def set_lambda(self, new_lam):
-        self.lam = new_lam
-        
-    def set_gamma(self, new_gam):
-        self.gam = new_gam
-    
-    def elbo(self, data: RegressionData) -> tf.Tensor:
-        """
-        This gives a variational bound (the evidence lower bound or ELBO) on
-        the log marginal likelihood of the model.
-        """
-        X, Y = data
-        kl = self.prior_kl()
-        f_mean, f_var = self.predict_f(X, full_cov=False, full_output_cov=False)
-        var_exp = self.likelihood.variational_expectations(X, f_mean, f_var, Y)
-        if self.num_data is not None:
-            num_data = tf.cast(self.num_data, kl.dtype)
-            minibatch_size = tf.cast(tf.shape(X)[0], kl.dtype)
-            scale = num_data / minibatch_size
-        else:
-            scale = tf.cast(1.0, kl.dtype)
-        
-        if self.base_variances is None:
-            pen_factor = (tf.reduce_sum((len(X)) * self.lam *
-                          find_variance_components(self.kernel, sum_reduce=False)))
-        else:
-            pen_factor = (tf.reduce_sum((len(X)) * self.lam *
-                          (1/(self.base_variances)**self.gam) * 
-                          find_variance_components(self.kernel, sum_reduce=False)))
-
-        return tf.reduce_sum(var_exp) * scale - kl - pen_factor
-    
-
-def find_variance_components(kern, sum_reduce=True, penalize_factor_prod=1):
-    """Retrieve the variance parameter of all kernel components recursively."""
-    # print(kern.name)
-    if kern.name == "sum":
-        var_list = tf.stack(
-            [find_variance_components(kern=x, sum_reduce=sum_reduce) for x in kern.kernels]
-        )
-        if sum_reduce:
-            return tf.reduce_sum(var_list)
-        else:
-            return var_list
-    elif kern.name == "product":
-        return penalize_factor_prod*tf.reduce_prod([find_variance_components(x, sum_reduce) for x in kern.kernels])
-    elif kern.name == "linear_coregionalization":
-
-        # Calculate the weighted kernel components for each output
-        # temp_weights = tf.matmul(
-        #     a=kern.W,
-        #     b=tf.reshape(
-        #         tf.convert_to_tensor(
-        #             [find_variance_components(x) for x in kern.kernels]
-        #         ),
-        #         shape=(-1, 1)
-        #     )
-        # )
-
-        temp_weights = kern.W
-
-        # return tf.matmul(a=temp_weights, b=temp_weights, transpose_a=True)
-        if sum_reduce:
-            return tf.reduce_sum(tf.abs(temp_weights))
-        else:
-            return tf.abs(temp_weights)
-    else:
-        if kern.name == "periodic":
-            return tf.convert_to_tensor(kern.base_kernel.variance)
-        else:
-            return tf.convert_to_tensor(kern.variance)
-
-def lasso_kernel_build(cat_vars = [], num_vars = [],
+def full_kernel_build(cat_vars = [], num_vars = [],
                        var_names = None,
                        second_order_numeric = False,
                        return_sum = False,
@@ -297,290 +136,40 @@ def parallel_fold_test(X, Y, k, lam, gam, base_variances,
         # mse = np.mean((Y[f_val] - y_hat)**2)
         # return temp_m, mse
     
-def kernel_test_reg(X, Y, k, num_restarts=5, random_init=True,
-                verbose=False, likelihood='gaussian',
-                lasso=False, lam=0, gam=0,
-                base_variances=None, max_iter=50000,
-                use_priors=True, keep_data=False,
-                X_holdout=None, Y_holdout=None, split=False,
-                freeze_inducing=False, freeze_variances=False,
-                random_seed=None,
-                **kwargs):
-    """
-    This function evaluates a particular kernel selection on a set of data.
 
-    Inputs:
-        X (array): design matrix
-        Y (array): output matrix
-        k (gpflow kernel): specified kernel
+def make_folds(X, unit_col, k_fold = 5, random_seed=None):
 
-    Outputs:
-        m (gpflow model): fitted GPflow model
-
-    """
-    
-    k = gpflow.utilities.deepcopy(k)
-    
-    # Randomize initial values for a number of restarts
+    # Set seed if desired
     if random_seed is not None:
         np.random.seed(random_seed)
-    best_loglik = -np.Inf
-    best_model = None
-    better_model_seen = False
-
-    for i in range(num_restarts):
         
-        # # Check to see if it worthwhile to keep restarting
-        # if better_model_seen is False and i > ceil((i+1)/2):
-        #     if verbose:
-        #         print(f'Tried {i+1} restarts and nothing better seen, stopping!')
-        #     break
-        
-        # Specify model
-        if lasso:
-
-            # Go from string to gpflow likelihood object
-            if type(likelihood) == str:
-                gp_likelihood = gp_likelihood_crosswalk(likelihood)
-            else:
-                gp_likelihood = likelihood
-
-            # m = PGPR(
-            #     data=(X, Y),
-            #     kernel=k,
-            #     lam=lam,
-            #     gam=gam,
-            #     base_variances=base_variances
-            # )
-
-            if "num_inducing_points" not in kwargs:
-                kwargs["num_inducing_points"] = 500
-            elif kwargs["num_inducing_points"] > X.shape[0]:
-                kwargs["num_inducing_points"] = X.shape[0]
-
-            # Break out the number of latent GPs
-            # print(k)
-            if hasattr(k, "W"):
-                # print(f"W shape = {k.W.shape}")
-                # print(f"Y shape = {Y.shape}")
-                num_latent = k.W.shape[1]
-            else:
-                num_latent = 1
-
-            m = SVPGPR(
-                X=X,
-                Y=Y,
-                kernel=k,
-                lam=lam,
-                gam=gam,
-                base_variances=base_variances,
-                likelihood=gp_likelihood,
-                # num_inducing_points=kwargs["num_inducing_points"]
-                inducing_variable=gpflow.inducing_variables.SeparateIndependentInducingVariables(
-                    [gpflow.inducing_variables.InducingPoints(
-                        # X_[:kwargs["num_inducing_points"],:]
-                        X_[np.random.randint(low=0, high=X.shape[0], size=kwargs["num_inducing_points"]), :]
-                        ) 
-                        for X_ in [X.copy() for _ in range(num_latent)]
-                    ]
-                ),
-                # inducing_variable=gpflow.inducing_variables.SharedIndependentInducingVariables(
-                #     gpflow.inducing_variables.InducingPoints(
-                #         X[np.random.randint(low=0, high=X.shape[0], size=kwargs["num_inducing_points"]), :].copy()
-                #     )
-                # ),
-                num_latent_gps=num_latent
-            )
-        elif likelihood == 'gaussian':
-            m = gpflow.models.GPR(
-                #             m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k)#+gpflow.kernels.Constant())#,
-            #mean_function=gpflow.mean_functions.Constant())#,
-        #                 likelihood=gpflow.likelihoods.Gaussian())
-        elif likelihood == 'exponential':
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,
-                # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Exponential())
-        elif likelihood == 'poisson':
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,
-                # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Poisson())
-        elif likelihood == 'gamma':
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,
-                # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Gamma())
-        elif likelihood == 'bernoulli':
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,#+gpflow.kernels.Constant(),
-                # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Bernoulli())
-        else:
-            print('Unknown likelihood requested.')
-
-        # Freeze requested model parameters from training
-        if freeze_inducing is True:
-            gpflow.utilities.set_trainable(m.inducing_variable.inducing_variables, False)
-
-        if freeze_variances is True:
-            freeze_variance_parameters(m.kernel)
-
-        # Set current model to best
-        if best_model is None:
-            best_model = m
-        
-        # Uncomment to view base model being optimized
-        # print(gpflow.utilities.print_summary(m))
-
-        # Set priors
-        # We don't want to use priors if we are regularizing
-        # if use_priors is True: # and lasso is False:
-        #     for p in m.parameters:
-        #         # We don't want to mess with the Q points in VGP model
-        #         if len(p.shape) <= 1:
-        #             if p.name == "identity":
-        #                 p.prior = tfd.Uniform(f64(-100), f64(100))
-        #             else:
-        #                 p.prior = tfd.Uniform(f64(0), f64(100))
-
-        if use_priors is True:
-            for param_name, param_val in gpflow.utilities.parameter_dict(m).items():
-                if "kernel" in param_name:
-                    if "variance" not in param_name and "W" not in param_name:
-                        param_val.prior = tfd.Uniform(f64(0), f64(10))
-
-        # Randomize initial values if not trained already
-        if random_init:
-            for p in m.kernel.trainable_parameters:
-                # Should we actually not have this requirement?
-                if len(p.shape) <= 1 or p.shape == k.W.shape:
-                    unconstrain_vals = np.random.normal(
-                        size=p.numpy().size
-                    ).reshape(p.numpy().shape)
-                    p.assign(
-                        p.transform_fn(unconstrain_vals)
-                    )
-            
-            for p in m.likelihood.trainable_parameters:
-                if len(p.shape) <= 1:
-                    unconstrain_vals = np.random.normal(
-                        size=p.numpy().size
-                        ).reshape(p.numpy().shape)
-                    p.assign(
-                        p.transform_fn(unconstrain_vals)
-                    )
-            
-            # m.q_mu = np.random.normal(size=m.q_mu.shape)
-        
-        # Set prior on W
-        # m.kernel.W.prior = tfp.distributions.Exponential(f64(1))
-
-        # Optimization step for hyperparameters
-        try:
-            if m.name == "svpgpr":
-                opt_res = gpflow.optimizers.Scipy().minimize(
-                    m.training_loss_closure((X, Y)),
-                    variables=m.trainable_variables,
-                    # method="Nelder-Mead",
-                    options={'maxiter': max_iter}
-                )
-            else:
-                opt_res = gpflow.optimizers.Scipy().minimize(
-                    m.training_loss,
-                    m.trainable_variables,
-                    # method="Nelder-Mead",
-                    options={'maxiter': max_iter}
-                )
-            # adam_opt_params(m)
-            # scipy_opt_params(m)
-
-            # Check if model converged
-            if opt_res["success"] is False:
-                if verbose:
-                    print("Warning: optimizer did not converge!")
-
-        except Exception as e:
-            if verbose:
-                print(f'Optimization not successful, skipping. Error: {e}')
-                print(i)
-            if best_model == None and i == num_restarts - 1:
-                return m, -1*best_loglik
-            continue
-
-        #         print(opt_results)
-        # Now check to see if this is invertible
-        try:
-            m_, v_ = m.predict_y(m.data[0])
-        except Exception as e:
-            if verbose:
-                print('Covariance matrix not invertible, removing model.')
-            # If not invertible then revert back to best model, unless last try
-            if best_model == None and i == num_restarts - 1:
-                return best_model, -1*best_loglik
-            else:
-                m = best_model
-
-        # Check if better values found and save if so
-        #         if m.log_marginal_likelihood() > best_loglik:
-        if m.name == "svpgpr":
-            cur_loglik = m.log_posterior_density(data=(X,Y)).numpy()
-        else:
-            cur_loglik = m.log_posterior_density().numpy()
-        if cur_loglik > best_loglik: 
-            best_loglik = cur_loglik
-            best_model = gpflow.utilities.deepcopy(m)
-            better_model_seen = True
-            if verbose:
-                print(f'New best log likelihood: {best_loglik}')
-        else: 
-            del m
-
-    #     # Set hyperparameters to best found values
-    #     for l in range(len(m.trainable_parameters)):
-    #         print(best_params[l])
-    #         m.trainable_parameters[l].assign(best_params[l])
-
-    # Return none and worst BIC if we can't fit a single
-    if best_model == None:
-        return best_model, -1*best_loglik
-
-    # Calculate information criteria
-    if split:
-        yhat_holdout = best_model.predict_f(X_holdout)
-        estimated_loglik = best_model.likelihood.predict_log_density(
-            yhat_holdout[0],
-            yhat_holdout[1],
-            Y_holdout).numpy().sum()
-        bic = round(-1*estimated_loglik, 2)
+    # Sample at either the unit or observation level
+    if unit_col is None:
+        sample_idx = np.arange(0, X.shape[0])
     else:
-        estimated_loglik = best_loglik #best_model.log_posterior_density().numpy()
+        sample_idx = np.unique(X[:, unit_col])
 
-        bic = round(calc_bic(
-            #         loglik=best_model.log_marginal_likelihood().numpy(),
-            loglik=estimated_loglik,
-            n=X.shape[0],
-            k=len(best_model.trainable_parameters)),
-            2)
+        # Check to see if there are enough people to have # of folds
+        assert len(sample_idx) >= k_fold, (
+            'Not enough unique units for number of folds requested, '
+            f'{len(sample_idx)} unit(s) < {k_fold} fold(s)'
+            )
 
-    # Print out info if requested
-    if verbose:
-        print(f'Model: {print_kernel_names(k)}, BIC: {bic}')
+    # Shuffle set
+    np.random.shuffle(sample_idx)
 
-    # Delete data from model object
-    if not keep_data:
-        best_model.data = None
+    # Break up into folds
+    div, mod = divmod(len(sample_idx), k_fold)
+    folds = [
+        sample_idx[i * div + min(i, mod) : (i + 1) * div + min(i + 1, mod)]
+        for i in range(k_fold)
+    ]
 
-    # Return fitted GP model and bic
-    # Predictions
-    #     print(best_model.predict_f(X))
-    return best_model, bic
+    # If the sample_idx is as the unit level we need to get row level
+    if unit_col is not None:
+        folds = [np.where(np.in1d(X[:, unit_col], f))[0] for f in folds]
+
+    return folds
 
 # Search over lambdas
 def lam_search(kernel, X, Y,
@@ -594,7 +183,7 @@ def lam_search(kernel, X, Y,
                max_jobs = -1, base_model=None,
                random_seed = None, verbose = False,
                return_all = False, early_stopping = True,
-               fit_best = True):
+               fit_best = True, prune_best=True):
 
     #TODO: Add strata option
     if return_all is True:
@@ -621,7 +210,7 @@ def lam_search(kernel, X, Y,
         #     base_model, _ = kernel_test_reg(
         #         X=X,
         #         Y=Y,
-        #         k=gpflow.utilities.deepcopy(model_spec.kernel),
+        #         k=gpflow.utilities.deepcopy(kernel),
         #         keep_data=True
         #     )
         #     base_ll = base_model.log_marginal_likelihood()
@@ -629,14 +218,15 @@ def lam_search(kernel, X, Y,
         #     base_ll = base_model.log_marginal_likelihood()
         # intercept_ll = norm(loc=0, scale=Y.std()).logpdf(Y).sum()
         
-        # Now backtrack to find the max lambda that would produce
-        # an intercept-only model
-        # tf.reduce_sum(self.lam *
-        #       (1/(self.base_variances)**gam_val) * 
-        #       find_variance_components(base_model.kernel, sum_reduce=False)))
+        # # Now backtrack to find the max lambda that would produce
+        # # an intercept-only model
+        # # tf.reduce_sum(self.lam *
+        # #       (1/(self.base_variances)**gam_val) * 
+        # #       find_variance_components(base_model.kernel, sum_reduce=False)))
         
         # max_lambda = abs(base_ll*intercept_ll)
-        max_lambda = Y.var()
+        max_lambda = 2*Y.var()
+        print(f"max lambda: {max_lambda}")
         # lam_list = np.log(np.linspace(start=0, stop=max_lambda, num=num_lams))
         lam_list = np.insert(
             np.exp(
@@ -651,31 +241,7 @@ def lam_search(kernel, X, Y,
         ).round(5)
 
     # Set up our k-fold set
-    # Sample at either the unit or observation level
-    if unit_col is None:
-        sample_idx = np.arange(0, X.shape[0])
-    else:
-        sample_idx = np.unique(X[:, unit_col])
-
-        # Check to see if there are enough people to have # of folds
-        assert len(sample_idx) >= k_fold, (
-            'Not enough unique units for number of folds requested, '
-            f'{len(sample_idx)} unit(s) < {k_fold} fold(s)'
-            )
-
-    # Shuffle set
-    np.random.shuffle(sample_idx)
-
-    # Break up into folds
-    div, mod = divmod(len(sample_idx), k_fold)
-    folds = [
-        sample_idx[i * div + min(i, mod) : (i + 1) * div + min(i + 1, mod)]
-        for i in range(k_fold)
-    ]
-
-    # If the sample_idx is as the unit level we need to get row level
-    if unit_col is not None:
-        folds = [np.where(np.in1d(X[:, unit_col], f))[0] for f in folds]
+    folds = make_folds(X=X, unit_col=unit_col, k_fold=k_fold)
 
     # print(f"folds = {folds}")
 
@@ -771,6 +337,10 @@ def lam_search(kernel, X, Y,
             verbose=verbose,
             likelihood=likelihood
         )
+
+        # Prune model components
+        best_m = cut_kernel_components(best_m)
+
         out["final_model"] = best_m
 
     if return_all is True:
@@ -779,8 +349,23 @@ def lam_search(kernel, X, Y,
     return out
 
 
-def cut_kernel_components(model, var_cutoff=0.001):
-    
+def cut_kernel_components(
+        model, 
+        var_cutoff: float = 0.001
+    ):
+    ''' Prune out kernel components with small variance parameters
+     
+    Parameters
+    ----------
+    model
+    var_cutoff
+
+    Returns
+    -------
+    GPflow model
+    '''
+
+    # Return empty model object if none passed in
     if model is None:
         return model
     
@@ -792,9 +377,13 @@ def cut_kernel_components(model, var_cutoff=0.001):
     new_model = gpflow.utilities.deepcopy(model)
 
     # Figure out which ones should be kept
-    new_model.kernel = gpflow.kernels.Sum([model.kernel.kernels[i] for i in var_flag])
+    new_model.kernel = gpflow.kernels.Sum(
+        [model.kernel.kernels[i] for i in var_flag]
+    )
 
     # Also make sure we only keep base variances that remain
-    new_model.base_variances = model.base_variances[var_flag]
+    if hasattr(model, 'base_variances'):
+        if model.base_variances is not None:
+            new_model.base_variances = model.base_variances[var_flag]
 
     return new_model

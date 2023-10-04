@@ -19,9 +19,14 @@ def pred_kernel_parts(
         x_idx, 
         unit_idx, 
         col_names, 
+        categorical_dict={},
         lik='gaussian', 
         x_idx_min = None, 
-        x_idx_max = None
+        x_idx_max = None,
+        num_cols_in_fig = 4,
+        figsize = None,
+        sharey = True,
+        conf_level_val = 1.96
     ):
     """
     Breaks up kernel in model to plot separate pieces
@@ -30,8 +35,13 @@ def pred_kernel_parts(
     # Copy model
     m_copy = gpflow.utilities.deepcopy(m)
     m_name = m_copy.name
-    X = m_copy.data[0].numpy()
-    Y = m_copy.data[1].numpy()
+
+    if type(m_copy.data[0]) == np.ndarray:
+        X = m_copy.data[0]
+        Y = m_copy.data[1]
+    else:
+        X = m_copy.data[0].numpy()
+        Y = m_copy.data[1].numpy()
 
     # Set bounds on x-axis if not specified
     x_idx_min = X[:, x_idx].min() if x_idx_min == None else x_idx_min
@@ -46,7 +56,7 @@ def pred_kernel_parts(
         kernel_names = []
         fig, ax = plt.subplots(ncols=1, figsize=(5, 5))
         plot_residuals(m, lik, x_idx, x_idx_min, x_idx_max, ax, 
-            var_percent=100, col_names=col_names)
+            var_percent=100, col_names=col_names, conf_level_val=conf_level_val)
         return fig, ax
     else:
         kernel_list = print_kernel_names(m_copy.kernel, with_idx=True)
@@ -60,13 +70,23 @@ def pred_kernel_parts(
         kernel_names = k_names.split('+')
     
     # Make subplots for multiple components
-    fig, ax = plt.subplots(ncols=len(kernel_names)+1,
-                           # sharex=True,
-                           sharey=True,
-                           figsize=(5*(len(kernel_names)+1), 5))
-    plot_idx = 0
+    num_figs = len(kernel_names)+1
+    num_rows = int(np.ceil(num_figs/num_cols_in_fig))
+    if figsize is None:
+        figsize = (5*num_cols_in_fig, 5*num_rows)
+    fig, ax = plt.subplots(
+        ncols=num_cols_in_fig, #len(kernel_names)+1,
+        nrows=num_rows,
+        # sharex=True,
+        sharey=sharey,
+        figsize=figsize,
+        squeeze=False
+    )
+
+    plot_row_idx = 0
+    plot_col_idx = 0
     kernel_idx = 0
-    for k_name in kernel_names: #m_copy.kernel.kernels:
+    for plot_idx, k_name in enumerate(kernel_names): #m_copy.kernel.kernels:
         # print(f'k_name={k_name}')
         # Pull off specific kernel component
         if '*' in k_name and len(kernel_names) == 1:
@@ -104,45 +124,75 @@ def pred_kernel_parts(
                         white_noise_amt=1e-2)
                     mean = mean.numpy().flatten()
                     var = var.numpy().flatten()
+
+                    # Transform output
+                    mean_resp = m_copy.likelihood._conditional_mean(
+                        X=(
+                            x_new
+                            if m_copy.likelihood.name != 'gaussian'
+                            else x_new[:, 0]
+                        ),
+                        F=mean
+                    )
+                    upper_ci = m_copy.likelihood._conditional_mean(
+                        X=(
+                            x_new
+                            if m_copy.likelihood.name != 'gaussian'
+                            else x_new[:, 0]
+                        ),
+                        F=mean + conf_level_val * np.sqrt(var)
+                    )
+                    lower_ci = m_copy.likelihood._conditional_mean(
+                        X=(
+                            x_new
+                            if m_copy.likelihood.name != 'gaussian'
+                            else x_new[:, 0]
+                        ),
+                        F=mean - conf_level_val * np.sqrt(var)
+                    )
                     
-                    # Deal with transforming output if needed
-                    if m_copy.likelihood.name != 'gaussian':
-                        mean = m_copy.likelihood.invlink(mean).numpy().flatten()
-                        upper_ci = m_copy.likelihood.invlink(mean + 1.96 * np.sqrt(var))
-                        lower_ci = m_copy.likelihood.invlink(mean - 1.96 * np.sqrt(var))
-                    else:
-                        upper_ci = mean + 1.96 * np.sqrt(var)
-                        lower_ci = mean - 1.96 * np.sqrt(var)
+                    # # Deal with transforming output if needed
+                    # if m_copy.likelihood.name != 'gaussian':
+                    #     mean = m_copy.likelihood.invlink(mean).numpy().flatten()
+                    #     upper_ci = m_copy.likelihood.invlink(mean + conf_level_val * np.sqrt(var))
+                    #     lower_ci = m_copy.likelihood.invlink(mean - conf_level_val * np.sqrt(var))
+                    # else:
+                    #     upper_ci = mean + conf_level_val * np.sqrt(var)
+                    #     lower_ci = mean - conf_level_val * np.sqrt(var)
 
                     # Decide if we should annotate each category or not
                     if num_unique_cat < 5:
-                        ax[plot_idx].plot(
+                        ax[plot_row_idx, plot_col_idx].plot(
                             x_new[:, x_idx],
-                            mean,
+                            mean_resp,
                             alpha=0.5,
-                            label=cat_val
+                            label=(
+                                cat_val 
+                                if col_names[cat_idx] not in categorical_dict.keys()
+                                else categorical_dict[col_names[cat_idx]][1][int(cat_val)]
+                            )
                         )
-                        ax[plot_idx].fill_between(
+                        ax[plot_row_idx, plot_col_idx].fill_between(
                             x_new[:, x_idx],
-                            lower_ci, # mean - 1.96 * np.sqrt(var),
-                            upper_ci, # mean + 1.96 * np.sqrt(var),
+                            lower_ci, # mean - conf_level_val * np.sqrt(var),
+                            upper_ci, # mean + conf_level_val * np.sqrt(var),
                             color='lightgreen',
                             alpha=0.5,
                         )
                         
                         # If last category then add legend to plot
                         if cat_val == num_unique_cat - 1:
-                            ax[plot_idx].legend(loc="upper right")
+                            ax[plot_row_idx, plot_col_idx].legend(loc="upper right")
 
                     else:
-                        ax[plot_idx].plot(
+                        ax[plot_row_idx, plot_col_idx].plot(
                             x_new[:, x_idx],
-                            mean,
+                            mean_resp,
                             alpha=0.5
                         )
                         
                 # Set the subplot title to match the true variable name
-                ax[plot_idx].set(
+                ax[plot_row_idx, plot_col_idx].set(
                     xlabel=f"{replace_kernel_variables('['+str(x_idx)+']', col_names).strip('[]')}"
                 )
 
@@ -168,31 +218,60 @@ def pred_kernel_parts(
                     X=x_new)
                 mean = mean.numpy().flatten()
                 var = var.numpy().flatten()
+
+                # Transform output
+                mean_resp = m_copy.likelihood._conditional_mean(
+                    X=(
+                        x_new
+                        if m_copy.likelihood.name != 'gaussian'
+                        else x_new[:, 0]
+                    ),
+                    F=mean
+                )
+                upper_ci = m_copy.likelihood._conditional_mean(
+                    X=(
+                        x_new
+                        if m_copy.likelihood.name != 'gaussian'
+                        else x_new[:, 0]
+                    ),
+                    F=mean + conf_level_val * np.sqrt(var)
+                )
+                lower_ci = m_copy.likelihood._conditional_mean(
+                    X=(
+                        x_new
+                        if m_copy.likelihood.name != 'gaussian'
+                        else x_new[:, 0]
+                    ),                   
+                    F=mean - conf_level_val * np.sqrt(var)
+                )
                 
-                # Deal with transforming output if needed
-                if m_copy.likelihood.name != 'gaussian':
-                    mean = m_copy.likelihood.invlink(mean).numpy().flatten()
-                    upper_ci = m_copy.likelihood.invlink(mean + 1.96 * np.sqrt(var))
-                    lower_ci = m_copy.likelihood.invlink(mean - 1.96 * np.sqrt(var))
-                else:
-                    upper_ci = mean + 1.96 * np.sqrt(var)
-                    lower_ci = mean - 1.96 * np.sqrt(var)
+                # # Deal with transforming output if needed
+                # if m_copy.likelihood.name != 'gaussian':
+                #     mean = m_copy.likelihood.invlink(mean).numpy().flatten()
+                #     upper_ci = m_copy.likelihood.invlink(mean + conf_level_val * np.sqrt(var))
+                #     lower_ci = m_copy.likelihood.invlink(mean - conf_level_val * np.sqrt(var))
+                # else:
+                #     upper_ci = mean + conf_level_val * np.sqrt(var)
+                #     lower_ci = mean - conf_level_val * np.sqrt(var)
+
+                # Decide if we should annotate each category or not
+        
                 
-                ax[plot_idx].plot(
+                ax[plot_row_idx, plot_col_idx].plot(
                     x_new[:, x_idxs[0]],
-                    mean,
+                    mean_resp,
                     alpha=0.5,
                     label=round(i, 1)
                 )
-                ax[plot_idx].fill_between(
+                ax[plot_row_idx, plot_col_idx].fill_between(
                     x_new[:, x_idxs[0]],
-                    lower_ci, # mean - 1.96 * np.sqrt(var),
-                    upper_ci, # mean + 1.96 * np.sqrt(var),
+                    lower_ci, # mean - conf_level_val * np.sqrt(var),
+                    upper_ci, # mean + conf_level_val * np.sqrt(var),
                     color='lightgreen',
                     alpha=0.5,
                 )
-            ax[plot_idx].legend()
-            ax[plot_idx].set(
+            ax[plot_row_idx, plot_col_idx].legend()
+            ax[plot_row_idx, plot_col_idx].set(
                 xlabel=f"{replace_kernel_variables('['+str(x_idxs[0])+']', col_names).strip('[]')}"
             )
 
@@ -216,207 +295,294 @@ def pred_kernel_parts(
             mean, var, samps, cov = individual_kernel_predictions(
                 model=m_copy,
                 kernel_idx=np.argwhere([x == k_name for x in kernel_names])[0][0],
-                X=x_new)
+                X=x_new
+            )
             mean = mean.numpy().flatten()
             var = var.numpy().flatten()
+
+            # Transform output
+            mean_resp = m_copy.likelihood._conditional_mean(
+                X=(
+                    x_new
+                    if m_copy.likelihood.name != 'gaussian'
+                    else x_new[:, 0]
+                ),
+                F=mean
+            )
+            upper_ci = m_copy.likelihood._conditional_mean(
+                X=(
+                    x_new
+                    if m_copy.likelihood.name != 'gaussian'
+                    else x_new[:, 0]
+                ),
+                F=mean + conf_level_val * np.sqrt(var)
+            )
+            lower_ci = m_copy.likelihood._conditional_mean(
+                X=(
+                    x_new
+                    if m_copy.likelihood.name != 'gaussian'
+                    else x_new[:, 0]
+                ),
+                F=mean - conf_level_val * np.sqrt(var)
+            )
+            samps_resp = m_copy.likelihood._conditional_mean(
+                X=(
+                    x_new
+                    if m_copy.likelihood.name != 'gaussian'
+                    else x_new[:, 0]
+                ),
+                F=samps
+            )
             
-            # Deal with transforming output if needed
-            if m_copy.likelihood.name != 'gaussian':
-                mean = m_copy.likelihood.invlink(mean).numpy().flatten()
-                upper_ci = m_copy.likelihood.invlink(mean + 1.96 * np.sqrt(var))
-                lower_ci = m_copy.likelihood.invlink(mean - 1.96 * np.sqrt(var))
-                samps = m_copy.likelihood.invlink(samps)
-            else:
-                upper_ci = mean + 1.96 * np.sqrt(var)
-                lower_ci = mean - 1.96 * np.sqrt(var)
+            # # Deal with transforming output if needed
+            # if m_copy.likelihood.name != 'gaussian':
+            #     mean = m_copy.likelihood.invlink(mean).numpy().flatten()
+            #     upper_ci = m_copy.likelihood.invlink(mean + conf_level_val * np.sqrt(var))
+            #     lower_ci = m_copy.likelihood.invlink(mean - conf_level_val * np.sqrt(var))
+            # else:
+            #     upper_ci = mean + conf_level_val * np.sqrt(var)
+            #     lower_ci = mean - conf_level_val * np.sqrt(var)
             
             p = sns.lineplot(x=x_new[:, var_idx],
 #                  y=mean.numpy().flatten(),
-             y=mean,
+             y=mean_resp,
              linewidth=2.5,
                 color='darkgreen',
-                ax=ax[plot_idx])
+                ax=ax[plot_row_idx, plot_col_idx])
 
-            ax[plot_idx].fill_between(
+            ax[plot_row_idx, plot_col_idx].fill_between(
                 x_new[:, var_idx],
-                lower_ci, # mean - 1.96 * np.sqrt(var),
-                upper_ci, # mean + 1.96 * np.sqrt(var),
+                lower_ci, # mean - conf_level_val * np.sqrt(var),
+                upper_ci, # mean + conf_level_val * np.sqrt(var),
                 color='lightgreen',
                 alpha=0.5,
             )
-            ax[plot_idx].plot(x_new[:, var_idx], 
-                   samps,#[:, :, 0].numpy().T,# "C0", 
+            ax[plot_row_idx, plot_col_idx].plot(x_new[:, var_idx], 
+                   samps_resp,#[:, :, 0].numpy().T,# "C0", 
                    color='dimgray',
                    linewidth=0.5,
                    alpha=0.2)
         #     plt.close()
 
-            ax[plot_idx].set(
+            ax[plot_row_idx, plot_col_idx].set(
                 xlabel=f"{replace_kernel_variables('['+str(var_idx)+']', col_names).strip('[]')}",
                 #title=f"{replace_kernel_variables(str(x_idx), col_names)}"
             )
-            # gp_predict_fun(
-            #     gp=temp_m,
-            #     x_idx=var_idx,
-            #     unit_idx=unit_idx,
-            #     ax=ax[plot_idx],
-            #     plot_points=False,
-            #     col_names=col_names
-            # )
+
             
 
         # Add title for specific feature
-        ax[plot_idx].set(title=f'{replace_kernel_variables(k_name, col_names)} ({round(var_percent[plot_idx], 1)}%)')
-        plot_idx+=1
+        # split product terms over two lines
+        ax[plot_row_idx, plot_col_idx].set(
+            title=f"{replace_kernel_variables(k_name, col_names).replace('*', '*'+chr(10))} ({round(var_percent[plot_idx], 1)}%)"
+        )
+        # Reset col index if at end and increment row index
+        if plot_col_idx == (num_cols_in_fig - 1):
+            plot_col_idx = 0
+            plot_row_idx += 1
+        else:
+            plot_col_idx += 1
+
+        plot_idx += 1
     
     # Plot residuals
-    plot_residuals(m, lik, x_idx, x_idx_min, x_idx_max, ax[plot_idx], 
-                   var_percent=var_percent[plot_idx], col_names=col_names)
-    
+    plot_residuals(m, lik, x_idx, x_idx_min, x_idx_max, ax[plot_row_idx, plot_col_idx], 
+                   var_percent=var_percent[plot_idx], col_names=col_names,
+                   conf_level_val=conf_level_val)
+
+    # Remove empty plots in last row
+    for i in range(plot_col_idx+1, num_cols_in_fig):
+        fig.delaxes(ax[plot_row_idx, i])
+
     # Adjust scale if needed
     if lik == 'gamma':
         for ax_ in ax:
             ax_.set_yscale('log')
+
+    # Condense down plot space to make more tidy
+    plt.tight_layout()
     
     return fig, ax
 
-def plot_residuals(m, lik, x_idx, x_idx_min, x_idx_max, ax, var_percent, col_names):
+def plot_residuals(m, lik, x_idx, x_idx_min, x_idx_max, ax, 
+                   var_percent, col_names, conf_level_val=1.96):
 
     # Compute residuals
     # mean_pred, var_pred = m.predict_y(m.data[0])
     resids = calc_residuals(m) #tf.cast(m.data[1], tf.float64) - mean_pred
+    ax.scatter(
+        m.data[0][:, x_idx],
+        resids,
+        color='black',
+        alpha=0.5,
+        s=20
+    )
+    # TODO: Think about line of best fit here maybe?
 
-    if lik == 'gaussian':
-        x_resid = np.linspace(
-            x_idx_min, # X[:, x_idx].min(), 
-            x_idx_max, # X[:, x_idx].max(), 
-            1000
-        )
-        ax.plot(
-            x_resid, #x_new[:, x_idx],
-            np.zeros(len(x_resid)), #np.zeros_like(x_new[:, x_idx]),
-            color='darkgreen',
-            linewidth=2.5
-        )
-        # error_sd = np.sqrt(m.parameters[-1].numpy())
-        # Calculate the model residuals to get the standard deviation
-        error_sd = np.std(resids)
-        ax.fill_between(
-            x_resid, #x_new[:, x_idx],
-            -1.96 * error_sd,
-            1.96 * error_sd,
-            color='lightgreen',
-            alpha=0.5
-        )
-        ax.scatter(m.data[0][:, x_idx],
-                      resids,
-                      color='black',
-                      alpha=0.5,
-                      s=20)
-    else:
-        x_resid = np.linspace(
-            x_idx_min, # X[:, x_idx].min(), 
-            x_idx_max, # X[:, x_idx].max(), 
-            1000
-        )
-        ax.plot(
-            x_resid, #x_new[:, x_idx],
-            m.likelihood.invlink(np.zeros(len(x_resid))),
-            color='darkgreen',
-            linewidth=2.5
-        )
-        # error_sd = np.sqrt(m.parameters[-1].numpy())
-        # Calculate the model residuals to get the standard deviation
-        error_sd = np.std(resids)
-        ax.fill_between(
-            x_resid, #x_new[:, x_idx],
-            m.likelihood.invlink(-1.96 * error_sd),
-            m.likelihood.invlink(1.96 * error_sd),
-            color='lightgreen',
-            alpha=0.5
-        )
-        ax.scatter(m.data[0][:, x_idx],
-                      m.likelihood.invlink(resids),
-                      color='black',
-                      alpha=0.5,
-                      s=20)
+    # if lik == 'gaussian':
+    #     x_resid = np.linspace(
+    #         x_idx_min, # X[:, x_idx].min(), 
+    #         x_idx_max, # X[:, x_idx].max(), 
+    #         1000
+    #     )
+    #     ax.plot(
+    #         x_resid, #x_new[:, x_idx],
+    #         np.zeros(len(x_resid)), #np.zeros_like(x_new[:, x_idx]),
+    #         color='darkgreen',
+    #         linewidth=2.5
+    #     )
+    #     # error_sd = np.sqrt(m.parameters[-1].numpy())
+    #     # Calculate the model residuals to get the standard deviation
+    #     error_sd = np.std(resids)
+    #     ax.fill_between(
+    #         x_resid, #x_new[:, x_idx],
+    #         -conf_level_val * error_sd,
+    #         conf_level_val * error_sd,
+    #         color='lightgreen',
+    #         alpha=0.5
+    #     )
+    #     ax.scatter(m.data[0][:, x_idx],
+    #                   resids,
+    #                   color='black',
+    #                   alpha=0.5,
+    #                   s=20)
+    # else:
+    #     x_resid = np.linspace(
+    #         x_idx_min, # X[:, x_idx].min(), 
+    #         x_idx_max, # X[:, x_idx].max(), 
+    #         1000
+    #     )
+    #     ax.plot(
+    #         x_resid, #x_new[:, x_idx],
+    #         m.likelihood.invlink(np.zeros(len(x_resid))),
+    #         color='darkgreen',
+    #         linewidth=2.5
+    #     )
+    #     # error_sd = np.sqrt(m.parameters[-1].numpy())
+    #     # Calculate the model residuals to get the standard deviation
+    #     error_sd = np.std(resids)
+    #     ax.fill_between(
+    #         x_resid, #x_new[:, x_idx],
+    #         m.likelihood.invlink(-conf_level_val * error_sd),
+    #         m.likelihood.invlink(conf_level_val * error_sd),
+    #         color='lightgreen',
+    #         alpha=0.5
+    #     )
+    #     ax.scatter(m.data[0][:, x_idx],
+    #                   m.likelihood.invlink(resids),
+    #                   color='black',
+    #                   alpha=0.5,
+    #                   s=20)
     ax.set(title=f'residuals ({round(var_percent, 1)}%)',
             xlabel=f"{replace_kernel_variables('['+str(x_idx)+']', col_names).strip('[]')}")
 
-def gp_predict_fun(gp,  # X, Y, x_min, x_max,
-                   x_idx, unit_idx, col_names,
-                   unit_label=None, num_funs=10,
+def gp_predict_fun(m,
+                   x_idx, col_names,
+                   X=None, Y=None,
+                   x_min=None, x_max=None,
+                   unit_idx=None, unit_label=None, 
+                   num_funs=100, ref_quantile=0.5,
+                   return_vals=False, predict_type='mean',
+                   # predict_y=False,
+                   conf_level_val=1.96, label=None,
+                   cat_color_pal=sns.color_palette("Set1"),
                    ax=None, plot_points=True):
     """
     Plot marginal closed-form posterior distribution.
     """
 
-    # Pull training data from model
-    X_train, Y_train = gp.data
-    X_train = X_train.numpy()
-    Y_train = Y_train.numpy()
+    # Pull training data from model if needed
+    if X is None and Y is None:
+        X_train, Y_train = m.data
+        X_train = X_train.numpy()
+        Y_train = Y_train.numpy()
+    else:
+        X_train = X
+        Y_train = Y
 
     # Create test points
-# #     x_new = np.zeros_like(X)
-# #     x_new[:,x_idx] = np.linspace(x_min, x_max, X.shape[0])
-# #     x_new[:, unit_idx] = unit_label
-#     x_new = np.zeros((1000, X_train.shape[1]))
-#     x_new[:, x_idx] = np.linspace(X_train[:, x_idx].min(),
-#                                   X_train[:, x_idx].max(),
-#                                   1000)
-#     x_new[:, unit_idx] = unit_label
-    
+    # If no reference point given then use median of other values
     if unit_idx != None:
+        assert unit_label != None, print('Need unit_label with unit_idx')
         x_new = np.tile(
-            A=np.median(
+            A=np.quantile(
                 X_train[X_train[:, unit_idx] == unit_label, ],
-                axis=0
+                axis=0,
+                q=ref_quantile
             ),
             reps=(1000, 1)
         )
     else:
         x_new = np.tile(
-            A=np.median(
+            A=np.quantile(
                 X_train,
-                axis=0
+                axis=0,
+                q=ref_quantile
             ),
             reps=(1000, 1)
         )
     # Add full range of x axis
+    if x_min is None:
+        x_min = X_train[:, x_idx].min()
+    if x_max is None:
+        x_max = X_train[:, x_idx].max()
+
     x_new[:, x_idx] = np.linspace(
-        X_train[:, x_idx].min(),
-        X_train[:, x_idx].max(),
+        x_min,
+        x_max,
         1000
     )
     
     # Predict mean and variance on new data
-#     mean, var = gp.predict_f(x_new)
-    mean, var = gp.predict_y(x_new)
-    # print('observed:', mean.numpy().flatten()[:5], var.numpy().flatten()[:5])
-    mean_f, var_f = gp.predict_f(x_new)
-    # print('latent function:', mean_f.numpy().flatten()[:5], var_f.numpy().flatten()[:5])
-    
-#     return(mean.numpy()[:5], mean_f.numpy()[:5])
+    # Make sure we predict observed/latent function values
+    # if predict_y is True:
+    #     mean, var = m.predict_y(x_new)
+    # else:
+    #     mean, var = m.predict_f(x_new)
+    mean, var = m.predict_f(x_new)
     
     # Pull some posterior functions
     tf.random.set_seed(1) 
-    samples = gp.predict_f_samples(x_new, num_funs)
+    samples = m.predict_f_samples(x_new, num_funs)
     samples = samples[:, :, 0].numpy().T 
 
+    # Return prediction values if that is all that we want
+    if return_vals is True:
+        return x_new, mean, var, samples
+
     # Transform function samples if not Gaussian
-    if gp.likelihood.name == 'gamma':
-        samples = gp.likelihood.shape*gp.likelihood.invlink(samples)#.numpy() 
-        upper_ci = gp.likelihood.shape*gp.likelihood.invlink(mean_f + 1.96*np.sqrt(var_f)).numpy().flatten()
-        lower_ci = gp.likelihood.shape*gp.likelihood.invlink(mean_f - 1.96*np.sqrt(var_f)).numpy().flatten()
-    elif gp.likelihood.name == 'bernoulli':
-        samples = gp.likelihood.invlink(samples)
-        upper_ci = gp.likelihood.invlink(mean_f + 1.96*np.sqrt(var_f)).numpy().flatten()
-        # print(upper_ci[:5])
-        lower_ci = gp.likelihood.invlink(mean_f - 1.96*np.sqrt(var_f)).numpy().flatten()
-        # print('lower:', lower_ci[:5])
-    else:
-        lower_ci = mean_f[:, 0] - 1.96 * np.sqrt(var_f[:, 0])
-        upper_ci = mean_f[:, 0] + 1.96 * np.sqrt(var_f[:, 0])
+    # predict_type = 'obs' is complicated outside of gaussian likelihood
+    # would need to have access to CDF to get likelihood intervals 
+    assert predict_type in ['mean', 'obs', 'func'], "Unclear prediction type. ['mean', 'obs', 'func'] allowed."
+    if predict_type == 'mean':
+        orig_mean = mean.numpy().copy()
+        mean = m.likelihood.conditional_mean(x_new, mean)
+        samples = m.likelihood.conditional_mean(x_new, samples)
+        upper_ci = m.likelihood.conditional_mean(x_new, orig_mean + conf_level_val * np.sqrt(var)).numpy().flatten()
+        lower_ci = m.likelihood.conditional_mean(x_new, orig_mean - conf_level_val * np.sqrt(var)).numpy().flatten()
+        # if m.likelihood.name == 'gamma':
+        #     mean = m.likelihood.shape*m.likelihood.invlink(mean)
+        #     samples = m.likelihood.shape*m.likelihood.invlink(samples)#.numpy() 
+        #     upper_ci = m.likelihood.shape*m.likelihood.invlink(mean + ci_bands*np.sqrt(var)).numpy().flatten()
+        #     lower_ci = m.likelihood.shape*m.likelihood.invlink(mean - ci_bands*np.sqrt(var)).numpy().flatten()
+        # elif m.likelihood.name != 'gaussian':  #== 'bernoulli':
+        #     mean = m.likelihood.invlink(mean)
+        #     samples = m.likelihood.invlink(samples)
+        #     upper_ci = m.likelihood.invlink(mean + ci_bands*np.sqrt(var)).numpy().flatten()
+        #     lower_ci = m.likelihood.invlink(mean - ci_bands*np.sqrt(var)).numpy().flatten()
+        # else:
+        #     lower_ci = mean[:, 0] - ci_bands * np.sqrt(var[:, 0])
+        #     upper_ci = mean[:, 0] + ci_bands * np.sqrt(var[:, 0])
+    elif predict_type == 'obs':
+        assert m.likelihood.name == 'gaussian', "predict_type == 'obs' currently only works for 'gaussian' likelihoods"
+        mean, var = m.predict_y(x_new)
+        samples = m.likelihood.conditional_mean(x_new, samples)
+        lower_ci = (mean - conf_level_val * np.sqrt(var)).numpy().flatten()
+        upper_ci = (mean + conf_level_val * np.sqrt(var)).numpy().flatten()
+    else: # predict_type == 'func':
+        lower_ci = (mean - conf_level_val * np.sqrt(var)).numpy().flatten()
+        upper_ci = (mean + conf_level_val * np.sqrt(var)).numpy().flatten()        
+
     # Generate plot
 #     p = plt.figure(figsize=(10, 5))
     if ax == None:
@@ -451,25 +617,45 @@ def gp_predict_fun(gp,  # X, Y, x_min, x_max,
                                 color='grey',
                                 ax=ax)
     
-    p = sns.lineplot(x=x_new[:,x_idx],
-#                  y=mean.numpy().flatten(),
-                 y=mean.numpy().flatten(),
-                 linewidth=2.5,
-                    color='darkgreen',
-                    ax=ax)
+    # Do we want to use the default green color?
+    if label is None:
+        p = sns.lineplot(
+            x=x_new[:,x_idx],
+            y=mean.numpy().flatten(),
+            linewidth=2.5,
+            color='darkgreen',
+            ax=ax
+        )
+        ax.fill_between(
+            x_new[:, x_idx],
+            upper_ci, #mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+            lower_ci, #mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+            color='lightgreen',
+            alpha=0.5,
+        )
+    # Do we want to do category specific coloring?
+    else:
+        p = sns.lineplot(
+            x=x_new[:,x_idx],
+            y=mean.numpy().flatten(),
+            linewidth=2.5,
+            label=label,
+            color=cat_color_pal[int(label) % len(cat_color_pal)],
+            ax=ax
+        )
+        ax.fill_between(
+            x_new[:, x_idx],
+            upper_ci, #mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+            lower_ci, #mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+            color=cat_color_pal[int(label) % len(cat_color_pal)],
+            alpha=0.5,
+        )
 
-    ax.fill_between(
-        x_new[:, x_idx],
-        upper_ci, #mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-        lower_ci, #mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-        color='lightgreen',
-        alpha=0.5,
-    )
     ax.plot(x_new[:,x_idx], 
            samples,#[:, :, 0].numpy().T,# "C0", 
            color='dimgray',
            linewidth=0.5,
-           alpha=0.2)
+           alpha=0.25)
 #     plt.close()
 
     ax.set(

@@ -4,6 +4,11 @@ from gpflow.utilities import set_trainable #, ci_niter
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
+import contextlib
+import joblib
+from .likelihoods import (
+    ZeroInflatedNegativeBinomial
+)
 f64 = gpflow.utilities.to_default_float
 
 def calc_bic(loglik, n, k):
@@ -64,7 +69,7 @@ def calc_rsquare(m):
             # Break off kernel component
             # m_copy.kernel = k_sub
             # mu_hat, var_hat = m_copy.predict_y(X)
-            mu_hat, var_hat, samps, cov_hat = individual_kernel_predictions(
+            mu_hat, var_hat, samps_, cov_hat = individual_kernel_predictions(
                 model=m,
                 kernel_idx=k_idx,
                 X=m.data[0]
@@ -84,16 +89,30 @@ def calc_rsquare(m):
 
     return rsq
 
-def calc_residuals(m):
+def calc_residuals(m, X=None, Y=None):
     """
     Calculate pearson residuals from model
     """
-
+    # Set x values if none given
+    if X is None:
+        X = m.data[0]
+    # Same for y values
+    if Y is None:
+        Y = m.data[1]
     # Get observed predictions and variance
-    mean_y, var_y = m.predict_y(m.data[0])
+    # mean_resp, var_resp = m.predict_y(m.data[0])
+    mean, var = m.predict_f(X)
+    mean_resp = m.likelihood._conditional_mean(
+        X=X,
+        F=mean
+    )
+    var_resp = m.likelihood._conditional_variance(
+        X=X,
+        F=mean
+    )
     
     # Calculate standardized residuals
-    resids = ((tf.cast(m.data[1], tf.float64) - mean_y)/np.sqrt(var_y)).numpy()
+    resids = ((tf.cast(Y, tf.float64) - mean_resp)/np.sqrt(var_resp)).numpy()
     
     return resids
 
@@ -227,18 +246,21 @@ def print_kernel_names(kernel, with_idx=False):
         return '*'.join([print_kernel_names(x, with_idx) for x in kernel.kernels])
     return names
 
-def adam_opt_params(m, iterations=500, eps=0.1):
-    prev_loss = np.Inf
-    for i in range(iterations):
-        tf.optimizers.Adam(learning_rate=0.1, epsilon=0.1).minimize(
-            m.training_loss, m.trainable_variables
-        )
+# def adam_opt_params(m, iterations=500, eps=0.1):
+#     prev_loss = np.Inf
+#     for i in range(iterations):
+#         tf.optimizers.Adam(learning_rate=0.1, epsilon=0.1).minimize(
+#             m.training_loss, m.trainable_variables
+#         )
         
-        if abs(prev_loss - m.training_loss()) < eps:
-            break
-        else:
-            prev_loss = m.training_loss()
-    return None
+#         if abs(prev_loss - m.training_loss()) < eps:
+#             break
+#         else:
+#             prev_loss = m.training_loss()
+        
+#         if i % 50 == 0:
+#             print(f'Current loss: {prev_loss}')
+#     return None
 
 def variance_contributions(m, k_names, lik='gaussian'):
     """
@@ -349,7 +371,7 @@ def individual_kernel_predictions(
         kernel_idx, 
         X=None, 
         white_noise_amt=1e-6,
-        predict_y=False,
+        predict_type='func',
         num_samples=100,
         model_data=None,
         latent=False
@@ -367,7 +389,7 @@ def individual_kernel_predictions(
     white_noise_amt : Float
                       Amount of diagonal noise to add to covariance matricies
     
-    predict_y : Boolean
+    predict_type : String
                 Add Gaussian noise from likelihood function?
                        
     num_samples : Integer
@@ -390,99 +412,150 @@ def individual_kernel_predictions(
     else:
         model_data = model.data
     
-    # Build each part of the covariance matrix
-    if latent is True:
-        sigma_21 = tf.cast(model.kernel.latent_kernels[kernel_idx].K(X=model_data[0], X2=X), tf.float64)
-        sigma_11 = tf.cast(model.kernel.latent_kernels[kernel_idx].K(X=X), tf.float64)
-    elif model.kernel.name == "sum":
-        sigma_21 = tf.cast(model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X), tf.float64)
-        sigma_11 = tf.cast(model.kernel.kernels[kernel_idx].K(X=X), tf.float64)
-    else:
-        sigma_21 = tf.cast(model.kernel.K(X=model.data[0], X2=X), tf.float64)
-        sigma_11 = tf.cast(model.kernel.K(X=X), tf.float64)
-        
-    if latent is True:
-        sigma_22 = tf.cast(model.kernel.latent_kernels[kernel_idx](X=model_data[0]),tf.float64)
-    else:
-        sigma_22 = tf.cast(model.kernel.K(X=model_data[0]),tf.float64)
-    sigma_12 = tf.transpose(sigma_21)
+    # Copy model component of interest
+    sub_model = gpflow.utilities.deepcopy(model)
 
-    # Figure out white noise amount to add to diag if none given
-    if white_noise_amt is None:
-        # Get min eigenvalue to make sure we can invert the matrix
-            min_ev = np.min(np.linalg.eigvalsh(sigma_22))
-            if min_ev < 0:
-                white_noise_amt = abs(min_ev)
-            else:
-                white_noise_amt = 0
-            # white_noise_amt = np.tril(sigma_11, k=-1).max()
-        
-    # Add likelihood noise if requested - otherwise small constant for invertibility
-    if predict_y:
-        sigma_22 += tf.linalg.diag(tf.repeat(model.likelihood.variance, model.data[0].shape[0]))
-        sigma_11 += tf.linalg.diag(tf.repeat(model.likelihood.variance, X.shape[0]))
-    else: # Was adding 1e-4 noise, might not need that though 
+    # Only pull of kernel of interest if there are multiple kernels
+    if hasattr(sub_model.kernel, "kernels"):
+        sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
+
+    # pred_x = model_data[0] if X is None else X
+
+    # If there is only one kernel component then return standard marginal prediction
+    if sub_model.kernel.name != "sum":
+        pred_mu, pred_var = sub_model.predict_f(X)
+        _, pred_cov = sub_model.predict_f(X, full_cov=True)
+        sample_fns = tf.transpose(sub_model.predict_f_samples(X, num_samples=num_samples)[: ,:, 0])
+    else:
+        # Build each part of the covariance matrix
+        if latent is True:
+            sigma_21 = tf.cast(model.kernel.latent_kernels[kernel_idx].K(X=model_data[0], X2=X), tf.float64)
+            sigma_11 = tf.cast(model.kernel.latent_kernels[kernel_idx].K(X=X), tf.float64)
+        elif model.kernel.name == "sum":
+            sigma_21 = tf.cast(model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X), tf.float64)
+            sigma_11 = tf.cast(model.kernel.kernels[kernel_idx].K(X=X), tf.float64)
+        else:
+            sigma_21 = tf.cast(model.kernel.K(X=model.data[0], X2=X), tf.float64)
+            sigma_11 = tf.cast(model.kernel.K(X=X), tf.float64)
+            
+        if latent is True:
+            sigma_22 = tf.cast(model.kernel.latent_kernels[kernel_idx](X=model_data[0]),tf.float64)
+        else:
+            sigma_22 = tf.cast(model.kernel.K(X=model_data[0]),tf.float64)
+        sigma_12 = tf.transpose(sigma_21)
+
+        # Figure out white noise amount to add to diag if none given
+        if white_noise_amt is None:
+            # Get min eigenvalue to make sure we can invert the matrix
+                min_ev = np.min(np.linalg.eigvalsh(sigma_22))
+                if min_ev < 0:
+                    white_noise_amt = abs(min_ev)
+                else:
+                    white_noise_amt = 0
+                # white_noise_amt = np.tril(sigma_11, k=-1).max()
         sigma_22 += tf.linalg.diag(tf.repeat(f64(white_noise_amt), model.data[0].shape[0]))
-        # sigma_11 += tf.linalg.diag(tf.repeat(f64(white_noise_amt), X.shape[0]))
 
-    # Now put all of the pieces together into one matrix
-    sigma_full = tf.concat([tf.concat(values=[sigma_11, sigma_12], axis=1), 
-                            tf.concat(values=[sigma_21, sigma_22], axis=1)], 
-                           axis=0)
-    
-    # Invert sigma_22
-    # Try LU decomposition first
-    try:
-        inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
-    except:
-        print("Warning - Approximating the covariance inverse")
-        inv_sigma_22 = tf.linalg.pinv(sigma_22)
+            
+        # # Add likelihood noise if requested - otherwise small constant for invertibility
+        # if predict_y:
+        #     sigma_22 += tf.linalg.diag(tf.repeat(model.likelihood.variance, model.data[0].shape[0]))
+        #     sigma_11 += tf.linalg.diag(tf.repeat(model.likelihood.variance, X.shape[0]))
+        # else: # Was adding 1e-4 noise, might not need that though 
+        #     sigma_22 += tf.linalg.diag(tf.repeat(f64(white_noise_amt), model.data[0].shape[0]))
+        #     # sigma_11 += tf.linalg.diag(tf.repeat(f64(white_noise_amt), X.shape[0]))
+
+        # # Now put all of the pieces together into one matrix
+        # sigma_full = tf.concat([tf.concat(values=[sigma_11, sigma_12], axis=1), 
+        #                         tf.concat(values=[sigma_21, sigma_22], axis=1)], 
+        #                        axis=0)
         
-    # Now calculate mean and variance
-    if latent is True:
-        pred_mu = (np.zeros((X.shape[0], 1)) + 
-                tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
-                                        b=inv_sigma_22),
-                          b=(model.q_mu.numpy()[:, kernel_idx].reshape(-1, 1) 
-                             - np.zeros((model_data[0].shape[0], 1)))))
-    else:
-        pred_mu = (np.zeros((X.shape[0], 1)) + 
-                tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
-                                        b=inv_sigma_22),
-                            b=(model_data[1] - np.zeros((model_data[0].shape[0], 1)))))
-    # pred_mu = (np.zeros((X.shape[0], 1)) + 
-    #            tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
-    #                                  b=inv_sigma_22),
-    #                      b=(model.data[1] - np.zeros((model.data[0].shape[0], 1)))))
+        # Invert sigma_22
+        # Try LU decomposition first
+        try:
+            inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
+        except:
+            print("Warning - Approximating the covariance inverse")
+            inv_sigma_22 = tf.linalg.pinv(sigma_22)
+            
+        # Now calculate mean and variance
+        if latent is True:
+            pred_mu = (np.zeros((X.shape[0], 1)) + 
+                    tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
+                                            b=inv_sigma_22),
+                            b=(model.q_mu.numpy()[:, kernel_idx].reshape(-1, 1) 
+                                - np.zeros((model_data[0].shape[0], 1)))))
+        else:
+            if model.mean_function.name == "zero":
+                mu1 = np.zeros(shape=(X.shape[0], 1))
+                mu2 = np.zeros(shape=(model_data[0].shape[0], 1))
+            elif model.mean_function.name == "constant":
+                mu1 = np.repeat(model.mean_function.c.numpy(), X.shape[0]).reshape(-1, 1)
+                mu2 = np.repeat(model.mean_function.c.numpy(), model_data[0].shape[0]).reshape(-1, 1)
+            else:
+                raise NotImplementedError("Cannot handle mean_function beyond (none, constant)")
+            # pred_mu = (np.zeros((X.shape[0], 1)) + 
+            #         tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
+            #                                 b=inv_sigma_22),
+            #                     b=(model_data[1] - np.zeros((model_data[0].shape[0], 1)))))
+            pred_mu = (
+                mu1 + 
+                tf.matmul(
+                    a=tf.matmul(
+                        a=sigma_12,
+                        b=inv_sigma_22
+                    ),
+                    b=(model_data[1] - mu2)
+                )
+            )
+        # pred_mu = (np.zeros((X.shape[0], 1)) + 
+        #            tf.matmul(a=tf.matmul(a=sigma_12, #b=tf.linalg.inv(sigma_22)), 
+        #                                  b=inv_sigma_22),
+        #                      b=(model.data[1] - np.zeros((model.data[0].shape[0], 1)))))
 
-    # Covariance function
-    pred_cov = (sigma_11 - tf.matmul(a=sigma_12,
-                                     b=tf.matmul(a=inv_sigma_22, 
-                                                 #a=tf.linalg.inv(sigma_22),
-                                                 b=sigma_21)))
-    # Variance component
-    pred_var = tf.linalg.diag_part(pred_cov)
+        # Covariance function
+        pred_cov = (sigma_11 - tf.matmul(a=sigma_12,
+                                        b=tf.matmul(a=inv_sigma_22, 
+                                                    #a=tf.linalg.inv(sigma_22),
+                                                    b=sigma_21)))
+        # Variance component
+        pred_var = tf.linalg.diag_part(pred_cov)
 
-    # Also pull some function samples
-    # posterior_dist = tfp.distributions.MultivariateNormalFullCovariance(
-    #     loc=tf.transpose(pred_mu),
-    #     covariance_matrix=pred_cov,
-    #     )
-    # Need to update this to silence tensorflow warning
-    posterior_dist = tfp.distributions.MultivariateNormalTriL(
-        loc=tf.transpose(pred_mu),
-        scale_tril=tf.linalg.cholesky(pred_cov)
-    )
-    sample_fns = posterior_dist.sample(sample_shape=num_samples)
-    sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
-    
+        # Also pull some function samples
+        # posterior_dist = tfp.distributions.MultivariateNormalFullCovariance(
+        #     loc=tf.transpose(pred_mu),
+        #     covariance_matrix=pred_cov,
+        #     )
+        # Need to update this to silence tensorflow warning
+        posterior_dist = tfp.distributions.MultivariateNormalTriL(
+            loc=tf.transpose(pred_mu),
+            scale_tril=tf.linalg.cholesky(pred_cov)
+        )
+        sample_fns = posterior_dist.sample(sample_shape=num_samples)
+        sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
+
+    # Transform output as needed
+    if predict_type == 'mean':
+        sample_fns = model.likelihood._conditional_mean(
+            X=X,
+            F=sample_fns
+        )
+        pred_var = model.likelihood._conditional_variance(
+            X=X,
+            F=pred_mu
+        )
+        pred_mu = model.likelihood._conditional_mean(
+            X=X,
+            F=pred_mu
+        )
+        pred_cov = None
+
     return pred_mu, pred_var, sample_fns, pred_cov
 
 def freeze_variance_parameters(kernel):
     if hasattr(kernel, "variance"):
         gpflow.utilities.set_trainable(kernel.variance, False)
         return None
-    elif kernel.name in ["sum", "linear_coregionalization"]:
+    elif kernel.name in ["sum", "product", "linear_coregionalization"]:
         for k in kernel.kernels:
             # print(f"working on kernel {k}")
             freeze_variance_parameters(k)
@@ -498,6 +571,68 @@ def gp_likelihood_crosswalk(likelihood_str):
         return gpflow.likelihoods.Bernoulli()
     elif likelihood_str == "gamma":
         return gpflow.likelihoods.Gamma()
+    elif likelihood_str == 'zeroinflated_negativebinomial':
+        return ZeroInflatedNegativeBinomial()
     else:
         print("Not sure what likelihood requested. Can use 'gaussian', 'poisson', 'binomial', and 'gamma'.")
         return None
+    
+def find_variance_components(kern, sum_reduce=True, penalize_factor_prod=1):
+    """Retrieve the variance parameter of all kernel components recursively."""
+    # print(kern.name)
+    if kern.name == "sum":
+        var_list = tf.stack(
+            [find_variance_components(kern=x, sum_reduce=sum_reduce) for x in kern.kernels]
+        )
+        if sum_reduce:
+            return tf.reduce_sum(var_list)
+        else:
+            return var_list
+    elif kern.name == "product":
+        return penalize_factor_prod*tf.reduce_prod([find_variance_components(x, sum_reduce) for x in kern.kernels])
+    elif kern.name == "linear_coregionalization":
+
+        # Calculate the weighted kernel components for each output
+        # temp_weights = tf.matmul(
+        #     a=kern.W,
+        #     b=tf.reshape(
+        #         tf.convert_to_tensor(
+        #             [find_variance_components(x) for x in kern.kernels]
+        #         ),
+        #         shape=(-1, 1)
+        #     )
+        # )
+
+        temp_weights = kern.W
+
+        # return tf.matmul(a=temp_weights, b=temp_weights, transpose_a=True)
+        if sum_reduce:
+            return tf.reduce_sum(tf.abs(temp_weights))
+        else:
+            return tf.abs(temp_weights)
+    else:
+        if kern.name == "periodic":
+            return tf.convert_to_tensor(kern.base_kernel.variance)
+        else:
+            return tf.convert_to_tensor(kern.variance)
+        
+@contextlib.contextmanager
+def tqdm_joblib(tqdm_object):
+    """Context manager to patch joblib to report into tqdm progress bar given as argument
+    
+    Source: https://stackoverflow.com/questions/24983493/tracking-progress-of-joblib-parallel-execution"""
+    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def __call__(self, *args, **kwargs):
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    old_batch_callback = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+    try:
+        yield tqdm_object
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_batch_callback
+        tqdm_object.close()  
