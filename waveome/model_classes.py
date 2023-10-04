@@ -154,10 +154,10 @@ class BaseGP(gpflow.models.SVGP):
             #     'method': 'L-BFGS-B', 
             #     'options': {'maxiter': 5000}
             # },
-            adam_learning_rate=0.1,
+            adam_learning_rate=0.01,
             nat_gradient_gamma=0.0001,
             num_opt_iter=5000,
-            convergence_threshold=0.01
+            convergence_threshold=1e-6
         ):
         ''' Optimize hyperparameters of model.
         
