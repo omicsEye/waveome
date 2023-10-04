@@ -1,4 +1,9 @@
 .ipynb_checkpoints
 .DS_Store
 .spyproject
-.egg-info
+*.egg-info
+.idea
+.pytest_cache
+.virtual_documents
+
+waveome/__pycache__
