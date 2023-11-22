@@ -1,56 +1,43 @@
-# Libraries
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-import numpy as np
-import tensorflow as tf
-from tensorflow_probability import distributions as tfd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import gpflow
-from gpflow.utilities import set_trainable
-f64 = gpflow.utilities.to_default_float
 import re
-import contextlib
-import joblib
-from tqdm import tqdm
-from joblib import Parallel, delayed
-import pandas as pd
 import warnings
-import inspect
+
+import gpflow
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import tensorflow as tf
+from gpflow.utilities import set_trainable
+from joblib import Parallel, delayed
+from tensorflow_probability import distributions as tfd
+from tqdm import tqdm
+
 from .kernels import Categorical
+from .likelihoods import ZeroInflatedNegativeBinomial
+from .model_classes import PSVGP
+from .predictions import gp_predict_fun, pred_kernel_parts
+from .regularization import full_kernel_build
 from .utilities import (
-    replace_kernel_variables, 
-    print_kernel_names,
-    calc_bic, 
+    calc_bic,
     calc_rsquare,
-    calc_residuals,
     check_if_model_exists,
-    tqdm_joblib
+    print_kernel_names,
+    tqdm_joblib,
 )
-from .predictions import (
-    pred_kernel_parts, 
-    individual_kernel_predictions,
-    gp_predict_fun
-)
-from .model_classes import (
-    PSVGP
-)
-from .likelihoods import (
-    ZeroInflatedNegativeBinomial
-)
-from .regularization import (
-    full_kernel_build
-)
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+f64 = gpflow.utilities.to_default_float
+
 
 class GPSearch:
     """Gaussian process model search class.
-    
+
     Parameters
     ----------
     X : pandas.DataFrame
         Design dataframe including covariates of interest to make up kernel
-    
+
     Y : pandas.DataFrame
         Output dataframe, each column is one output vector
 
@@ -64,55 +51,69 @@ class GPSearch:
         Likelihood distribution of Y variables. Only accepts one string and
         currently only supports 'gaussian', 'bernoulli',
         or 'poisson' (experimental)
-        
+
     Attributes
     ----------
-    
+
     """
-    def __init__(self, X, Y, 
-                 unit_col=None, 
-                 standardize_X=True,
-                 Y_transform='scale',
-                 categorical_vars=[],
-                 outcome_likelihood='gaussian'):
-        
+
+    def __init__(
+        self,
+        X,
+        Y,
+        unit_col=None,
+        standardize_X=True,
+        Y_transform="scale",
+        categorical_vars=[],
+        outcome_likelihood="gaussian",
+    ):
         X = X.copy()
 
         # Check input types
         if not isinstance(X, pd.DataFrame):
-            raise TypeError("X is not a Pandas DataFrame") 
+            raise TypeError("X is not a Pandas DataFrame")
         if not isinstance(Y, pd.DataFrame):
             raise TypeError("Y is not a Pandas DataFrame")
-        
+
         # Add unit col to categorical variables if it isn't specified
-        if unit_col != None and unit_col not in categorical_vars:
+        if unit_col is not None and unit_col not in categorical_vars:
             categorical_vars += [unit_col]
 
-        #Transform any categorical columns to integers
+        # Transform any categorical columns to integers
         self.categorical_dict = {}
 
         for c in categorical_vars:
-            if X[c].dtype in ['object', 'string']:
-                print(f'Converting {c} to numeric')
-                factor_out = pd.factorize(X[c])                
+            if X[c].dtype in ["object", "string"]:
+                print(f"Converting {c} to numeric")
+                factor_out = pd.factorize(X[c])
                 self.categorical_dict[c] = factor_out
                 X.loc[:, c] = factor_out[0].astype(float)
-        
+
         # Make sure all resulting columns are the same type
-        float_match = X.columns.isin(
-            X.select_dtypes(include=[float]).columns
-        )
+        float_match = X.columns.isin(X.select_dtypes(include=[float]).columns)
         if not min(float_match):
-            raise TypeError(f"X columns must all be float type. Cast {X.columns[~float_match]} to float. Perhaps use pandas.factorize() and pandas.DataFrame.astype().")
-        float_match = Y.columns.isin(
-            Y.select_dtypes(include=[float]).columns
-        )
+            raise TypeError(
+                "X columns must all be float type."
+                f" Cast {X.columns[~float_match]} to float."
+                " Perhaps use pandas.factorize() and"
+                " pandas.DataFrame.astype()."
+            )
+        float_match = Y.columns.isin(Y.select_dtypes(include=[float]).columns)
         if not min(float_match):
-            raise TypeError(f"Y columns must all be float type. Cast {Y.columns[~float_match]} to float. Perhaps use pandas.factorize() and pandas.DataFrame.astype().")
-        
+            raise TypeError(
+                "Y columns must all be float type."
+                f" Cast {Y.columns[~float_match]} to float."
+                " Perhaps use pandas.factorize() and"
+                " pandas.DataFrame.astype()."
+            )
+
         # Make sure there is no missing data
-        assert X.isna().sum().values[0] == 0, "NAs in X, waveome cannot currently handle missing values!"
-        assert Y.isna().sum().values[0] == 0, "NAs in Y, waveome cannot currently handle missing values!"
+        assert (
+            X.isna().sum().values[0] == 0
+        ), "NAs in X, waveome cannot currently handle missing values!"
+        assert (
+            Y.isna().sum().values[0] == 0
+        ), "NAs in Y, waveome cannot currently handle missing values!"
 
         # Load up attributes
         self.X = X.copy()
@@ -133,31 +134,32 @@ class GPSearch:
 
         # Standardize continuous X columns
         if standardize_X:
-            # self.X_means = X.loc[:, ~X.columns.isin(categorical_vars)].mean(axis=0)
-            # self.X_stds = X.loc[:, ~X.columns.isin(categorical_vars)].std(axis=0)
             self.X_means = self.X.iloc[:, self.cont_idx].mean(axis=0)
             self.X_stds = self.X.iloc[:, self.cont_idx].std(axis=0)
             self.X_original = self.X.copy()
-            # X.loc[:, ~X.columns.isin(categorical_vars)] = (
-            #     (X.loc[:, ~X.columns.isin(categorical_vars)] - self.X_means)
-            #     / self.X_stds
-            # )
             self.X.iloc[:, self.cont_idx] = (
-                (self.X.iloc[:, self.cont_idx] - self.X_means)
-                / self.X_stds
-            )
+                self.X.iloc[:, self.cont_idx] - self.X_means
+            ) / self.X_stds
 
-        # TODO: Transform Y columns (should we do this? it might only be useful for some likelihoods)
-        if Y_transform == 'standardize':
-            if self.likelihood != 'gaussian':
-                warnings.warn("Standardizing Y without a gaussian likelihood is not advised! Maybe Y_transform='scale' is better?")
+        # Transform Y columns
+        # It might only be useful for some likelihoods
+        if Y_transform == "standardize":
+            if self.likelihood != "gaussian":
+                warnings.warn(
+                    "Standardizing Y without a gaussian likelihood is"
+                    " not advised! Maybe Y_transform='scale' is better?"
+                )
             self.Y_means = self.Y.mean(axis=0)
             self.Y_stds = self.Y.std(axis=0)
             self.Y_original = self.Y.copy()
             self.Y = (self.Y - self.Y_means) / self.Y_stds
-        elif Y_transform == 'scale':
-            if self.likelihood in ['binomial', 'bernoulli']:
-                warnings.warn(f"Scaling Y with {outcome_likelihood} is not advised! Maybe pass as-is with Y_transform=None is better?")
+        elif Y_transform == "scale":
+            if self.likelihood in ["binomial", "bernoulli"]:
+                warnings.warn(
+                    f"Scaling Y with {outcome_likelihood} is"
+                    " not advised! Maybe pass as-is with Y_transform=None"
+                    " is better?"
+                )
             self.Y_stds = self.Y.std(axis=0)
             self.Y_original = self.Y.copy()
             self.Y = self.Y / self.Y_stds
@@ -169,19 +171,18 @@ class GPSearch:
         verbose=False,
         mean_function=gpflow.mean_functions.Constant(),
         kernel_options={
-            'second_order_numeric': False, 
-            'kerns': [gpflow.kernels.SquaredExponential()]
+            "second_order_numeric": False,
+            "kerns": [gpflow.kernels.SquaredExponential()],
         },
-        penalization_factor = 1.,
+        penalization_factor=1.0,
         num_random_restarts=5,
         sparse_options={},
         variational_options={},
         optimization_options={},
-        random_seed=None
+        random_seed=None,
     ):
-        
         # Set model selection type
-        self.model_selection_type = 'penalized'
+        self.model_selection_type = "penalized"
 
         # Set seed if requested
         if random_seed is not None:
@@ -190,23 +191,25 @@ class GPSearch:
         # If kernel is none then build out full kernel set
         if full_kernel is None:
             full_kernel, full_kernel_name = full_kernel_build(
-                cat_vars = self.cat_idx, 
-                num_vars = self.cont_idx,
-                var_names = self.feat_names,
-                return_sum = True,
-                **kernel_options
+                cat_vars=self.cat_idx,
+                num_vars=self.cont_idx,
+                var_names=self.feat_names,
+                return_sum=True,
+                **kernel_options,
             )
         else:
             full_kernel = gpflow.utilities.deepcopy(full_kernel)
 
         # Add likelihood information
-        variational_options['likelihood'] = self.likelihood
-        
+        variational_options["likelihood"] = self.likelihood
+
         # Load up model dictionary
         self.models = {}
 
-        with tqdm_joblib(tqdm(desc="GPOptimize (no search)", total=len(self.out_names))) as progress_bar:
-            with Parallel(n_jobs=num_jobs) as parallel:
+        with tqdm_joblib(
+            tqdm(desc="GPOptimize (no search)", total=len(self.out_names))
+        ) as _:
+            with Parallel(n_jobs=num_jobs) as _:
                 for feat in self.out_names:
                     # Specify model
                     self.models[feat] = PSVGP(
@@ -215,74 +218,70 @@ class GPSearch:
                         mean_function=gpflow.utilities.deepcopy(mean_function),
                         kernel=gpflow.utilities.deepcopy(full_kernel),
                         verbose=verbose,
-                        penalized_options={"penalization_factor": penalization_factor},
+                        penalized_options={
+                            "penalization_factor": penalization_factor
+                        },
                         sparse_options=sparse_options,
-                        variational_options=variational_options
+                        variational_options=variational_options,
                     )
 
                     # Random restarts to find optimal parameters
                     self.models[feat].random_restart_optimize(
-                        num_restart = num_random_restarts,
-                        randomize_kwargs = {"random_seed": random_seed},
-                        optimize_kwargs = optimization_options
+                        num_restart=num_random_restarts,
+                        randomize_kwargs={"random_seed": random_seed},
+                        optimize_kwargs=optimization_options,
                     )
 
                     # Clean up final model
                     self.models[feat].cut_kernel_components()
                     self.models[feat].update_kernel_name()
-                    self.models[feat].variance_explained()   
+                    self.models[feat].get_variance_explained()
 
         return None
-
-        
-
 
     def run_penalized_search(
         self,
         full_kernel=None,
-        #num_jobs_per_model=-2,
-        #num_jobs_per_dataset=1,
         num_jobs=-2,
         verbose=False,
-        mean_function=gpflow.mean_functions.Constant(),
+        mean_function=gpflow.functions.Constant(c=0.0),
         kernel_options={
-            'second_order_numeric': False, 
-            'kerns': [gpflow.kernels.SquaredExponential()]
+            "second_order_numeric": False,
+            "kerns": [gpflow.kernels.SquaredExponential(active_dims=[0])],
         },
         penalized_options={},
         search_options={},
         sparse_options={},
         variational_options={},
         optimization_options={},
-        random_seed=None
+        random_seed=None,
     ):
-
         # Set model selection type
-        self.model_selection_type = 'penalized'
+        self.model_selection_type = "penalized"
 
         # Set seed if requested
         if random_seed is not None:
             np.random.seed(random_seed)
 
             # Also add it to the search options if not requested
-            if 'random_seed' not in search_options.keys():
-                search_options['random_seed'] = random_seed
+            if "random_seed" not in search_options.keys():
+                search_options["random_seed"] = random_seed
 
         # If kernel is none then build out full kernel set
         if full_kernel is None:
             full_kernel, full_kernel_name = full_kernel_build(
-                cat_vars = self.cat_idx, 
-                num_vars = self.cont_idx,
-                var_names = self.feat_names,
-                return_sum = True,
-                **kernel_options
+                cat_vars=self.cat_idx,
+                num_vars=self.cont_idx,
+                var_names=self.feat_names,
+                return_sum=True,
+                **kernel_options,
             )
         else:
             full_kernel = gpflow.utilities.deepcopy(full_kernel)
 
         # Add likelihood information
-        variational_options['likelihood'] = self.likelihood
-        
+        variational_options["likelihood"] = self.likelihood
+
         # Load up model dictionary
         self.models = {}
         for feat in self.out_names:
@@ -294,53 +293,31 @@ class GPSearch:
                 verbose=verbose,
                 penalized_options=penalized_options,
                 sparse_options=sparse_options,
-                variational_options=variational_options
+                variational_options=variational_options,
             )
-        # full_model = PSVGP(
-        #     X=self.X.to_numpy(),
-        #     Y=self.Y.to_numpy(),
-        #     kernel=full_kernel,
-        #     verbose=verbose,
-        #     penalized_options=penalized_options,
-        #     sparse_options=sparse_options,
-        #     variational_options=variational_options
-        # )
-        # self.models = {feat: gpflow.utilities.deepcopy(full_model) for feat in self.out_names}
 
-        # Now run penalized search for every model combination
-        # for outcome, model in self.models.items():
-        #     print(f'working on outcome {outcome}')
-        #     model.penalization_search(
-        #         max_jobs=num_jobs_per_model,
-        #         optimization_options=optimization_options
-        #     )    
-
-        # delayed_search_list = [delayed(lambda x: x.penalization_search())(run) for run in runs]
-        # with tqdm_joblib(tqdm(desc="GPSearch", total=len(self.out_names))) as progress_bar:
-        #     _ = Parallel(n_jobs=num_jobs_per_dataset)(
-        #         delayed(model.penalization_search)(
-        #             max_jobs=num_jobs_per_model,            
-        #             optimization_options=optimization_options
-        #         ) 
-        #         for outcome, model in self.models.items()
-        #     )
-        
         # Calculate total number of tasks needed to search over
-        k_fold = (3 if 'k_fold' not in search_options.keys() 
-                  else search_options['k_fold'])
-        n_factors = (5 if 'penalization_factor_list' not in search_options.keys() 
-                     else len(search_options['penalization_factor_list'])) 
+        k_fold = (
+            3
+            if "k_fold" not in search_options.keys()
+            else search_options["k_fold"]
+        )
+        n_factors = (
+            5
+            if "penalization_factor_list" not in search_options.keys()
+            else len(search_options["penalization_factor_list"])
+        )
         tot_tasks = len(self.out_names) * k_fold * n_factors
 
-        with tqdm_joblib(tqdm(desc="GPSearch", total=tot_tasks)) as progress_bar:
+        with tqdm_joblib(tqdm(desc="GPSearch", total=tot_tasks)) as _:
             with Parallel(n_jobs=num_jobs) as parallel:
                 for outcome, model in self.models.items():
                     model.penalization_search(
                         parallel_object=parallel,
                         optimization_options=optimization_options,
-                        **search_options
+                        **search_options,
                     )
-                    
+
                     # Clean up models (prune)
                     model.cut_kernel_components()
 
@@ -348,17 +325,23 @@ class GPSearch:
                     model.update_kernel_name()
 
                     # Also attach variance explained
-                    model.variance_explained()    
-
+                    model.get_variance_explained()
 
         return None
 
-    def run_search(self,
-                   kernels=None,
-                   max_depth=5, early_stopping=True, prune=True,
-                   keep_all=False, metric_diff=6, 
-                   random_seed=None, num_jobs=-2, 
-                   verbose=False, debug=False):
+    def run_search(
+        self,
+        kernels=None,
+        max_depth=5,
+        early_stopping=True,
+        prune=True,
+        keep_all=False,
+        metric_diff=6,
+        random_seed=None,
+        num_jobs=-2,
+        verbose=False,
+        debug=False,
+    ):
         """Run search process given search operator and kernels of interest.
 
         Parameters
@@ -370,43 +353,45 @@ class GPSearch:
         """
 
         # Set model selection type
-        self.model_selection_type = 'stepwise'
+        self.model_selection_type = "stepwise"
 
         # Set default kernel if none passed in
         if kernels is None:
             kernels = [gpflow.kernels.SquaredExponential()]
 
-        
         # Calculate number of output columns
         num_out = len(self.out_names)
-        
+
         # Take min of output or requested jobs for num_jobs
         if num_jobs <= 0:
             num_jobs = os.cpu_count() + num_jobs + 1
-        num_jobs=min(num_out, num_jobs)
-        
-        with tqdm_joblib(tqdm(desc="Kernel search", total=num_out)) as progress_bar:
-            models_out = Parallel(n_jobs=num_jobs, verbose=1)(delayed(full_kernel_search)(
-                X=self.X,
-                Y=self.Y[self.out_names[i]],
-                kern_list=kernels,
-                cat_vars=self.cat_idx,
-                max_depth=max_depth,
-                early_stopping=early_stopping,
-                prune=prune,
-                keep_all=keep_all,
-                lik=self.likelihood,
-                metric_diff=metric_diff,
-                random_seed=random_seed,
-                verbose=verbose,
-                debug=debug)
-                for i in range(num_out))
-        
+        num_jobs = min(num_out, num_jobs)
+
+        with tqdm_joblib(tqdm(desc="Kernel search", total=num_out)) as _:
+            models_out = Parallel(n_jobs=num_jobs, verbose=1)(
+                delayed(full_kernel_search)(
+                    X=self.X,
+                    Y=self.Y[self.out_names[i]],
+                    kern_list=kernels,
+                    cat_vars=self.cat_idx,
+                    max_depth=max_depth,
+                    early_stopping=early_stopping,
+                    prune=prune,
+                    keep_all=keep_all,
+                    lik=self.likelihood,
+                    metric_diff=metric_diff,
+                    random_seed=random_seed,
+                    verbose=verbose,
+                    debug=debug,
+                )
+                for i in range(num_out)
+            )
+
         # Make dictionary of outcomes as lookups
         dict_out = {feat: mod for feat, mod in zip(self.out_names, models_out)}
-        
+
         self.models = dict_out
-        
+
         return None
 
     # TODO: Add this functionality to create variance explained barchart
@@ -428,189 +413,222 @@ class GPSearch:
     #     )
     #     return bp
 
-    def plot_heatmap(self, var_cutoff=0.8, feat=None, 
-                     show_vals=True, figsize=(15, 5),
-                     cluster=True):
-        
+    def plot_heatmap(
+        self,
+        var_cutoff=0.8,
+        feat=None,
+        show_vals=True,
+        figsize=(15, 5),
+        cluster=True,
+    ):
         # Get the percent of variance explained for each component from models
-        if self.model_selection_type == 'penalized':
-            var_components = [x.variance_explained for x in self.models.values()]
+        if self.model_selection_type == "penalized":
+            var_components = [
+                x.variance_explained for x in self.models.values()
+            ]
         else:
-            var_components = [x['var_exp'] for x in self.models.values()]
-        
+            var_components = [x["var_exp"] for x in self.models.values()]
+
         # Normalize to get the percentage of variance explained
         var_percent = [
-            [y/sum(x) if sum(x) > 0 else 0 for y in x][:-1]
-            for x in var_components]
+            [y / sum(x) if sum(x) > 0 else 0 for y in x][:-1]
+            for x in var_components
+        ]
 
         # Pull off kernel names from best models
-        if self.model_selection_type == 'penalized':
-            kernels = [x.kernel_name.split('+') for x in self.models.values()]
+        if self.model_selection_type == "penalized":
+            kernels = [x.kernel_name.split("+") for x in self.models.values()]
         else:
-            kernels = [x['best_model'].split('+') 
-                    for x in self.models.values()]
-        distinct_kernels = np.unique([item for sublist in kernels 
-                                      for item in sublist])
+            kernels = [
+                x["best_model"].split("+") for x in self.models.values()
+            ]
+        distinct_kernels = np.unique(
+            [item for sublist in kernels for item in sublist]
+        )
         kernel_array = np.zeros(shape=(len(kernels), len(distinct_kernels)))
 
         # See where the best kernels coincide with the distinct indicator
         kernel_idxs = np.vstack(
-            [sum([np.where(distinct_kernels == y, 1, 0) for y in x])
-             for x in kernels])
+            [
+                sum([np.where(distinct_kernels == y, 1, 0) for y in x])
+                for x in kernels
+            ]
+        )
 
-        # Fill in variance explained 
+        # Fill in variance explained
         kernel_array[kernel_idxs == 1] = [x for y in var_percent for x in y]
-        
+
         # Only keep outcomes that have variance explained or more
-        kernel_array_filtered = kernel_array[kernel_array.sum(axis=1) > var_cutoff, :]
-        
+        kernel_array_filtered = kernel_array[
+            kernel_array.sum(axis=1) > var_cutoff, :
+        ]
+
         # Check if this results in any kernels
         if len(kernel_array_filtered) == 0:
             return "No outcomes meet variance threshold!"
-        
+
         # Only keep kernels that can explain anything left over
-        kernel_array_filtered2 = kernel_array_filtered[:, kernel_array_filtered.sum(axis=0) > 0]
-        
+        kernel_array_filtered2 = kernel_array_filtered[
+            :, kernel_array_filtered.sum(axis=0) > 0
+        ]
+
         # Do the same thing for the list of distinct kernel names
         distinct_kernel_names = distinct_kernels.copy()
-        distinct_kernel_names = distinct_kernel_names[kernel_array_filtered.sum(axis=0) > 0]
-        
+        distinct_kernel_names = distinct_kernel_names[
+            kernel_array_filtered.sum(axis=0) > 0
+        ]
+
         # Swap out kernel indexes for the feature names
-        for i, c in enumerate(['['+x+']' for x in self.feat_names]):
-            distinct_kernel_names = [x.replace('['+str(i)+']', c) 
-                                     for x in distinct_kernel_names]
-        
-        
+        for i, c in enumerate(["[" + x + "]" for x in self.feat_names]):
+            distinct_kernel_names = [
+                x.replace("[" + str(i) + "]", c) for x in distinct_kernel_names
+            ]
+
         # Only keep the outcome labels that meet the criteria
-        out_index = np.array(self.out_names)[kernel_array.sum(axis=1) > var_cutoff]
-        
+        out_index = np.array(self.out_names)[
+            kernel_array.sum(axis=1) > var_cutoff
+        ]
+
         # See if we only want to filter to specific features
-        if feat != None:
+        if feat is not None:
             # See which kernels have the feature of interest
-            feat_flag = ['['+feat+']' in x for x in distinct_kernel_names]
-            
+            feat_flag = ["[" + feat + "]" in x for x in distinct_kernel_names]
+
             # Subset kernel names that have that feature
             distinct_kernel_names = np.array(distinct_kernel_names)[feat_flag]
-            
+
             # Now only keep heatmap columns that have those kernels
             kernel_array_filtered2 = kernel_array_filtered2[:, feat_flag]
-            
+
             # Subset the outcomes to the variance threshold
-            out_index = out_index[kernel_array_filtered2.sum(axis=1) > var_cutoff]
+            out_index = out_index[
+                kernel_array_filtered2.sum(axis=1) > var_cutoff
+            ]
             kernel_array_filtered2 = kernel_array_filtered2[
                 kernel_array_filtered2.sum(axis=1) > var_cutoff, :
             ]
-            
+
             # Make sure that those resulting kernels have some outcomes
             kernel_threshold_flag = kernel_array_filtered2.sum(axis=0) > 0
             kernel_array_filtered2 = kernel_array_filtered2[
                 :, kernel_threshold_flag
             ]
-            distinct_kernel_names = distinct_kernel_names[kernel_threshold_flag]
+            distinct_kernel_names = distinct_kernel_names[
+                kernel_threshold_flag
+            ]
 
         if cluster:
-            assert len(out_index) > 1, f"Not enough models meet criteria (clustermap) requested! (N={len(out_index)})"
+            assert len(out_index) > 1, (
+                "Not enough models meet criteria (clustermap) requested!"
+                f"  (N={len(out_index)})"
+            )
         else:
-             assert len(out_index) > 0, f"Not enough models meet criteria (heatmap) requested! (N={len(out_index)})"
+            assert len(out_index) > 0, (
+                "Not enough models meet criteria (heatmap) requested!"
+                f" (N={len(out_index)})"
+            )
 
         if cluster:
             clm = sns.clustermap(
-                pd.DataFrame(kernel_array_filtered2,
-                            index=out_index,
-                            columns=distinct_kernel_names).transpose(),
+                pd.DataFrame(
+                    kernel_array_filtered2,
+                    index=out_index,
+                    columns=distinct_kernel_names,
+                ).transpose(),
                 figsize=figsize,
                 annot=show_vals,
                 vmin=0,
                 vmax=1,
-                cmap="Greens"
+                cmap="Greens",
             )
             # Adjust text for easier reading
             plt.setp(
-                clm.ax_heatmap.xaxis.get_majorticklabels(), 
-                rotation=45, 
-                horizontalalignment='right'
+                clm.ax_heatmap.xaxis.get_majorticklabels(),
+                rotation=45,
+                horizontalalignment="right",
             )
             # Add text if requested
-            if show_vals == True:
+            if show_vals:
                 for t in clm.ax_heatmap.texts:
-                    if float(t.get_text())>0:
-                        t.set_text(t.get_text()) 
+                    if float(t.get_text()) > 0:
+                        t.set_text(t.get_text())
                     else:
                         t.set_text("")
         else:
             fig, ax = plt.subplots(1, 1, figsize=figsize)
             clm = sns.heatmap(
-                pd.DataFrame(kernel_array_filtered2,
-                            index=out_index,
-                            columns=distinct_kernel_names).transpose(),
+                pd.DataFrame(
+                    kernel_array_filtered2,
+                    index=out_index,
+                    columns=distinct_kernel_names,
+                ).transpose(),
                 ax=ax,
                 annot=show_vals,
                 vmin=0,
                 vmax=1,
-                cmap="Greens"
+                cmap="Greens",
             )
             # TODO: Update the heatmap to rotate x-axis ticks 45 degrees
-        
+
         return clm
 
     def plot_parts(
-        self, 
-        out_label, 
-        x_axis_label,
-        x_idx_min=None,
-        x_idx_max=None, 
-        **kwargs
+        self, out_label, x_axis_label, x_idx_min=None, x_idx_max=None, **kwargs
     ):
-        """ Plot independent kernel components.
-        
+        """Plot independent kernel components.
+
         Parameters
         ----------
-        
+
         Attributes
         ----------
-        
+
         """
-        
+
         if self.model_selection_type == "penalized":
             pkp = self.models[out_label].plot_parts(
-                x_idx=self.feat_names.index(x_axis_label), 
-                unit_idx=self.unit_idx, 
-                col_names=self.feat_names, 
+                x_idx=self.feat_names.index(x_axis_label),
+                # unit_idx=self.unit_idx,
+                col_names=self.feat_names,
                 lik=self.likelihood,
-                categorical_dict=self.categorical_dict, 
-                **kwargs
+                categorical_dict=self.categorical_dict,
+                **kwargs,
             )
         else:
             # Pull off specific model from trained models
             m = self.models[out_label]
-                    
+
             pkp = pred_kernel_parts(
                 m=m["models"][m["best_model"]]["model"],
                 x_idx=self.feat_names.index(x_axis_label),
                 x_idx_min=x_idx_min,
                 x_idx_max=x_idx_max,
-                unit_idx=self.unit_idx,
+                # unit_idx=self.unit_idx,
                 col_names=self.feat_names,
-                lik=self.likelihood
+                lik=self.likelihood,
             )
-        
+
         return pkp
-    
-    def plot_marginal(self, out_label, x_axis_label,
-                      unit_label=None,
-                      num_funs=100, ax=None, 
-                      plot_points=True, 
-                      reverse_transform_axes=False,
-                      **kwargs):
-        
+
+    def plot_marginal(
+        self,
+        out_label,
+        x_axis_label,
+        unit_label=None,
+        num_funs=100,
+        ax=None,
+        plot_points=True,
+        reverse_transform_axes=False,
+        **kwargs,
+    ):
         # Pull off specific model from trained models
         m = self.models[out_label]
 
         # Also get index of x axis variable
         x_idx = self.feat_names.index(x_axis_label)
         y_idx = self.out_names.index(out_label)
-        
-        if self.model_selection_type == 'penalized':
+
+        if self.model_selection_type == "penalized":
             gpf = m.plot_functions(
                 x_idx=x_idx,
                 col_names=self.feat_names,
@@ -618,7 +636,7 @@ class GPSearch:
                 num_funs=num_funs,
                 ax=ax,
                 plot_points=plot_points,
-                **kwargs
+                **kwargs,
             )
         else:
             gpf = gp_predict_fun(
@@ -630,23 +648,27 @@ class GPSearch:
                 num_funs=num_funs,
                 ax=ax,
                 plot_points=plot_points,
-                **kwargs
+                **kwargs,
             )
-        
+
         # Reverse transform if requested
         if reverse_transform_axes is True:
-            assert hasattr(self, "X_stds"), "Standardize_X wasn't called in GPSearch()"
-            assert hasattr(self, "Y_stds"), "Y_transform wasn't called in GPSearch()"
+            assert hasattr(
+                self, "X_stds"
+            ), "Standardize_X wasn't called in GPSearch()"
+            assert hasattr(
+                self, "Y_stds"
+            ), "Y_transform wasn't called in GPSearch()"
             plt.xticks(
-                ticks=plt.xticks()[0], 
+                ticks=plt.xticks()[0],
                 labels=np.round(
                     (
                         self.X_stds[x_idx]
-                        *np.array(plt.xticks()[0], dtype=np.float64) 
+                        * np.array(plt.xticks()[0], dtype=np.float64)
                         + self.X_means[x_idx]
                     ),
-                    1
-                )
+                    1,
+                ),
             )
 
             plt.yticks(
@@ -654,81 +676,100 @@ class GPSearch:
                 labels=np.round(
                     (
                         self.Y_stds[y_idx]
-                        *np.array(plt.yticks()[0], dtype = np.float64)
-                        + (self.Y_means[y_idx] if hasattr(self, "Y_means") else 0)
+                        * np.array(plt.yticks()[0], dtype=np.float64)
+                        + (
+                            self.Y_means[y_idx]
+                            if hasattr(self, "Y_means")
+                            else 0
+                        )
                     )
-                )
+                ),
             )
 
         return gpf
 
-def kernel_test(X, Y, k, num_restarts=5, random_init=True, 
-                verbose=False, likelihood='gaussian',
-                use_priors=True, keep_data=False,
-                X_holdout=None, Y_holdout=None, split=False):
+
+def kernel_test(
+    X,
+    Y,
+    k,
+    num_restarts=5,
+    random_init=True,
+    verbose=False,
+    likelihood="gaussian",
+    use_priors=True,
+    keep_data=False,
+    X_holdout=None,
+    Y_holdout=None,
+    split=False,
+):
     """
-    This function evaluates a particular kernel selection on a set of data. 
-    
+    This function evaluates a particular kernel selection on a set of data.
+
     Inputs:
         X (array): design matrix
         Y (array): output matrix
         k (gpflow kernel): specified kernel
-        
+
     Outputs:
         m (gpflow model): fitted GPflow model
-    
+
     """
-            
+
     # Randomize initial values for a number of restarts
     # np.random.seed(9012)
     best_loglik = -np.Inf
     best_model = None
-            
+
     for i in range(num_restarts):
-        
         # Specify model
-        if likelihood == 'gaussian':
+        if likelihood == "gaussian":
             m = gpflow.models.GPR(
-#             m = gpflow.models.VGP(
+                #             m = gpflow.models.VGP(
                 data=(X, Y),
-                kernel=k)#+gpflow.kernels.Constant())#,
-                #mean_function=gpflow.mean_functions.Constant())#,
-#                 likelihood=gpflow.likelihoods.Gaussian())
-        elif likelihood == 'exponential':
+                kernel=k,
+            )  # +gpflow.kernels.Constant())#,
+            # mean_function=gpflow.mean_functions.Constant())#,
+        #                 likelihood=gpflow.likelihoods.Gaussian())
+        elif likelihood == "exponential":
             m = gpflow.models.VGP(
                 data=(X, Y),
                 kernel=k,
                 # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Exponential())
-        elif likelihood == 'poisson':
+                likelihood=gpflow.likelihoods.Exponential(),
+            )
+        elif likelihood == "poisson":
             m = gpflow.models.VGP(
                 data=(X, Y),
                 kernel=k,
                 # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Poisson())
-        elif likelihood == 'gamma':
+                likelihood=gpflow.likelihoods.Poisson(),
+            )
+        elif likelihood == "gamma":
             m = gpflow.models.VGP(
                 data=(X, Y),
                 kernel=k,
                 # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Gamma())
-        elif likelihood == 'bernoulli':
+                likelihood=gpflow.likelihoods.Gamma(),
+            )
+        elif likelihood == "bernoulli":
             m = gpflow.models.VGP(
                 data=(X, Y),
-                kernel=k,#+gpflow.kernels.Constant(),
+                kernel=k,  # +gpflow.kernels.Constant(),
                 # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Bernoulli())
-        elif likelihood == 'zeroinflated_negativebinomial':
+                likelihood=gpflow.likelihoods.Bernoulli(),
+            )
+        elif likelihood == "zeroinflated_negativebinomial":
             m = gpflow.models.VGP(
-                data=(X,Y),
+                data=(X, Y),
                 kernel=k,
-                likelihood=ZeroInflatedNegativeBinomial()
+                likelihood=ZeroInflatedNegativeBinomial(),
             )
         else:
-            print('Unknown likelihood requested.')
-        
+            print("Unknown likelihood requested.")
+
         # # Set priors
-        if use_priors == True:
+        if use_priors:
             for p in m.parameters:
                 # We don't want to mess with the Q points in VGP model
                 if len(p.shape) <= 1:
@@ -737,108 +778,114 @@ def kernel_test(X, Y, k, num_restarts=5, random_init=True,
                     else:
                         p.prior = tfd.Uniform(f64(0), f64(100))
                         # p.prior = tfd.Gamma(f64(1), f64(0.5))
-        
+
         # Randomize initial values if not trained already
         if random_init:
             for p in m.kernel.trainable_parameters:
                 # Should we actually not have this requirement?
-                # if p.numpy() == 1 and 
+                # if p.numpy() == 1 and
                 if len(p.shape) <= 1:
                     unconstrain_vals = np.random.normal(
                         size=p.numpy().size
-                        ).reshape(p.numpy().shape)
-                    p.assign(
-                        p.transform_fn(unconstrain_vals)
-                    )
-            
+                    ).reshape(p.numpy().shape)
+                    p.assign(p.transform_fn(unconstrain_vals))
+
             for p in m.likelihood.trainable_parameters:
                 if len(p.shape) <= 1:
                     unconstrain_vals = np.random.normal(
                         size=p.numpy().size
-                        ).reshape(p.numpy().shape)
-                    p.assign(
-                        p.transform_fn(unconstrain_vals)
-                    )
-        
+                    ).reshape(p.numpy().shape)
+                    p.assign(p.transform_fn(unconstrain_vals))
+
         # Optimization step for hyperparameters
         try:
             gpflow.optimizers.Scipy().minimize(
                 m.training_loss,
                 m.trainable_variables,
-                #options={'maxiter': 10000}
+                # options={'maxiter': 10000}
             )
             # adam_opt_params(m)
             # scipy_opt_params(m)
-            
+
         except Exception as e:
             if verbose:
-                print(f'Optimization not successful, skipping. Error: {e}')
-            if best_model == None and i == num_restarts - 1:
-                return best_model, -1*best_loglik
+                print(f"Optimization not successful, skipping. Error: {e}")
+            if best_model is None and i == num_restarts - 1:
+                return best_model, -1 * best_loglik
             continue
-        
-#         print(opt_results)
-        # Now check to see if this is invertible 
+
+        #         print(opt_results)
+        # Now check to see if this is invertible
         try:
             m_, v_ = m.predict_y(m.data[0])
         except Exception as e:
             if verbose:
-                print('Covariance matrix not invertible, removing model.')
+                print(f"error: {e}")
+                print("Covariance matrix not invertible, removing model.")
             # If not invertible then revert back to best model, unless last try
-            if best_model == None and i == num_restarts - 1:
-                return best_model, -1*best_loglik
+            if best_model is None and i == num_restarts - 1:
+                return best_model, -1 * best_loglik
             else:
                 m = best_model
-        
+
         # Check if better values found and save if so
-#         if m.log_marginal_likelihood() > best_loglik:
+        #         if m.log_marginal_likelihood() > best_loglik:
         if m.log_posterior_density() > best_loglik:
-            best_loglik = m.log_posterior_density() #m.log_marginal_likelihood()
+            best_loglik = (
+                m.log_posterior_density()
+            )  # m.log_marginal_likelihood()
             best_model = gpflow.utilities.deepcopy(m)
             if verbose:
-                print(f'New best log likelihood: {best_loglik.numpy()}')
+                print(f"New best log likelihood: {best_loglik.numpy()}")
         else:
             del m
-            
-#     # Set hyperparameters to best found values
-#     for l in range(len(m.trainable_parameters)):
-#         print(best_params[l])
-#         m.trainable_parameters[l].assign(best_params[l])    
 
-    # Return none and worst BIC if we can't fit a single 
-    if best_model == None:
-        return best_model, -1*best_loglik
+    #     # Set hyperparameters to best found values
+    #     for l in range(len(m.trainable_parameters)):
+    #         print(best_params[l])
+    #         m.trainable_parameters[l].assign(best_params[l])
+
+    # Return none and worst BIC if we can't fit a single
+    if best_model is None:
+        return best_model, -1 * best_loglik
 
     # Calculate information criteria
     if split:
         yhat_holdout = best_model.predict_f(X_holdout)
-        estimated_loglik = best_model.likelihood.predict_log_density(
-            yhat_holdout[0],
-            yhat_holdout[1],
-            Y_holdout).numpy().sum()
-        bic = round(-1*estimated_loglik, 2)
+        estimated_loglik = (
+            best_model.likelihood.predict_log_density(
+                yhat_holdout[0], yhat_holdout[1], Y_holdout
+            )
+            .numpy()
+            .sum()
+        )
+        bic = round(-1 * estimated_loglik, 2)
     else:
         estimated_loglik = best_model.log_posterior_density().numpy()
-        
-        bic = round(calc_bic(
-    #         loglik=best_model.log_marginal_likelihood().numpy(),
-                       loglik=estimated_loglik,
-                       n=X.shape[0],
-                       k=len(best_model.trainable_parameters)),
-                   2)
-    
+
+        bic = round(
+            calc_bic(
+                #         loglik=best_model.log_marginal_likelihood().numpy(),
+                loglik=estimated_loglik,
+                n=X.shape[0],
+                k=len(best_model.trainable_parameters),
+            ),
+            2,
+        )
+
     # Print out info if requested
     if verbose:
-        print(f'Model: {print_kernel_names(k)}, BIC: {bic}')
-        
+        print(f"Model: {print_kernel_names(k)}, BIC: {bic}")
+
     # Delete data from model object
     if not keep_data:
         best_model.data = None
-    
+
     # Return fitted GP model and bic
     # Predictions
-#     print(best_model.predict_f(X))
+    #     print(best_model.predict_f(X))
     return best_model, bic
+
 
 def set_feature_kernels(f, kern_list, cat_vars):
     if f in cat_vars:
@@ -849,415 +896,480 @@ def set_feature_kernels(f, kern_list, cat_vars):
             k_.active_dims = np.array([f])
     return k_list
 
-def loc_kernel_search(X, Y, kern_list, 
-                      base_kern=None, base_name=None, 
-                      cat_vars=[],
-                      depth=0,
-                      operation='sum',
-                      prod_index=None,
-                      prev_models=None,
-                      lik='gaussian',
-                      verbose=False,
-                      num_restarts=5,
-                      random_seed=None,
-                      X_holdout=None, Y_holdout=None, split=False):
+
+def loc_kernel_search(
+    X,
+    Y,
+    kern_list,
+    base_kern=None,
+    base_name=None,
+    cat_vars=[],
+    depth=0,
+    operation="sum",
+    prod_index=None,
+    prev_models=None,
+    lik="gaussian",
+    verbose=False,
+    num_restarts=5,
+    random_seed=None,
+    X_holdout=None,
+    Y_holdout=None,
+    split=False,
+):
     """
     This function performs the local kernel search.
     """
-    
-    bic_dict = {} 
-    
+
+    bic_dict = {}
+
     if verbose:
-        print(f'Base kernel: {base_name}')
-    
+        print(f"Base kernel: {base_name}")
+
     # Search over features in X
     for f in np.arange(X.shape[1]):
         if verbose:
-            print(f'Working on feature {f} now')
-            
+            print(f"Working on feature {f} now")
+
         temp_kern_list = [gpflow.utilities.deepcopy(x) for x in kern_list]
         # Set kernel list based on feature currently searching
-        k_list = set_feature_kernels(f=f,
-                                     kern_list=temp_kern_list,
-                                     cat_vars=cat_vars)
+        k_list = set_feature_kernels(
+            f=f, kern_list=temp_kern_list, cat_vars=cat_vars
+        )
         # Add no /static/ kernel to test if first level and first feature
-        if f==0 and depth==1:# and lik=='gaussian':
-            #print(f'Current list of kernels: {k_list}')
+        if f == 0 and depth == 1:  # and lik=='gaussian':
+            # print(f'Current list of kernels: {k_list}')
             empty_kernel = gpflow.kernels.Constant(variance=1e-6)
             set_trainable(empty_kernel.variance, False)
             k_list += [empty_kernel]
             # k_list += [Empty()]
-            
+
         # Search over kernels
         for k in k_list:
-            
             # Get kernel name and dimension
-            k_info = k.name + str(k.active_dims) if k.name != 'constant' else k.name
+            k_info = (
+                k.name + str(k.active_dims) if k.name != "constant" else k.name
+            )
             if verbose:
-                print('Current kernel being tested: {}'.format(k_info))
-            
+                print("Current kernel being tested: {}".format(k_info))
+
             # Update kernel information with base if possible
-            if base_kern != None:
+            if base_kern is not None:
                 # Make copy of base_kern
                 base_kern_ = gpflow.utilities.deepcopy(base_kern)
-                
-                # Set parameters back to zero 
+
+                # Set parameters back to zero
                 for p in base_kern_.trainable_parameters:
-                    p.assign(1.)
-                
-#                 # Check if the new kernel is a copy of the previous categorical kernel
-#                 # this would be redundant
-#                 if k.name == 'categorical' and k_info in base_name:
-#                     continue
-                if operation == 'sum':
+                    p.assign(1.0)
+
+                if operation == "sum":
                     # Skip operation if categorical kernel exists
-                    if 'categorical['+str(f)+']' in base_name:
+                    if "categorical[" + str(f) + "]" in base_name:
                         continue
                     #    # print('Sum kernel being performed.')
                     try:
                         # Get order correct
                         if base_name < k_info:
-                            k = gpflow.kernels.Sum(kernels = [base_kern_, k])
-                            k_info = base_name + '+' + k_info
+                            k = gpflow.kernels.Sum(kernels=[base_kern_, k])
+                            k_info = base_name + "+" + k_info
                         else:
-                            k = gpflow.kernels.Sum(kernels = [k, base_kern_])
-                            k_info = k_info + '+' + base_name 
-                            
-                        # Make sure this is something that hasn't been tested yet
+                            k = gpflow.kernels.Sum(kernels=[k, base_kern_])
+                            k_info = k_info + "+" + base_name
+
+                        # Make sure this is something that hasn't been tested
+                        # yet
                         if check_if_model_exists(k_info, prev_models):
                             continue
-                        
-                        m, bic = kernel_test(X, Y, k, 
-                                             likelihood=lik, 
-                                             verbose=verbose,
-                                             num_restarts=num_restarts,
-                                             X_holdout=X_holdout,
-                                             Y_holdout=Y_holdout,
-                                             split=split)
-#                             print(k_info)
-                        # bic_dict[k_info] = [k, m, bic, depth, base_name]
+
+                        m, bic = kernel_test(
+                            X,
+                            Y,
+                            k,
+                            likelihood=lik,
+                            verbose=verbose,
+                            num_restarts=num_restarts,
+                            X_holdout=X_holdout,
+                            Y_holdout=Y_holdout,
+                            split=split,
+                        )
+
                         bic_dict[k_info] = {
-                            'kernel': k,
-                            'model': m,
-                            'bic': bic,
-                            'depth': depth,
-                            'parent': base_name,
-                            'try_next': True
+                            "kernel": k,
+                            "model": m,
+                            "bic": bic,
+                            "depth": depth,
+                            "parent": base_name,
+                            "try_next": True,
                         }
-        
-                    except:
+                    except Exception:
                         None
-                    
-                elif operation == 'product':       
+
+                elif operation == "product":
                     # Skip operation if categorical kernel exists
-                    if 'categorical['+str(f)+']' in base_name:
+                    if "categorical[" + str(f) + "]" in base_name:
                         continue
                     #     #print('Product kernel being performed.')
-                    
-                    # Skip if already a product (i.e. only allow two-way interactions
-                    if '*' in base_name:
+
+                    # Skip if already a product
+                    # (only allow two-way interactions)
+                    if "*" in base_name:
                         continue
-                    
+
                     try:
                         # Set new variance to 1, don't train
                         try:
                             set_trainable(k.variance, False)
-                        except:
+                        except Exception:
                             set_trainable(k.base_kernel.variance, False)
-                        
+
                         # Get order correct
                         if base_name < k_info:
-                            k = gpflow.kernels.Product(kernels = [base_kern_, k])
-                            k_info = base_name + '*' + k_info
+                            k = gpflow.kernels.Product(kernels=[base_kern_, k])
+                            k_info = base_name + "*" + k_info
                         else:
-                            k = gpflow.kernels.Product(kernels = [k, base_kern_])
-                            k_info = k_info + '*' + base_name 
-                            
-                        # Make sure this is something that hasn't been tested yet
+                            k = gpflow.kernels.Product(kernels=[k, base_kern_])
+                            k_info = k_info + "*" + base_name
+
+                        # Make sure this is something that hasn't been tested
+                        # yet
                         if check_if_model_exists(k_info, prev_models):
                             continue
-                            
-                        m, bic = kernel_test(X, Y, k, 
-                                             likelihood=lik, 
-                                             verbose=verbose,
-                                             num_restarts=num_restarts,
-                                             X_holdout=X_holdout,
-                                             Y_holdout=Y_holdout,
-                                             split=split)
-#                             print(k_info)
+
+                        m, bic = kernel_test(
+                            X,
+                            Y,
+                            k,
+                            likelihood=lik,
+                            verbose=verbose,
+                            num_restarts=num_restarts,
+                            X_holdout=X_holdout,
+                            Y_holdout=Y_holdout,
+                            split=split,
+                        )
+                        #                             print(k_info)
                         # bic_dict[k_info] = [k, m, bic, depth, base_name]
                         bic_dict[k_info] = {
-                            'kernel': k,
-                            'model': m,
-                            'bic': bic,
-                            'depth': depth,
-                            'parent': base_name,
-                            'try_next': True
-                        }                    
-                    except:
+                            "kernel": k,
+                            "model": m,
+                            "bic": bic,
+                            "depth": depth,
+                            "parent": base_name,
+                            "try_next": True,
+                        }
+                    except Exception:
                         None
-                    
-                elif operation == 'split_product':
-                    #print('Split product being tested.')
-                    # Set new variance to 1, don't train (need base if periodic)
+
+                elif operation == "split_product":
+                    # print('Split product being tested.')
+                    # Set new variance to 1, don't train
+                    # (need base if periodic)
                     try:
                         set_trainable(k.variance, False)
-                    except:
+                    except Exception:
                         set_trainable(k.base_kernel.variance, False)
-                    new_dict = prod_kernel_creation(X=X,
-                                                    Y=Y,
-                                                    base_kernel=base_kern_,
-                                                    base_name=base_name,
-                                                    new_kernel=k,
-                                                    prev_models=prev_models,
-                                                    depth=depth,
-                                                    lik=lik,
-                                                    num_restarts=num_restarts,
-                                                    X_holdout=X_holdout,
-                                                    Y_holdout=Y_holdout,
-                                                    split=split)
+                    new_dict = prod_kernel_creation(
+                        X=X,
+                        Y=Y,
+                        base_kernel=base_kern_,
+                        base_name=base_name,
+                        new_kernel=k,
+                        prev_models=prev_models,
+                        depth=depth,
+                        lik=lik,
+                        num_restarts=num_restarts,
+                        X_holdout=X_holdout,
+                        Y_holdout=Y_holdout,
+                        split=split,
+                    )
                     bic_dict.update(new_dict)
             else:
-                m, bic = kernel_test(X, Y, k, 
-                                     likelihood=lik, 
-                                     verbose=verbose,
-                                     num_restarts=num_restarts,
-                                     X_holdout=X_holdout,
-                                     Y_holdout=Y_holdout,
-                                     split=split)
+                m, bic = kernel_test(
+                    X,
+                    Y,
+                    k,
+                    likelihood=lik,
+                    verbose=verbose,
+                    num_restarts=num_restarts,
+                    X_holdout=X_holdout,
+                    Y_holdout=Y_holdout,
+                    split=split,
+                )
                 # bic_dict[k_info] = [k, m, bic, depth, 'None']
                 bic_dict[k_info] = {
-                    'kernel': k,
-                    'model': m,
-                    'bic': bic,
-                    'depth': depth,
-                    'parent': 'None',
-                    'try_next': True
+                    "kernel": k,
+                    "model": m,
+                    "bic": bic,
+                    "depth": depth,
+                    "parent": "None",
+                    "try_next": True,
                 }
-            
+
     return bic_dict
 
-def prod_kernel_creation(X, Y, base_kernel, base_name, new_kernel, depth, lik, 
-                         verbose=False, num_restarts=5, prev_models=[],
-                         X_holdout=None, Y_holdout=None, split=False):
+
+def prod_kernel_creation(
+    X,
+    Y,
+    base_kernel,
+    base_name,
+    new_kernel,
+    depth,
+    lik,
+    verbose=False,
+    num_restarts=5,
+    prev_models=[],
+    X_holdout=None,
+    Y_holdout=None,
+    split=False,
+):
     """
     Produce kernel for product operation
     """
-    
+
     bic_dict = {}
-    
+
     for feat in range(len(base_kernel.kernels)):
         temp_kernel = gpflow.utilities.deepcopy(base_kernel)
-        #temp_kernel.kernels[feat] = temp_kernel.kernels[feat] * new_kernel
-        temp_name = base_name.split('+')
+        # temp_kernel.kernels[feat] = temp_kernel.kernels[feat] * new_kernel
+        temp_name = base_name.split("+")
         k_info = new_kernel.name + str(new_kernel.active_dims)
         # Skip operation if categorical kernel exists
-        #print('k_info:',k_info,'temp_name:',temp_name[feat])
-        if 'categorical'+str(new_kernel.active_dims) not in temp_name[feat]:
+        # print('k_info:',k_info,'temp_name:',temp_name[feat])
+        if "categorical" + str(new_kernel.active_dims) not in temp_name[feat]:
             # print('Testing feature')
-            
+
             # Only allow two-way interactions currently
-            if '*' in temp_name[feat]:
+            if "*" in temp_name[feat]:
                 continue
-            
+
             try:
                 # Get order correct of product term, and higher order correct
                 # with the overall sum term
                 if temp_name[feat] < k_info:
-                    temp_name[feat] = temp_name[feat] + '*' + k_info
-                    temp_kernel.kernels[feat] = gpflow.kernels.Product(kernels=[temp_kernel.kernels[feat], new_kernel])
-                    
+                    temp_name[feat] = temp_name[feat] + "*" + k_info
+                    temp_kernel.kernels[feat] = gpflow.kernels.Product(
+                        kernels=[temp_kernel.kernels[feat], new_kernel]
+                    )
+
                 else:
-                    temp_kernel.kernels[feat] = gpflow.kernels.Product(kernels=[new_kernel, temp_kernel.kernels[feat]])
-                    
+                    temp_kernel.kernels[feat] = gpflow.kernels.Product(
+                        kernels=[new_kernel, temp_kernel.kernels[feat]]
+                    )
+
                     # Insert new starting product kernel in the right sum place
                     # print('Figuring out indexing')
                     # print(f'temp_name: {temp_name}')
                     # print(np.where([k_info < x for x in temp_name]))
                     try:
-                        new_idx = np.where([k_info < x for x in temp_name])[0][0]
-                    except:
+                        new_idx = np.where([k_info < x for x in temp_name])[0][
+                            0
+                        ]
+                    except Exception:
                         new_idx = len(temp_name) - 1
                     cur_component_name = temp_name.pop(feat)
                     # print(f'new_idx: {new_idx}')
                     # print(f'cur_component_name: {cur_component_name}')
-                    cur_component_name = k_info + '*' + cur_component_name
+                    cur_component_name = k_info + "*" + cur_component_name
                     temp_name.insert(new_idx, cur_component_name)
                     # print(f'temp_name: {temp_name}')
-                                    
+
                 # Join everything back together
-                k_info = '+'.join(temp_name)
+                k_info = "+".join(temp_name)
                 # print(f'k_info: {k_info}')
-                
+
                 # Make sure this is something that hasn't been tested yet
                 if check_if_model_exists(k_info, prev_models):
                     continue
                 # print('fitting model')
-                m, bic = kernel_test(X, Y, temp_kernel, 
-                                     likelihood=lik, 
-                                     verbose=verbose,
-                                     num_restarts=num_restarts,
-                                     X_holdout=X_holdout,
-                                     Y_holdout=Y_holdout,
-                                     split=split)
-                #print(k_info)
+                m, bic = kernel_test(
+                    X,
+                    Y,
+                    temp_kernel,
+                    likelihood=lik,
+                    verbose=verbose,
+                    num_restarts=num_restarts,
+                    X_holdout=X_holdout,
+                    Y_holdout=Y_holdout,
+                    split=split,
+                )
+                # print(k_info)
                 # bic_dict[k_info] = [temp_kernel, m, bic, depth, base_name]
                 bic_dict[k_info] = {
-                    'kernel': temp_kernel,
-                    'model': m,
-                    'bic': bic,
-                    'depth': depth,
-                    'parent': base_name,
-                    'try_next': True
+                    "kernel": temp_kernel,
+                    "model": m,
+                    "bic": bic,
+                    "depth": depth,
+                    "parent": base_name,
+                    "try_next": True,
                 }
-                
-            except Exception as e: 
+
+            except Exception as e:
                 print(e)
-                print(f'Error with product kernel test {k_info}')
+                print(f"Error with product kernel test {k_info}")
                 None
-        
+
     return bic_dict
 
-def check_if_better_metric(model_dict, depth): #previous_dict, current_dict):
+
+def check_if_better_metric(model_dict, depth):  # previous_dict, current_dict):
     """
-    Check to see if a better metric was found in current layer, otherwise end search.
+    Check to see if a better metric was found in current layer,
+    otherwise end search.
     """
-    
-    prev_vals = [x['bic'] for x in model_dict.values() if x['depth'] == (depth-1)]
-    new_vals = [x['bic'] for x in model_dict.values() if x['depth'] == (depth)]
-    if len(prev_vals) > 0 and len(new_vals) >0:
+
+    prev_vals = [
+        x["bic"] for x in model_dict.values() if x["depth"] == (depth - 1)
+    ]
+    new_vals = [x["bic"] for x in model_dict.values() if x["depth"] == (depth)]
+    if len(prev_vals) > 0 and len(new_vals) > 0:
         best_prev = min(prev_vals)
         best_new = min(new_vals)
     else:
         return False
-    
+
     return True if best_new < best_prev else False
 
-def keep_top_k(res_dict, depth, metric_diff = 6, split = False):
-    
+
+def keep_top_k(res_dict, depth, metric_diff=6, split=False):
     best_bic = np.Inf
     out_dict = res_dict.copy()
-    
+
     # Specify transform function if needed
     if split:
+
         def t_func(x):
             return np.log(x)  # np.exp(x)
+
     else:
+
         def t_func(x):
             return x
-    
+
     # Find results from the current depth
-    best_bic = min([v['bic'] for k,v in res_dict.items() if v['depth'] == depth])
-#     for k,v in res_dict.items():
-#         if v[3] == depth and v[2] < best_bic:
-        
-    
+    best_bic = min(
+        [v["bic"] for k, v in res_dict.items() if v["depth"] == depth]
+    )
+    #     for k,v in res_dict.items():
+    #         if v[3] == depth and v[2] < best_bic:
+
     # Only keep results in diff window
     for k, v in res_dict.items():
-        if v['depth'] == depth and v['bic']-best_bic > t_func(metric_diff):
-            v['try_next'] = False
-            #out_dict.pop(k)
-        
+        if v["depth"] == depth and v["bic"] - best_bic > t_func(metric_diff):
+            v["try_next"] = False
+            # out_dict.pop(k)
+
     return out_dict
 
+
 def prune_best_model(res_dict, depth, lik, verbose=False, num_restarts=5):
-    
     out_dict = res_dict.copy()
-    
+
     # Get best model from current depth
     best_bic, best_model_name, best_model = min(
-        [(i['bic'], k, i['model']) for k, i in res_dict.items()]
-        )
-#     print(f'Best model: {best_model_name}')
-    
-    # Split kernel name to sum pieces 
-    kernel_names = best_model_name.split('+')
-    
+        [(i["bic"], k, i["model"]) for k, i in res_dict.items()]
+    )
+    #     print(f'Best model: {best_model_name}')
+
+    # Split kernel name to sum pieces
+    kernel_names = best_model_name.split("+")
+
     # Loop through each kernel piece and prune out refit and evaluate
     if len(kernel_names) <= 1:
-#         print('No compound terms to prune!')
+        #         print('No compound terms to prune!')
         return res_dict
-    
+
     for i in range(len(kernel_names)):
         # k = gpflow.kernels.Sum(
-        #     kernels = [k_ for i_, k_ in enumerate(best_model.kernel.kernels) 
+        #     kernels = [k_ for i_, k_ in enumerate(best_model.kernel.kernels)
         #                if i_ != i])
-        k_info = '+'.join([x_ for i_,x_ in enumerate(kernel_names) if i_ != i])
-        kerns = [k_ for i_, k_ in enumerate(best_model.kernel.kernels) 
-                           if i_ != i]
+        k_info = "+".join(
+            [x_ for i_, x_ in enumerate(kernel_names) if i_ != i]
+        )
+        kerns = [
+            k_ for i_, k_ in enumerate(best_model.kernel.kernels) if i_ != i
+        ]
         if len(kerns) > 1:
-            k = gpflow.kernels.Sum(kernels = kerns)
+            k = gpflow.kernels.Sum(kernels=kerns)
         else:
             k = kerns[0]
-            
+
         # Check to see if this model has already been fit previously
         if check_if_model_exists(k_info, list(res_dict.keys())):
             continue
-            
-        m, bic = kernel_test(best_model.data[0], best_model.data[1], k, 
-                             likelihood=lik, 
-                             verbose=verbose,
-                             num_restarts=num_restarts)
+
+        m, bic = kernel_test(
+            best_model.data[0],
+            best_model.data[1],
+            k,
+            likelihood=lik,
+            verbose=verbose,
+            num_restarts=num_restarts,
+        )
         # If better model found then save it
         if bic < best_bic:
-#             print(f'New better model found: {k_info}')
-            #out_dict[k_info] = [k, m, bic, depth, best_model_name]
+            #             print(f'New better model found: {k_info}')
+            # out_dict[k_info] = [k, m, bic, depth, best_model_name]
             out_dict[k_info] = {
-                'kernel': m.kernel,
-                'model': m,
-                'bic': bic,
-                'depth': depth,
-                'parent': best_model_name,
-                'try_next': True
+                "kernel": m.kernel,
+                "model": m,
+                "bic": bic,
+                "depth": depth,
+                "parent": best_model_name,
+                "try_next": True,
             }
     return out_dict
 
+
 def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
-    
     out_dict = res_dict.copy()
-    j = 0 # For product counter
-    
+
     # Get best model from current depth
     best_bic, best_model_name, best_model = min(
-        [(i['bic'], k, i['model']) for k, i in res_dict.items() if i['depth'] == depth]
-        )
+        [
+            (i["bic"], k, i["model"])
+            for k, i in res_dict.items()
+            if i["depth"] == depth
+        ]
+    )
     # print(f'Best model: {best_model_name}')
-    
+
     # Copy so as not to overwrite best current model
     best_model = gpflow.utilities.deepcopy(best_model)
-    
-    # Split kernel name to sum pieces 
+
+    # Split kernel name to sum pieces
     kernel_names = re.split("\+", best_model_name)
     # print(kernel_names)
-    
+
     # Loop through each kernel piece and prune out refit and evaluate
     if len(kernel_names) <= 1 and "*" not in kernel_names[0]:
         # print('No compound terms to prune!')
         return res_dict
-    
+
     for i in range(len(kernel_names)):
         if verbose:
             print(f"Current kernel component: {kernel_names[i]}")
         # Glue together the kernel pieces that are not currently being pruned
-        k_info = '+'.join([x_ for i_,x_ in enumerate(kernel_names) if i_ != i])
-        kerns = [k_ for i_, k_ in enumerate(best_model.kernel.kernels) 
-                           if i_ != i]
-        
+        k_info = "+".join(
+            [x_ for i_, x_ in enumerate(kernel_names) if i_ != i]
+        )
+        kerns = [
+            k_ for i_, k_ in enumerate(best_model.kernel.kernels) if i_ != i
+        ]
+
         # TODO: Still can't figure out product term issue
         # Check if this term is a product term, add to end if so
-        if '*' in kernel_names[i]:
+        if "*" in kernel_names[i]:
             if verbose:
                 print("Currently dealing with product terms!")
-                
+
             # Deal with a single product term versus multiple terms
             if len(kernel_names) == 1:
-                prod_kernel=best_model.kernel
-                other_kernel=None
-                other_name=""
+                prod_kernel = best_model.kernel
+                other_kernel = None
+                other_name = ""
             else:
-                prod_kernel=best_model.kernel.kernels[i]
-                other_kernel=kerns
-                other_name=k_info
+                prod_kernel = best_model.kernel.kernels[i]
+                other_kernel = kerns
+                other_name = k_info
 
             out_dict = prune_prod_kernel(
                 prod_kernel=prod_kernel,
@@ -1271,17 +1383,17 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
                 other_name=other_name,
                 lik=lik,
                 verbose=verbose,
-                num_restarts=num_restarts
+                num_restarts=num_restarts,
             )
-            
+
             # Skip the rest of the iteration if product was involved
             continue
-            
+
         if len(kerns) > 1:
-            k = gpflow.kernels.Sum(kernels = kerns)
+            k = gpflow.kernels.Sum(kernels=kerns)
         else:
             k = kerns[0]
-            
+
         # Check to see if this model has already been fit previously
         if check_if_model_exists(k_info, list(res_dict.keys())):
             continue
@@ -1289,159 +1401,190 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
             # Reset parameters
             for p in k.trainable_parameters:
                 p.assign(f64(1))
-            m, bic = kernel_test(best_model.data[0], best_model.data[1], k, 
-                                 likelihood=lik, 
-                                 verbose=verbose,
-                                 num_restarts=num_restarts)
+            m, bic = kernel_test(
+                best_model.data[0],
+                best_model.data[1],
+                k,
+                likelihood=lik,
+                verbose=verbose,
+                num_restarts=num_restarts,
+            )
         # If better model found then save it
         if bic < best_bic:
             if verbose:
-                print(f'New better model found: {k_info}')
-            #out_dict[k_info] = [k, m, bic, depth, best_model_name]
+                print(f"New better model found: {k_info}")
+            # out_dict[k_info] = [k, m, bic, depth, best_model_name]
             out_dict[k_info] = {
-                'kernel': m.kernel,
-                'model': m,
-                'bic': bic,
-                'depth': depth,
-                'parent': best_model_name,
-                'try_next': True
+                "kernel": m.kernel,
+                "model": m,
+                "bic": bic,
+                "depth": depth,
+                "parent": best_model_name,
+                "try_next": True,
             }
     return out_dict
 
-def prune_prod_kernel(prod_kernel, prod_name, res_dict, best_model, 
-                      best_bic, best_model_name,
-                      depth, other_kernel = None, other_name = "", 
-                      lik="gaussian", verbose=False, 
-                      num_restarts=5, **kwargs):
-    
+
+def prune_prod_kernel(
+    prod_kernel,
+    prod_name,
+    res_dict,
+    best_model,
+    best_bic,
+    best_model_name,
+    depth,
+    other_kernel=None,
+    other_name="",
+    lik="gaussian",
+    verbose=False,
+    num_restarts=5,
+    **kwargs,
+):
     out_dict = res_dict.copy()
     other_kernel = gpflow.utilities.deepcopy(other_kernel)
     prod_kernel = gpflow.utilities.deepcopy(prod_kernel)
-    
+
     # Split product kernel name
     kernel_parts = prod_name.split("*")
-    
+
     # Try to check if there are other kernels in the prod piece
-    if prod_kernel.name != 'product':
+    if prod_kernel.name != "product":
         if verbose:
             print(f"Prod kernel issues with {prod_kernel}. Exiting.\n")
         return out_dict
-    
+
     # Loop through each kernel piece
     for i in range(len(prod_kernel.kernels)):
-        
         # Get new kernel name
         try:
             new_piece = kernel_parts[i]
         except IndexError:
             print(f"IndexError with index {i} in kernel_parts {kernel_parts}")
             return out_dict
-        if verbose: print(f"New kernel piece being tested: {new_piece}")
-        
+        if verbose:
+            print(f"New kernel piece being tested: {new_piece}")
+
         if other_name == "":
             k_info = new_piece
             k = prod_kernel.kernels[i]
         else:
             order_set = np.argsort([other_name, new_piece])
-            k_info = '+'.join(np.array([other_name, new_piece])[order_set])
-        
+            k_info = "+".join(np.array([other_name, new_piece])[order_set])
+
             # Get new kernel piece
             # print(other_kernel)
             if not isinstance(other_kernel, list):
                 other_kernel = [other_kernel]
-            kerns = list(np.array(other_kernel + [prod_kernel.kernels[i]])[order_set])
+            kerns = list(
+                np.array(other_kernel + [prod_kernel.kernels[i]])[order_set]
+            )
             k = gpflow.kernels.Sum(kernels=kerns)
-        
-        if verbose: print(f"Model about to be fit: {k_info}")
+
+        if verbose:
+            print(f"Model about to be fit: {k_info}")
         # Check to see if kernel has already been tested
         if check_if_model_exists(k_info, list(res_dict.keys())):
             if verbose:
                 print(f"{k_info} has already been fit. Skipping!")
             continue
-            
+
         else:
-            
             # Reset kernel parameters
             for p in k.trainable_parameters:
                 p.assign(f64(1))
-            
+
             # Test kernel if appropriate
-            m, bic = kernel_test(X=best_model.data[0], 
-                                 Y=best_model.data[1], 
-                                 k=k,
-                                 likelihood=lik,
-                                 verbose=verbose,
-                                 num_restarts=num_restarts)
-            
+            m, bic = kernel_test(
+                X=best_model.data[0],
+                Y=best_model.data[1],
+                k=k,
+                likelihood=lik,
+                verbose=verbose,
+                num_restarts=num_restarts,
+            )
+
             if verbose:
                 print(f"model = {k_info}, BIC = {bic}")
-            
+
         # Save if better kernel
         if bic < best_bic:
             if verbose:
                 print(f"Found better kernel! {k_info}")
             out_dict[k_info] = {
-                'kernel': m.kernel,
-                'model': m,
-                'bic': bic,
-                'depth': depth,
-                'parent': best_model_name,
-                'try_next': True
+                "kernel": m.kernel,
+                "model": m,
+                "bic": bic,
+                "depth": depth,
+                "parent": best_model_name,
+                "try_next": True,
             }
-            
+
     return out_dict
 
-def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5, 
-                       keep_all=False, metric_diff=6, early_stopping=True,
-                       prune=True, num_restarts=5,
-                       lik='gaussian', verbose=False, 
-                       debug=False, keep_only_best=True,
-                       softmax_select=False, random_seed=None):
-    """ 
+
+def full_kernel_search(
+    X,
+    Y,
+    kern_list,
+    cat_vars=[],
+    max_depth=5,
+    keep_all=False,
+    metric_diff=6,
+    early_stopping=True,
+    prune=True,
+    num_restarts=5,
+    lik="gaussian",
+    verbose=False,
+    debug=False,
+    keep_only_best=True,
+    softmax_select=False,
+    random_seed=None,
+):
+    """
     This function runs the entire kernel search, calling helpers along the way.
     """
-    
+
     # Set seed if requested
-    if random_seed != None:
+    if random_seed is not None:
         np.random.seed(random_seed)
-    
+
     # Create initial dictionaries to insert
     search_dict = {}
     edge_list = []
-    
+
     # Make sure the inputs are in the correct format
     x_dim = 1
     if len(X.shape) == 2:
         x_dim = X.shape[1]
     X = X.to_numpy().reshape(-1, x_dim)
     Y = Y.to_numpy().reshape(-1, 1)
-    
-    # Flag for missing values 
+
+    # Flag for missing values
     x_idx = ~np.isnan(X).any(axis=1)
     y_idx = ~np.isnan(Y).flatten()
-    
-    # Get complete cases        
+
+    # Get complete cases
     comp_X = X[x_idx & y_idx]
     comp_y = Y[x_idx & y_idx]
-    
+
     X = comp_X
     Y = comp_y
-    
+
     # Go through each level of depth allowed
-    for d in range(1, max_depth+1):
+    for d in range(1, max_depth + 1):
         if verbose:
-            print(f'Working on depth {d} now')
+            print(f"Working on depth {d} now")
         # If first level then there is no current dictionary to update
         if d == 1:
             search_dict = loc_kernel_search(
-                X=X, 
-                Y=Y, 
-                kern_list=kern_list, 
+                X=X,
+                Y=Y,
+                kern_list=kern_list,
                 cat_vars=cat_vars,
                 depth=d,
                 lik=lik,
                 verbose=debug,
-                num_restarts=num_restarts
+                num_restarts=num_restarts,
             )
         else:
             # Create temporary dictionary to hold new results
@@ -1450,43 +1593,45 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
                 # Make sure to only search through the previous depth
                 # and that it is a kernel we want to continue searching down
                 # and it isn't constant
-                if (search_dict[k]['depth'] != d-1 or 
-                    search_dict[k]['try_next'] == False or
-                    k == 'constant'):
-                        continue
-                
+                if (
+                    search_dict[k]["depth"] != d - 1
+                    or search_dict[k]["try_next"] is False
+                    or k == "constant"
+                ):
+                    continue
+
                 # # Make sure to not continue the search for constant kernel
                 # if k == 'constant':
                 #     continue
-                
-                cur_kern = search_dict[k]['kernel']
-                
+
+                cur_kern = search_dict[k]["kernel"]
+
                 new_res = loc_kernel_search(
-                    X=X, 
-                    Y=Y, 
+                    X=X,
+                    Y=Y,
                     kern_list=kern_list,
                     base_kern=cur_kern,
                     base_name=k,
                     cat_vars=cat_vars,
                     depth=d,
                     lik=lik,
-                    operation='sum',
+                    operation="sum",
                     prev_models=temp_dict.keys(),
                     verbose=debug,
-                    num_restarts=num_restarts
+                    num_restarts=num_restarts,
                 )
                 temp_dict.update(new_res)
-                
+
                 # Update graph dictionary
                 for k_ in new_res.keys():
                     edge_list += [(k, k_)]
-                
+
                 # For product break up base kernel and push in each possibility
                 # else just simple product with single term
-                op = 'split_product' if cur_kern.name == 'sum' else 'product'
+                op = "split_product" if cur_kern.name == "sum" else "product"
                 new_res = loc_kernel_search(
-                    X=X, 
-                    Y=Y, 
+                    X=X,
+                    Y=Y,
                     kern_list=kern_list,
                     base_kern=cur_kern,
                     base_name=k,
@@ -1496,199 +1641,237 @@ def full_kernel_search(X, Y, kern_list, cat_vars=[], max_depth=5,
                     operation=op,
                     prev_models=temp_dict.keys(),
                     verbose=debug,
-                    num_restarts=num_restarts
+                    num_restarts=num_restarts,
                 )
                 temp_dict.update(new_res)
-                
+
                 # Update graph dictionary
                 for k_ in new_res.keys():
                     edge_list += [(k, k_)]
-            
 
-            #found_better = check_if_better_metric(search_dict, temp_dict)
-            
+            # found_better = check_if_better_metric(search_dict, temp_dict)
+
             # Overwrite search dictionary with temporary results
             search_dict = temp_dict
-        
+
         # What is the best model we have right now?
         # [x['bic'] for x in model_dict.values() if x['depth'] == (depth)]
-        
-        best_model_name = min([(i['bic'], i['depth'], k) for k, i in search_dict.items() if i['depth'] == d])[2]
+
+        best_model_name = min(
+            [
+                (i["bic"], i["depth"], k)
+                for k, i in search_dict.items()
+                if i["depth"] == d
+            ]
+        )[2]
         if verbose:
-            print(f'Best model for depth {d} is {best_model_name}')
-        
+            print(f"Best model for depth {d} is {best_model_name}")
+
         # Add data back in for the best model
-        search_dict[best_model_name]['model'].data = (tf.convert_to_tensor(X), 
-                                                      tf.convert_to_tensor(Y))
-        
+        search_dict[best_model_name]["model"].data = (
+            tf.convert_to_tensor(X),
+            tf.convert_to_tensor(Y),
+        )
+
         # If the best model is constant then end search
-        if best_model_name == 'constant':
-            if verbose: print('Best model is constant, going to stop searching now')
+        if best_model_name == "constant":
+            if verbose:
+                print("Best model is constant, going to stop searching now")
             break
-        
+
         # Early stopping?
         if early_stopping and d > 1:
-            found_better = check_if_better_metric(model_dict=search_dict, 
-                                                  depth=d)
+            found_better = check_if_better_metric(
+                model_dict=search_dict, depth=d
+            )
 
             # If no better kernel found then exit search
             if not found_better:
                 if verbose:
-                    print('No better kernel found in layer, exiting search!')
+                    print("No better kernel found in layer, exiting search!")
                 # Prune best model
                 if prune:
                     if verbose:
                         print("Pruning now")
                     search_dict = prune_best_model2(
-                        search_dict, 
-                        depth=d, 
-                        lik=lik, 
+                        search_dict,
+                        depth=d,
+                        lik=lik,
                         verbose=verbose,
-                        num_restarts=num_restarts
+                        num_restarts=num_restarts,
                     )
-                    
+
                 break
             else:
                 None
-#                     print('Found better kernel in next layer, would like to continue search.')
-        
+
         # Do we want to filter out results to conitnue searching in the future?
         # Only do this if it isn't the last layer
         if d != max_depth:
-    
-            # Filter out results from current depth to just keep best kernel options
+            # Filter out results from current depth to just keep best kernel
+            # options
             if not keep_all:
-                search_dict = keep_top_k(search_dict, depth=d, metric_diff=metric_diff)
+                search_dict = keep_top_k(
+                    search_dict, depth=d, metric_diff=metric_diff
+                )
 
             # If softmax is model selection option then choose best model
             if softmax_select:
-                model_info_list = [(i['bic'], k) for k, i in search_dict.items()]
+                model_info_list = [
+                    (i["bic"], k) for k, i in search_dict.items()
+                ]
                 model_name_selected = softmax_kernel_selection(
-                                bic_list = [x[0] for x in model_info_list],
-                                name_list = [x[1] for x in model_info_list]
+                    bic_list=[x[0] for x in model_info_list],
+                    name_list=[x[1] for x in model_info_list],
                 )
 
                 # Subset this depth to only model selected
                 search_dict_copy = search_dict.copy()
                 for k, v in search_dict_copy.items():
-                    if v['depth'] == d and k != model_name_selected:
-                        v['try_next'] = False
-                        #search_dict.pop(k)
-        
+                    if v["depth"] == d and k != model_name_selected:
+                        v["try_next"] = False
+                        # search_dict.pop(k)
+
         # Add data back in for the best model
-        best_model_name = min([(i['bic'], i['depth'], k) for k, i in search_dict.items() if i['depth'] == d])[2]
-        search_dict[best_model_name]['model'].data = (tf.convert_to_tensor(X), 
-                                                      tf.convert_to_tensor(Y))
-        
+        best_model_name = min(
+            [
+                (i["bic"], i["depth"], k)
+                for k, i in search_dict.items()
+                if i["depth"] == d
+            ]
+        )[2]
+        search_dict[best_model_name]["model"].data = (
+            tf.convert_to_tensor(X),
+            tf.convert_to_tensor(Y),
+        )
+
         # Prune best model
         if prune:
             if verbose:
                 print("Pruning now")
             search_dict = prune_best_model2(
-                search_dict, 
-                depth=d, 
-                lik=lik, 
+                search_dict,
+                depth=d,
+                lik=lik,
                 verbose=verbose,
-                num_restarts=num_restarts
+                num_restarts=num_restarts,
             )
-    
+
         if verbose:
             # # Look for best model
-            # best_model_name = min([(i['bic'], i['depth'], k) 
+            # best_model_name = min([(i['bic'], i['depth'], k)
             #                        for k, i in search_dict.items()])[2]
             # print(f'Best model for depth {d} is {best_model_name}')
             if d == max_depth:
-                print('Reached max depth, ending search.')
+                print("Reached max depth, ending search.")
             else:
-                print('-----------\n')
-        
-            
+                print("-----------\n")
+
     # Look for best model
     # best_model_name = min([(i[2], k) for k, i in search_dict.items()])[1]
-    best_model_name = min([(i['bic'], i['depth'], k) for k, i in search_dict.items()])[2]
+    best_model_name = min(
+        [(i["bic"], i["depth"], k) for k, i in search_dict.items()]
+    )[2]
     if verbose:
-        print(f'Best model for depth {d} is {best_model_name}')
-        
+        print(f"Best model for depth {d} is {best_model_name}")
+
     # Add data back in for the best model
-    search_dict[best_model_name]['model'].data = (tf.convert_to_tensor(X), 
-                                                  tf.convert_to_tensor(Y))
-    
+    search_dict[best_model_name]["model"].data = (
+        tf.convert_to_tensor(X),
+        tf.convert_to_tensor(Y),
+    )
+
     # Calc R2 of best model
     var_percent = calc_rsquare(
-       search_dict[best_model_name]['model'] # , 
-       # best_model_name,
-       # lik=lik
+        search_dict[best_model_name]["model"]  # ,
+        # best_model_name,
+        # lik=lik
     )
-    
+
     # Keep only the final best model?
     if keep_only_best:
         search_dict = {best_model_name: search_dict[best_model_name]}
-        # search_dict = {best_model_name: search_dict[your_key] for your_key in your_keys }
-    
+
     # Return output
     return {
-        'models': search_dict,
-        'edges': edge_list,
-        'best_model': best_model_name,
-        'var_exp': var_percent
-           }
+        "models": search_dict,
+        "edges": edge_list,
+        "best_model": best_model_name,
+        "var_exp": var_percent,
+    }
 
-def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
-                        cat_vars=[], max_depth=5,
-                        keep_all=False, metric_diff=1, early_stopping=True,
-                        prune=True, num_restarts=5,
-                        lik='gaussian', verbose=False,
-                        debug=False, keep_only_best=True,
-                        softmax_select=False, random_seed=None):
-    """ 
+
+def split_kernel_search(
+    X,
+    Y,
+    kern_list,
+    unit_idx,
+    training_percent=0.7,
+    cat_vars=[],
+    max_depth=5,
+    keep_all=False,
+    metric_diff=1,
+    early_stopping=True,
+    prune=True,
+    num_restarts=5,
+    lik="gaussian",
+    verbose=False,
+    debug=False,
+    keep_only_best=True,
+    softmax_select=False,
+    random_seed=None,
+):
+    """
     This function runs the entire kernel search, calling helpers along the way.
     It is different from full_kernel_search() because it splits the data based
-    on unit id into training and holdout for evaluation purposes. 
+    on unit id into training and holdout for evaluation purposes.
     """
-    
+
     # Set seed if requested
-    if random_seed != None:
+    if random_seed is not None:
         np.random.seed(random_seed)
-    
+
     # Create initial dictionaries to insert
     search_dict = {}
     edge_list = []
-    
+
     # Make sure the inputs are in the correct format
     X = X.to_numpy().reshape(-1, X.shape[1])
     Y = Y.to_numpy().reshape(-1, 1)
-    
-    # Flag for missing values 
+
+    # Flag for missing values
     x_idx = ~np.isnan(X).any(axis=1)
     y_idx = ~np.isnan(Y).flatten()
-    
-    # Get complete cases        
+
+    # Get complete cases
     comp_X = X[x_idx & y_idx]
     comp_y = Y[x_idx & y_idx]
-    
+
     X = comp_X
     Y = comp_y
-    
+
     # Subset data
     unique_ids = np.unique(X[:, unit_idx])
-    train_ids = np.random.choice(unique_ids,
-                                 size=round(training_percent*len(unique_ids)),
-                                 replace=False)
+    train_ids = np.random.choice(
+        unique_ids,
+        size=round(training_percent * len(unique_ids)),
+        replace=False,
+    )
     Y_holdout = Y[np.isin(X[:, unit_idx], train_ids, invert=True)]
     Y = Y[np.isin(X[:, unit_idx], train_ids)]
     X_holdout = X[np.isin(X[:, unit_idx], train_ids, invert=True), :]
     X = X[np.isin(X[:, unit_idx], train_ids), :]
-    
+
     # Go through each level of depth allowed
-    for d in range(1, max_depth+1):
+    for d in range(1, max_depth + 1):
         if verbose:
-            print(f'Working on depth {d} now')
+            print(f"Working on depth {d} now")
         # If first level then there is no current dictionary to update
         if d == 1:
             search_dict = loc_kernel_search(
-                X=X, 
-                Y=Y, 
-                kern_list=kern_list, 
+                X=X,
+                Y=Y,
+                kern_list=kern_list,
                 cat_vars=cat_vars,
                 depth=d,
                 lik=lik,
@@ -1696,7 +1879,7 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                 num_restarts=num_restarts,
                 X_holdout=X_holdout,
                 Y_holdout=Y_holdout,
-                split=True
+                split=True,
             )
         else:
             # Create temporary dictionary to hold new results
@@ -1705,46 +1888,48 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                 # Make sure to only search through the previous depth
                 # and that it is a kernel we want to continue searching down
                 # and it isn't constant
-                if (search_dict[k]['depth'] != d-1 or 
-                    search_dict[k]['try_next'] == False or
-                    k == 'constant'):
-                        continue
-                
+                if (
+                    search_dict[k]["depth"] != d - 1
+                    or search_dict[k]["try_next"] is False
+                    or k == "constant"
+                ):
+                    continue
+
                 # # Make sure to not continue the search for constant kernel
                 # if k == 'constant':
                 #     continue
-                
-                cur_kern = search_dict[k]['kernel']
-                
+
+                cur_kern = search_dict[k]["kernel"]
+
                 new_res = loc_kernel_search(
-                    X=X, 
-                    Y=Y, 
+                    X=X,
+                    Y=Y,
                     kern_list=kern_list,
                     base_kern=cur_kern,
                     base_name=k,
                     cat_vars=cat_vars,
                     depth=d,
                     lik=lik,
-                    operation='sum',
+                    operation="sum",
                     prev_models=temp_dict.keys(),
                     verbose=debug,
                     num_restarts=num_restarts,
                     X_holdout=X_holdout,
                     Y_holdout=Y_holdout,
-                    split=True
+                    split=True,
                 )
                 temp_dict.update(new_res)
-                
+
                 # Update graph dictionary
                 for k_ in new_res.keys():
                     edge_list += [(k, k_)]
-                
+
                 # For product break up base kernel and push in each possibility
                 # else just simple product with single term
-                op = 'split_product' if cur_kern.name == 'sum' else 'product'
+                op = "split_product" if cur_kern.name == "sum" else "product"
                 new_res = loc_kernel_search(
-                    X=X, 
-                    Y=Y, 
+                    X=X,
+                    Y=Y,
                     kern_list=kern_list,
                     base_kern=cur_kern,
                     base_name=k,
@@ -1757,161 +1942,175 @@ def split_kernel_search(X, Y, kern_list, unit_idx, training_percent=0.7,
                     num_restarts=num_restarts,
                     X_holdout=X_holdout,
                     Y_holdout=Y_holdout,
-                    split=True
+                    split=True,
                 )
                 temp_dict.update(new_res)
-                
+
                 # Update graph dictionary
                 for k_ in new_res.keys():
                     edge_list += [(k, k_)]
-            
 
-            #found_better = check_if_better_metric(search_dict, temp_dict)
-            
+            # found_better = check_if_better_metric(search_dict, temp_dict)
+
             # Overwrite search dictionary with temporary results
             search_dict = temp_dict
-            
+
         # Early stopping?
         if early_stopping and d > 1:
-            found_better = check_if_better_metric(model_dict=search_dict, 
-                                                  depth=d)
+            found_better = check_if_better_metric(
+                model_dict=search_dict, depth=d
+            )
 
             # If no better kernel found then exit search
             if not found_better:
                 if verbose:
-                    print('No better kernel found in layer, exiting search!')
+                    print("No better kernel found in layer, exiting search!")
                 # Prune best model
                 if prune:
                     if verbose:
-                        print('Pruning now')
+                        print("Pruning now")
                     search_dict = prune_best_model2(
-                        search_dict, 
-                        depth=d, 
-                        lik=lik, 
+                        search_dict,
+                        depth=d,
+                        lik=lik,
                         verbose=verbose,
-                        num_restarts=num_restarts
+                        num_restarts=num_restarts,
                     )
-                    
+
                 break
             else:
                 None
-#                     print('Found better kernel in next layer, would like to continue search.')
-        
+
         # Do we want to filter out results to conitnue searching in the future?
         # Only do this if it isn't the last layer
         if d != max_depth:
-    
-            # Filter out results from current depth to just keep best kernel options
+            # Filter out results from current depth to just keep best kernel
+            # options
             if not keep_all:
-                search_dict = keep_top_k(search_dict, depth=d, 
-                                         metric_diff=metric_diff, split=True)
+                search_dict = keep_top_k(
+                    search_dict, depth=d, metric_diff=metric_diff, split=True
+                )
 
             # If softmax is model selection option then choose best model
             if softmax_select:
-                model_info_list = [(i['bic'], k) for k, i in search_dict.items()]
+                model_info_list = [
+                    (i["bic"], k) for k, i in search_dict.items()
+                ]
                 model_name_selected = softmax_kernel_selection(
-                                bic_list = [x[0] for x in model_info_list],
-                                name_list = [x[1] for x in model_info_list]
+                    bic_list=[x[0] for x in model_info_list],
+                    name_list=[x[1] for x in model_info_list],
                 )
 
                 # Subset this depth to only model selected
                 search_dict_copy = search_dict.copy()
                 for k, v in search_dict_copy.items():
-                    if v['depth'] == d and k != model_name_selected:
-                        v['try_next'] = False
-                        #search_dict.pop(k)
-        
-        else: # d == max_depth
+                    if v["depth"] == d and k != model_name_selected:
+                        v["try_next"] = False
+                        # search_dict.pop(k)
+
+        else:  # d == max_depth
             # Prune best model
             if prune:
                 if verbose:
-                    print('Pruning now')
+                    print("Pruning now")
                 search_dict = prune_best_model2(
-                    search_dict, 
-                    depth=d, 
-                    lik=lik, 
+                    search_dict,
+                    depth=d,
+                    lik=lik,
                     verbose=verbose,
-                    num_restarts=num_restarts
+                    num_restarts=num_restarts,
                 )
-    
+
         if verbose:
             if d == max_depth:
-                print('Reached max depth, ending search.')
+                print("Reached max depth, ending search.")
             else:
-                print('-----------\n')
-        
+                print("-----------\n")
+
     # Look for best model
     # best_model_name = min([(i[2], k) for k, i in search_dict.items()])[1]
-    best_model_name = min([(i['bic'], i['depth'], k) for k, i in search_dict.items()])[2]
+    best_model_name = min(
+        [(i["bic"], i["depth"], k) for k, i in search_dict.items()]
+    )[2]
     if verbose:
         print(best_model_name)
-    
+
     # Variance decomposition of best model
     var_percent = calc_rsquare(
-       search_dict[best_model_name]['model'] # , 
-       # best_model_name,
-       # lik=lik
+        search_dict[best_model_name]["model"]  # ,
+        # best_model_name,
+        # lik=lik
     )
-    
+
     # Keep only the final best model?
     if keep_only_best:
         search_dict = {best_model_name: search_dict[best_model_name]}
-        # search_dict = {best_model_name: search_dict[your_key] for your_key in your_keys }
-    
+
     # Return output
     return {
-        'models': search_dict,
-        'edges': edge_list,
-        'best_model': best_model_name,
-        'var_exp': var_percent,
-        'X_holdout': X_holdout,
-        'Y_holdout': Y_holdout,
-        'X': X,
-        'Y': Y
-           }
+        "models": search_dict,
+        "edges": edge_list,
+        "best_model": best_model_name,
+        "var_exp": var_percent,
+        "X_holdout": X_holdout,
+        "Y_holdout": Y_holdout,
+        "X": X,
+        "Y": Y,
+    }
+
 
 def softmax_kernel_selection(bic_list, name_list):
     """
     Takes in BICs, normalizes, and returns an option
     """
-    
+
     # print(bic_list)
     # print(name_list)
-    
+
     # Set seed for reproducibility
     # np.random.seed(9102)
-    
-    # Filter out "bad" models 
+
+    # Filter out "bad" models
     # print(bic_list)
-    name_list = [name_list[x] for x in range(len(bic_list)) if bic_list[x] != np.Inf]
+    name_list = [
+        name_list[x] for x in range(len(bic_list)) if bic_list[x] != np.Inf
+    ]
     bic_list = [x for x in bic_list if x != np.Inf]
-    
+
     # If there is just a single model then return that one
     if len(bic_list) == 1:
         return name_list[0]
-    
+
     # Negate values because lower BIC is better
     bic_list = np.array([-x for x in bic_list])
-    
+
     # Standardize the values to between 0 and 1
-    norm_bic_list = (bic_list-min(bic_list))/(max(bic_list)-min(bic_list))
-    
-    # Make a probability distribution
-    prob_list = np.exp(norm_bic_list)/sum(np.exp(norm_bic_list))
-    
-    # Select one model
-    model_selected = np.random.choice(
-        a=np.arange(len(prob_list)),
-        p=prob_list
+    norm_bic_list = (bic_list - min(bic_list)) / (
+        max(bic_list) - min(bic_list)
     )
-    
+
+    # Make a probability distribution
+    prob_list = np.exp(norm_bic_list) / sum(np.exp(norm_bic_list))
+
+    # Select one model
+    model_selected = np.random.choice(a=np.arange(len(prob_list)), p=prob_list)
+
     return name_list[model_selected]
 
-def softmax_kernel_search(X, Y, kern_list, num_trials=5, cat_vars=[], max_depth=5, lik='gaussian', verbose=False):
-    
+
+def softmax_kernel_search(
+    X,
+    Y,
+    kern_list,
+    num_trials=5,
+    cat_vars=[],
+    max_depth=5,
+    lik="gaussian",
+    verbose=False,
+):
     # Set seed
     # np.random.seed(9102)
-    
+
     # Set return variables
     best_bic = np.Inf
     best_search_dict = {}
@@ -1919,36 +2118,41 @@ def softmax_kernel_search(X, Y, kern_list, num_trials=5, cat_vars=[], max_depth=
     best_final_name = ""
     best_var_percent = []
     search_book = {}
-    
+
     # Run through kernel space for a number of trials using softmax exploration
     for i in range(num_trials):
         search_dict, edge_list, best_name, var_percent = full_kernel_search(
-            X=X, 
-            Y=Y, 
-            kern_list=kern_list, 
-            cat_vars=cat_vars, 
-            max_depth=max_depth, 
-            keep_all=True, 
-            early_stopping=False, 
+            X=X,
+            Y=Y,
+            kern_list=kern_list,
+            cat_vars=cat_vars,
+            max_depth=max_depth,
+            keep_all=True,
+            early_stopping=False,
             prune=False,
-            lik=lik, 
-            verbose=verbose, 
-            keep_only_best=False, # True,
-            softmax_select=True
+            lik=lik,
+            verbose=verbose,
+            keep_only_best=False,  # True,
+            softmax_select=True,
         )
-        
+
         search_book[i] = search_dict
-        
+
         print(best_name)
         print(search_dict[best_name][2])
         # Check if BIC is better
         if search_dict[best_name][2] < best_bic:
-            print(f'Better model! {best_name}: {search_dict[best_name][2]}')
+            print(f"Better model! {best_name}: {search_dict[best_name][2]}")
             best_bic = search_dict[best_name][2]
             best_search_dict = search_dict
             best_edge_list = edge_list
             best_final_name = best_name
             best_var_percent = var_percent
-        
-    return best_search_dict, best_edge_list, best_final_name, best_var_percent, search_book
-  
+
+    return (
+        best_search_dict,
+        best_edge_list,
+        best_final_name,
+        best_var_percent,
+        search_book,
+    )
