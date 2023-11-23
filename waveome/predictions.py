@@ -108,11 +108,13 @@ def pred_kernel_parts(
         if "*" in k_name and len(kernel_names) == 1:
             # k = m_copy.kernel
             kernel_idx += 1
+            product_term = True
         # elif len(kernel_names) == 1:
         # k = m_copy.kernel
         else:
             # k = m_copy.kernel.kernels[kernel_idx]
             kernel_idx += 1
+            product_term = False
 
         # Plot all possible category means if categorical
         if "categorical" in k_name:  # kernel_names[c]:
@@ -134,6 +136,7 @@ def pred_kernel_parts(
                         kernel_idx=np.argwhere(
                             [x == k_name for x in kernel_names]
                         )[0][0],
+                        product_term=product_term,
                         X=x_new,
                         white_noise_amt=1e-2,
                     )
@@ -232,6 +235,7 @@ def pred_kernel_parts(
                     kernel_idx=np.argwhere(
                         [x == k_name for x in kernel_names]
                     )[0][0],
+                    product_term=product_term,
                     X=x_new,
                 )
                 mean = mean.numpy().flatten()
@@ -310,6 +314,7 @@ def pred_kernel_parts(
                 kernel_idx=np.argwhere([x == k_name for x in kernel_names])[0][
                     0
                 ],
+                product_term=product_term,
                 X=x_new,
             )
             mean = mean.numpy().flatten()

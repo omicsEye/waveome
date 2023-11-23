@@ -640,7 +640,7 @@ class GPSearch:
             )
         else:
             gpf = gp_predict_fun(
-                gp=m["models"][m["best_model"]]["model"],
+                m=m["models"][m["best_model"]]["model"],
                 x_idx=x_idx,
                 unit_idx=self.unit_idx,
                 col_names=self.feat_names,

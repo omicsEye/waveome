@@ -436,6 +436,7 @@ def variance_contributions_diag(m, lik="gaussian"):
 def individual_kernel_predictions(
     model,
     kernel_idx,
+    product_term=False,
     X=None,
     white_noise_amt=1e-6,
     predict_type="func",
@@ -487,8 +488,15 @@ def individual_kernel_predictions(
     sub_model = gpflow.utilities.deepcopy(model)
 
     # Only pull of kernel of interest if there are multiple kernels
+    # Also need to deal with product term
     if hasattr(sub_model.kernel, "kernels"):
-        sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
+        if product_term:
+            sub_model.kernel = gpflow.kernels.Product([
+                sub_model.kernel.kernels[kernel_idx],
+                sub_model.kernel.kernels[kernel_idx+1]
+            ])
+        else:
+            sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
 
     # pred_x = model_data[0] if X is None else X
 

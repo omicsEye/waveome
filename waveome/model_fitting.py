@@ -3,7 +3,7 @@ import numpy as np
 from gpflow.inducing_variables import SeparateIndependentInducingVariables
 from tensorflow_probability import distributions as tfd
 
-from .model_types import SVPGPR
+from .model_types_DEPR import SVPGPR
 from .utilities import (
     calc_bic,
     f64,
