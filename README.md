@@ -7,9 +7,11 @@ This repository houses code for the _Waveome_ package - an easy to use and power
 <!-- ![waveome logo](./figures/hex-waveome.png) -->
 <!-- <img src="./figures/hex-waveome.png" width="200" height="200"> -->
 
+
 ***waveome*** is a computational method for longitudinal data analysis particularly  
 to characterize and identify temporal dynamics of omics and clinical variables in association with
 the phenotype of interest.
+
 ---
 **Key features:**
 
@@ -40,7 +42,7 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
 * [Features](#features)
 * [waveome](#waveome)
     * [Installation](#installation)
-        * [Windows Linux Mac](#Windows-Linux-Mac)
+        * [Windows Linux Mac](#windows-linux-mac)
         * [Apple M1/M2 MAC](#apple-m1m2-mac)
 * [Getting Started with waveome](#getting-started-with-waveome)
     * [Test waveome](#test-waveome)
@@ -50,7 +52,7 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
     * [Demo](#demo)
     * [Tutorial](#tutorial)
 * [Applications](#applications)
-    * [*waveome* identifies importnat dynamics in metabolites and associations with metadata](#ihmp)
+    * [*waveome* identifies important dynamics in metabolites and associations with metadata](#ihmp)
     * [Application 2](#application2)
     * [Application 3](#application3)
     * [Application 4](#application4)
