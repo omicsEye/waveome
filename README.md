@@ -235,7 +235,7 @@ Here we try to use the **_waveome_** on different datasets and elaborate on the 
 <i>waveome</i> Identifying important metabolites associated with inflammatory bowel disease 
 </h2>
 
-![ihmp](https://github.com/omicsEye/waveome/blob/master/img/lite_mar/app1.png?raw=True)
+![ihmp](https://github.com/omicsEye/waveome/blob/master/img/lite_mar/ihmp.png?raw=True)
 
 We used metabolomics data from iHMP (Inflammatory Bowel Diseases)
 project [Lloyd-Price et al. (2017)](https://doi.org/10.1038/s41586-019-1237-9) for this application. Our goal was to
