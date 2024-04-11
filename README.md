@@ -1,8 +1,11 @@
 # waveome #
+
 ## Overview
+
 <img style="float: right;" width="200" height="200" src="./figures/hex-waveome.png">
 
-This repository houses code for the _Waveome_ package - an easy to use and powerful Python library that analyzes longitudinal data using Gaussian processes.
+This repository houses code for the _Waveome_ package - an easy to use and powerful Python library that analyzes
+longitudinal data using Gaussian processes.
 
 <!-- ![waveome logo](./figures/hex-waveome.png) -->
 <!-- <img src="./figures/hex-waveome.png" width="200" height="200"> -->
@@ -10,7 +13,8 @@ This repository houses code for the _Waveome_ package - an easy to use and power
 
 *waveome* is a computational method for longitudinal data analysis particularly  
 to characterize and identify temporal dynamics of omics and clinical variables in association with
-the phenotype of interest. It employs the Gaussian processes as prior to implement a full Basyesian nonparametric modeling.
+the phenotype of interest. It employs the Gaussian processes as prior to implement a full Basyesian nonparametric
+modeling.
 
 ---
 **Key features:**
@@ -19,10 +23,12 @@ the phenotype of interest. It employs the Gaussian processes as prior to impleme
   significantly associated with phenotypes of interest.
 * **Validation:** A comprehensive evaluation of waveome performance using synthetic
   data generation with known ground truth for genotype-phenotype association testing.
-* **Interpretation:** By prioritizing comprehensive and flexible kernel functions, _waveome_ significantly reduces computational costs.
+* **Interpretation:** By prioritizing comprehensive and flexible kernel functions, _waveome_ significantly reduces
+  computational costs.
 * **Elegance:** User-friendly, open-source software allowing for high-quality visualization
   and statistical tests.
-* **Optimization:** Since omics data are often very high dimensional, all modules have been written and benchmarked for computing time.
+* **Optimization:** Since omics data are often very high dimensional, all modules have been written and benchmarked for
+  computing time.
 * **Documentation:** Open-source GitHub repository of code complete with tutorials and a wide range of
   real-world applications.
 
@@ -30,7 +36,8 @@ the phenotype of interest. It employs the Gaussian processes as prior to impleme
 **Citation:**
 
 Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
-**_waveome_: characterizing temporal dynamics of metabolites in longitudinal studies**, https://github.com/omicsEye/waveome/.
+**_waveome_: characterizing temporal dynamics of metabolites in longitudinal studies
+**, https://github.com/omicsEye/waveome/.
 
 ---
 
@@ -57,37 +64,55 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
     * [Application 4](#application4)
     * [Application 5](#application5)
 * [Support](#support)
+
 ------------------------------------------------------------------------------------------------------------------------------
+
 # Features #
+
 1. Generic software that can handle any kind of sequencing data and phenotypes
 2. One place to do all analysis and producing high-quality visualizations
 3. Optimized computation
 4. User-friendly software
 5. Provides temporal dynamics and associated omics features and metadata
-6. enhanced with diagnosis and summarizing visualizations. 
-
+6. enhanced with diagnosis and summarizing visualizations.
 
 ## Installation ##
+
 ## General Usage
-Please see the `waveome_overview.ipynb` for an example of the package modeling simulated data.
+
+Running _waveome_ requires multiple steps, including installing _waveome_ package, loading data in the required format,
+specifying covariates and outcomes (
+omics features), running kernel services (takes some time and computing resources), and visualizing overall and
+individual associations. All these steps are
+demonstrated in the [waveome_overview.ipynb](https://github.com/omicsEye/waveome/blob/main/waveome_overview.ipynb)
+notebook as a template (an example of the package modeling simulated data)
+that you can use and modify for your input data. Each step is explained with details in following sections of this
+tutorial.
 
 ## Installation
+
 * First install *conda*  
   Go to the [Anaconda website](https://www.anaconda.com/) and download the latest version for your operating system.
 * For Windows users: do not forget to add `conda` to your system `path`
 * Second is to check for conda availability  
   open a terminal (or command line for Windows users) and run:
+
 ```
 conda --version
 ```
+
 it should out put something like:
+
 ```
 conda 4.9.2
 ```
+
 if not, you must make *conda* available to your system for further steps.
 if you have problems adding conda to PATH, you can find instructions
 [here](https://docs.anaconda.com/anaconda/user-guide/faq/).
+
 ### Windows Linux Mac ###
+
 If you are using an **Apple M1/M2 MAC** please go to the [Apple M1/M2 MAC](#apple-m1m2-mac) for installation
 instructions.  
 If you have a working conda on your system, you can safely skip to step three.  
@@ -95,39 +120,53 @@ If you are using windows, please make sure you have both git and Microsoft Visua
 install [git](https://gitforwindows.org/)
 [Microsoft C++ build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 In case you face issues with this step, [this link](https://github.com/pycaret/pycaret/issues/1254) may help you.
+
 1) Create a new conda environment (let's call it waveome_env) with the following command:
+
 ```
 conda create --name waveome_env python=3.9
 ```
+
 2) Activate your conda environment:
+
 ```commandline
 conda activate waveome_env 
 ```
+
 3) Install *waveome*:
    you can directly install if from GitHub:
+
 ```commandline
 python -m pip install git+https://github.com/omicsEye/waveome
 ```
+
 ### Apple M1/M2 MAC ###
+
 1) Update/install Xcode Command Line Tools
+
   ```commandline
   xcode-select --install
   ```
 
 2) Close the current terminal and open a new terminal
 3) Create a new conda environment (let's call it waveome_env) with the following command:
+
   ```commandline
   conda create --name waveome_env python=3.8.12
   ```
+
 4) Activate the conda environment
+
   ```commandline
   conda activate waveome_env
   ```
+
 5) Warning: If you are using an M1 Mac then before "pip install" you should run:
    `conda install -c conda-forge grpcio`
 6) Finally, install *waveome*:
 
 you can directly install if from GitHub:
+
 ```commandline
 python -m pip install git+https://github.com/omicsEye/waveome
 or
@@ -135,15 +174,20 @@ and then pip install _waveome_ using
 pip install git+https://github.com/omicsEye/waveome.git 
 ```
 
+## Running using Jupyter Notebook
 
-
-## Jupyter Notebook
-If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new waveome environment.
+All steps are elaborated in `waveome_overview.ipynb` and you should also set up a Jupyter kernel for the new waveome
+environment.
 This can be done with
 `conda install ipykernel`
 and then
 `python -m ipykernel install --user --name=waveome`.
 
+### Loading and preparing data
+
+### Running Kernel search
+
+### Visualization
 
 -----------------------------------------------------------------------------------------------------------------------
 
@@ -156,53 +200,47 @@ To test if waveome is installed correctly, you may run the following command in 
 ```#!cmd
 waveome -h
 ```
+
 Which yields waveome command line options.
-
-
 
 ## Options ##
 
 ```
 
 ```
-## Input ##
 
+## Input ##
 
 ## Output ##  
 
-
 ## Demo ##
+
 ```commandline
 waveome -sf PATH_TO_SEQUENCE.FASTA -st aa -md PATH_TO_META_DATA.tsv -mv
  META_VARIABLE_NAME -a reg  -dth 0.15 --plot --write
 ```
 
 ## Tutorial ##
+
 Multiple detailed jupyter notebook of _waveome_ implementation are available in the
 [examples](https://github.com/omicsEye/waveome/tree/master/examples) and the
 required data for the examples are also available in the
 [data](https://github.com/omicsEye/waveome/tree/master/data) directory.
 
-
 # Applications #
+
 Here we try to use the **_waveome_** on different datasets and elaborate on the results.
 
 <h2 id="opsin">
-<i>waveome</i> identifies amino acids associated with color sensitivity
+<i>waveome</i> Identifying important metabolites associated with inflammatory bowel disease 
 </h2>
 
-![Opsins](https://github.com/omicsEye/waveome/blob/master/img/lite_mar/figure.png?raw=True)
+![ihmp](https://github.com/omicsEye/waveome/blob/master/img/lite_mar/app1.png?raw=True)
 
-Opsins are genes involved in light sensitivity and vision, and when coupled with a light-reactive chromophore, the
-absorbance of the resulting photopigment dictates physiological phenotypes like color sensitivity. We analyzed the
-amino acid sequence of rod opsins because previously published mutagenesis work established mechanistic connections
-between 12 specific amino acid sites and phenotypes [Yokoyama et al. (2008)](https://doi.org/10.1073/pnas.0802426105).
-Therefore, we hypothesized that machine learning approaches could predict known associations between amino acid sites
-and absorbance phenotypes. We identified opsins expressed in
-rod cells of vertebrates (mainly marine fishes) with absorption spectra measurements (λmax, the wavelength with the
-highest absorption). The dataset contains 175 samples of opsin sequences. We next applied waveome on this
-dataset to find the most important sites contributing to the variations of λmax.
-This [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/master/examples/continuous_phenotype_light_sensitivity.ipynb)
+We used metabolomics data from iHMP (Inflammatory Bowel Diseases)
+project [Lloyd-Price et al. (2017)](https://doi.org/10.1038/s41586-019-1237-9) for this application. Our goal was to
+characterize temporal dynamics of metabolites associated with severity of IBD and other patient characteristics.
+This [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/main/examples/iHMP/iHMP%20Data%20Overview.ipynb)
 illustrates the steps.
 
 
@@ -261,7 +299,8 @@ illustrates the steps.
 
 * Please submit your questions or issues with the software at
   [Issues tracker](https://github.com/omicsEye/waveome/issues).
-* For community discussions, questions, and issue reporting, please visit our forum [here](https://forum.omicseye.org/c/omics-downstream-analysis/waveome/12)
+* For community discussions, questions, and issue reporting, please visit our
+  forum [here](https://forum.omicseye.org/c/omics-downstream-analysis/waveome/12)
 
 
 
