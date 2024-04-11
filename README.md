@@ -8,9 +8,9 @@ This repository houses code for the _Waveome_ package - an easy to use and power
 <!-- <img src="./figures/hex-waveome.png" width="200" height="200"> -->
 
 
-***waveome*** is a computational method for longitudinal data analysis particularly  
+*waveome* is a computational method for longitudinal data analysis particularly  
 to characterize and identify temporal dynamics of omics and clinical variables in association with
-the phenotype of interest.
+the phenotype of interest. It employs the Gaussian processes as prior to implement a full Basyesian nonparametric modeling.
 
 ---
 **Key features:**
@@ -19,8 +19,7 @@ the phenotype of interest.
   significantly associated with phenotypes of interest.
 * **Validation:** A comprehensive evaluation of waveome performance using synthetic
   data generation with known ground truth for genotype-phenotype association testing.
-* **Interpretation:** Rather than checking all possible kernels (dynamics), _waveome_ prioritizes only comprehensive and 
-interpretable  prior kernels.
+* **Interpretation:** By prioritizing comprehensive and flexible kernel functions, _waveome_ significantly reduces computational costs.
 * **Elegance:** User-friendly, open-source software allowing for high-quality visualization
   and statistical tests.
 * **Optimization:** Since omics data are often very high dimensional, all modules have been written and benchmarked for computing time.
@@ -65,7 +64,7 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
 3. Optimized computation
 4. User-friendly software
 5. Provides temporal dynamics and associated omics features and metadata
-
+6. enhanced with diagnosis and summarizing visualizations. 
 
 
 ## Installation ##
