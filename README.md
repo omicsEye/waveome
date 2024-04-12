@@ -117,24 +117,44 @@ install [git](https://gitforwindows.org/)
 [Microsoft C++ build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 In case you face issues with this step, [this link](https://github.com/pycaret/pycaret/issues/1254) may help you.
 
-1) Create a new conda environment (let's call it waveome_env) with the following command:
 
-```
-conda create --name waveome_env python=3.9
-```
+<ol>
+    <li id="item0">Create a new conda environment (let's call it waveome_env) with the following command:
+    
+    ```
+    conda create --name waveome_env python=3.9
+    ```
+  </li>
+   <li id="item1">Activate your conda environment:
+   
+   ```commandline
+   conda activate waveome_env 
+   ```
+   If you want to use _waveome_ in a python note book for instance in Jupyter notebook we recommend to install it in this environment prior to the `pip` istallation of _waveome_. To do so, if you are using any operation system but Mac M1/M2 simply run 
+   ```commandline
+   conda install jupyter 
+   ```
+   in the `waveome_env` in your terminal or command prompt and go to step <a href="#item2">3</a>. But, if you are an M1/M2 Mac user, prior to istallation of Jupyter notebook run the followings in the `waveome_env`:
+   ```commandline
+   conda install -c 
+   ```
+   and then
+   ```commandline
+   conda-forge grpcio
+   ```
+   and afterwards run 
+   ```commandline
+   conda install jupyter
+   ```
+  </li>
+   <li id="item2">Install waveome directly from GitHub:
 
-2) Activate your conda environment:
+   ```commandline
+   python -m pip install git+https://github.com/omicsEye/waveome
+   ```
+</ol>
 
-```commandline
-conda activate waveome_env 
-```
 
-3) Install *waveome*:
-   you can directly install if from GitHub:
-
-```commandline
-python -m pip install git+https://github.com/omicsEye/waveome
-```
 
 ### Apple M1/M2 MAC ###
 
