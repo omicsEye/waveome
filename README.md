@@ -4,15 +4,13 @@
 
 <img style="float: right;" width="200" height="200" src="./figures/hex-waveome.png">
 
-This repository houses code for the _Waveome_ package - an easy to use and powerful Python library that analyzes
+This repository houses code for the _waveome_ package - an easy to use and powerful Python library that analyzes
 longitudinal data using Gaussian processes.
 
 <!-- ![waveome logo](./figures/hex-waveome.png) -->
 <!-- <img src="./figures/hex-waveome.png" width="200" height="200"> -->
 
-
-*waveome* is a computational method for longitudinal data analysis particularly  
-to characterize and identify temporal dynamics of omics and clinical variables in association with
+*waveome* is a computational method for longitudinal data analysis particularly  to characterize and identify temporal dynamics of omics and clinical variables in association with
 the phenotype of interest. It employs the Gaussian processes as prior to implement a full Basyesian nonparametric
 modeling.
 
@@ -46,10 +44,10 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
 ## Contents ##
 
 * [Features](#features)
-* [waveome](#waveome)
-    * [Installation](#installation)
-        * [Windows Linux Mac](#windows-linux-mac)
-        * [Apple M1/M2 MAC](#apple-m1m2-mac)
+* [General usage](#general-usage)
+* [Installation](#installation)
+   * [Windows Linux Mac](#windows-linux-mac)
+   * [Apple M1/M2 MAC](#apple-m1m2-mac)
 * [Getting Started with waveome](#getting-started-with-waveome)
     * [Test waveome](#test-waveome)
     * [Options](#options)
@@ -75,10 +73,7 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
 4. User-friendly software
 5. Provides temporal dynamics and associated omics features and metadata
 6. enhanced with diagnosis and summarizing visualizations.
-
-## Installation ##
-
-## General Usage
+# General usage #
 
 Running _waveome_ requires multiple steps, including installing _waveome_ package, loading data in the required format,
 specifying covariates and outcomes (
@@ -88,20 +83,16 @@ demonstrated in the [waveome_overview.ipynb](https://github.com/omicsEye/waveome
 notebook as a template (an example of the package modeling simulated data)
 that you can use and modify for your input data. Each step is explained with details in following sections of this
 tutorial.
-
-## Installation
-
-* First install *conda*  
-  Go to the [Anaconda website](https://www.anaconda.com/) and download the latest version for your operating system.
-* For Windows users: do not forget to add `conda` to your system `path`
-* Second is to check for conda availability  
-  open a terminal (or command line for Windows users) and run:
-
+# Installation #
+## Overal requirements ##
+Installation _waveome_ is processed in a conda environment. You therefore need to install _conda_ first. Go to the [Anaconda website](https://www.anaconda.com/) and download the latest version for your operating system.
+* For Windows users: do not forget to add _conda_ to your system PATH. It will be asked as a part of installation procedure. 
+* Make sure about _conda_ availability. Open a terminal (or command line for Windows users) and run:
 ```
 conda --version
 ```
 
-it should out put something like:
+It should output something like:
 
 ```
 conda 4.9.2
@@ -111,7 +102,12 @@ if not, you must make *conda* available to your system for further steps.
 if you have problems adding conda to PATH, you can find instructions
 [here](https://docs.anaconda.com/anaconda/user-guide/faq/).
 
-### Windows Linux Mac ###
+## Windows Linux Mac ##
+
+Open a terminal in your Linux or Mac system or command (`ctrl+R` then type `cmd` and press Enter) and using the following code create a _conda_ environment:
+```
+conda create --name waveome_env python=3.9
+```
 
 If you are using an **Apple M1/M2 MAC** please go to the [Apple M1/M2 MAC](#apple-m1m2-mac) for installation
 instructions.  
