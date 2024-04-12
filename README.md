@@ -121,7 +121,7 @@ In case you face issues with this step, [this link](https://github.com/pycaret/p
 <ol>
     <li id="item0">Create a new conda environment (let's call it waveome_env) with the following command:
     
-    ```
+    ```commanline
     conda create --name waveome_env python=3.9
     ```
   </li>
@@ -136,11 +136,7 @@ In case you face issues with this step, [this link](https://github.com/pycaret/p
    ```
    in the `waveome_env` in your terminal or command prompt and go to step <a href="#item2">3</a>. But, if you are an M1/M2 Mac user, prior to istallation of Jupyter notebook run the followings in the `waveome_env`:
    ```commandline
-   conda install -c 
-   ```
-   and then
-   ```commandline
-   conda-forge grpcio
+   conda install -c conda-forge grpcio
    ```
    and afterwards run 
    ```commandline
