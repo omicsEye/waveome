@@ -787,3 +787,55 @@ def tqdm_joblib(tqdm_object):
     finally:
         joblib.parallel.BatchCompletionCallBack = old_batch_callback
         tqdm_object.close()
+
+
+def keep_kernel_lengthscale_(kernel_component, X):
+    """ Check to see if we should drop kernel component based on lengthscale.
+    """
+    # Drill down to base kernel if periodic
+    if kernel_component.name == "periodic":
+        kernel_component = kernel_component.base_kernel
+
+    # Test to make sure this kernel component is governed by lengthscale
+    if hasattr(kernel_component, "lengthscales") is False:
+        return True
+    
+    # Pull off active dimension
+    active_index = kernel_component.active_dims[0]
+
+    # Check to see range of relevant input dimension
+    var_range = X[:, active_index].ptp()
+
+    # See if lengthscale is larger than range of input
+    return (kernel_component.lengthscales.numpy() < var_range)
+
+
+def search_through_kernel_list_(kernel_list, list_type="sum", X=None):
+    """ Only keep kernel components that meet criteria. 
+    Account for sum versus product kernels.
+    """
+    out_list = []
+    for i, k in enumerate(kernel_list):
+        if k.name == "product":
+            prod_out = search_through_kernel_list_(
+                k.kernels,
+                list_type="product",
+                X=X
+            )
+            out_list.append(prod_out)
+        else:
+            keep_component = keep_kernel_lengthscale_(k, X)
+            if keep_component:
+                out_list.append(k)
+    
+    # Stich together components based on type
+    out_kernel = None
+    if list_type == "sum":
+        out_kernel = gpflow.kernels.Sum(out_list)
+    elif list_type == "product":
+        if len(out_list) > 1:
+            out_kernel = gpflow.kernels.Product(out_list)
+        else:
+            out_kernel = out_list[0]
+
+    return out_kernel
