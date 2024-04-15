@@ -46,8 +46,9 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
 * [Features](#features)
 * [General usage](#general-usage)
 * [Installation](#installation)
-   * [Windows Linux Mac](#windows-linux-mac)
-   * [Apple M1/M2 MAC](#apple-m1m2-mac)
+   * [Overl requirements](#overal-requirements)
+   * [Windows\Linux\Mac](#windowslinuxmac)
+   * [Jupyter kernel definition](#jupyter-kernel-definition)
 * [Getting Started with waveome](#getting-started-with-waveome)
     * [Test waveome](#test-waveome)
     * [Options](#options)
@@ -65,7 +66,7 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
 
 ------------------------------------------------------------------------------------------------------------------------------
 
-# Features #
+# Features
 
 1. Generic software that can handle any kind of sequencing data and phenotypes
 2. One place to do all analysis and producing high-quality visualizations
@@ -73,7 +74,7 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
 4. User-friendly software
 5. Provides temporal dynamics and associated omics features and metadata
 6. enhanced with diagnosis and summarizing visualizations.
-# General usage #
+# General usage
 
 Running _waveome_ requires multiple steps, including installing _waveome_ package, loading data in the required format,
 specifying covariates and outcomes (
@@ -83,8 +84,8 @@ demonstrated in the [waveome_overview.ipynb](https://github.com/omicsEye/waveome
 notebook as a template (an example of the package modeling simulated data)
 that you can use and modify for your input data. Each step is explained with details in following sections of this
 tutorial.
-# Installation #
-## Overal requirements ##
+# Installation
+## Overal requirements
 Installation _waveome_ is processed in a conda environment. You therefore need to install _conda_ first. Go to the [Anaconda website](https://www.anaconda.com/) and download the latest version for your operating system.
 * For Windows users: do not forget to add _conda_ to your system PATH. It will be asked as a part of installation procedure. 
 * Make sure about _conda_ availability. Open a terminal (or command line for Windows users) and run:
@@ -102,7 +103,7 @@ if not, you must make *conda* available to your system for further steps.
 if you have problems adding conda to PATH, you can find instructions
 [here](https://docs.anaconda.com/anaconda/user-guide/faq/).
 
-## Windows Linux Mac ##
+## Windows\Linux\Mac
 If you are using windows, please make sure you have both git and Microsoft Visual C++ 14.0 or greater installed.
 install [git](https://gitforwindows.org/)
 [Microsoft C++ build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
@@ -117,11 +118,11 @@ In case you face issues with this step, [this link](https://github.com/pycaret/p
     ```commandline
     conda activate waveome_env 
     ```
-3. If you want to use _waveome_ in a Python notebook, for instance in _Jupyter Notebook_ (which is recommended for running [waveome_overview.ipynb](https://github.com/omicsEye/waveome/blob/main/waveome_overview.ipynb) sample file and [example projects](https://github.com/omicsEye/waveome/tree/main/examples)), we recommend the installation of _Jupyter Notebook_ in this environment prior to the `pip` installation of _waveome_. To do so, if you are using any operating system but Mac M1/M2, simply run:
+3. If you want to use _waveome_ in a Python notebook, for instance in jupyter notebook (which is recommended for running [waveome_overview.ipynb](https://github.com/omicsEye/waveome/blob/main/waveome_overview.ipynb) sample file and [example projects](https://github.com/omicsEye/waveome/tree/main/examples)), we recommend the installation of _Jupyter Notebook_ in this environment prior to the `pip` installation of _waveome_. To do so, if you are using any operating system but Mac M1/M2, simply run:
     ```commandline
     conda install jupyter 
     ```
-    in the `waveome_env` in your terminal or command prompt and go to step [4](#item4). But, if you are an M1/M2 Mac user, prior to installation of _Jupyter Notebook_ run the following in the `waveome_env`:
+    in the `waveome_env` in your terminal or command prompt and go to step [4](#item4). But, if you are an M1/M2 Mac user, prior to installation of jupyter notebook run the following in the `waveome_env`:
     ```commandline
     conda install -c conda-forge grpcio
     ```
@@ -138,9 +139,9 @@ In case you face issues with this step, [this link](https://github.com/pycaret/p
     python -m pip install git+https://github.com/omicsEye/waveome
     ```
 
-## Jupyter kernel definition ##
+## Jupyter kernel definition
 
-To employ _waveome_ in _Jupyter Notebook_ we need to provide the kernel. This can be done with
+To employ _waveome_ in jupyter notebook we need to provide the kernel. This can be done with
 ```commandline
 conda install ipykernel
 ```
@@ -150,7 +151,9 @@ python -m ipykernel install --user --name=waveome
 ```
 in the terminal while `waveome_env` is active.
 
-### Loading and preparing data
+# Loading and preparing data
+
+ß
 
 ### Running Kernel search
 
@@ -158,9 +161,9 @@ in the terminal while `waveome_env` is active.
 
 -----------------------------------------------------------------------------------------------------------------------
 
-# Getting Started with waveome #
+<!--# Getting Started with waveome
 
-## Test waveome ##
+## Test waveome
 
 To test if waveome is installed correctly, you may run the following command in the terminal:
 
@@ -175,28 +178,83 @@ Which yields waveome command line options.
 ```
 
 ```
+-->
+# Input
+As an input _waveome_ requires a pandas data frame which contains at least: 
+1. Subjects/individuals/patients index column,
+2. A column representing a continous covariate; this column in longitudinal studies is usually the time of observing 
+the sample.
+3. An Omics feature measurement.
 
-## Input ##
+All the above-mentioned items must be available in numeric types (`int` or `float`) in the data frame:
+<img height="200" src="/Users/alireza/DataspellProjects/waveome/figures/sample.png" width="600"/>
 
-## Output ##  
+![](/Users/alireza/DataspellProjects/waveome/figures/sample.png)
+The Subject index is used to measure the subject effect. The categorical factors are encouraged to be considered 
+through dummy variables. For instance, in the above example the factor `Sex` is considered as 'is the subject Female?' 
+and '1' means "yes". _waveome_ does not consider the samples with missing values and it is required to delete 
+the rows with missing values prior to `GPSearch`. 
 
-## Demo ##
+## Output 
+The output of `GPSearch.run_serach` contains the results for each Bayesian nonparametric regression model 
+fit on the data corresponding a kernel (or summation or multiplication of kernels) function including but not 
+restricted to the BIC, corresponding parameter estimations and residuals. Based on information criterion, the 
+best kernel is selected and the coefficients of determination of between each omics feature and all the 
+covariates can be displayed. The estimated mean function of the omics feature as a function of each covariate 
+alongside the corresponding residual is provided. Depend on the response distribution assumption on the omics feature (Gaussian and 
+Poisson for now; but the negative binomial distribution is also under construction) the posterior mean of the 
+omics feature is also included as an output. We refer the users to see the outputs of 
+[waveome_overview.ipynb](https://github.com/omicsEye/waveome/blob/main/waveome_overview.ipynb) jupyter notebook 
+file for more details.
+
+
+<!--## Demo
 
 ```commandline
 waveome -sf PATH_TO_SEQUENCE.FASTA -st aa -md PATH_TO_META_DATA.tsv -mv
  META_VARIABLE_NAME -a reg  -dth 0.15 --plot --write
 ```
-
-## Tutorial ##
+-->
+## Tutorial
 
 Multiple detailed jupyter notebook of _waveome_ implementation are available in the
 [examples](https://github.com/omicsEye/waveome/tree/master/examples) and the
 required data for the examples are also available in the
 [data](https://github.com/omicsEye/waveome/tree/master/data) directory.
 
-# Applications #
+# Applications 
 
-Here we try to use the **_waveome_** on different datasets and elaborate on the results.
+Here we try to use the _waveome_ on different datasets and elaborate on the results.
+
+## Breast milk microbiome
+[GWDBB](https://github.com/gwcbi/GWDBB/tree/master) is a reference data library for clinical trials and omics data. 
+It contains the longitudinal gut microbiome of infants and mothers in different time-points. Two different 
+longitudinal analysis has been derived on the data and can be found in 
+[Breastmilk.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/Breastmilk/Breastmilk.ipynb) and 
+[Breastmilk_infant_Microbiome.ipynb)
+](https://github.com/omicsEye/waveome/blob/main/examples/Breastmilk/Breastmilk_infant_Microbiome.ipynb) notebook 
+files. 
+
+
+## iHMP
+
+[iHMP](https://www.nature.com/articles/nature23889) provided one of the broadest datasets for human microbiome 
+data hosted in different niches in the body at different time-points. The available dataset has been collected out of 
+265 individuals. The longitudinal analysis for different body sights are presented in 
+[multioutput_ihmp.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/iHMP/multioutput_ihmp.ipynb). 
+
+## CD4 counts
+The bivariate responses of HIV-1 RNA (count/ml) in seminal and blood of patients in HIV-RNA AIDS 
+studies from Seattle, Swiss and UNCCH cohorts are considered in this example. The data were
+collected out of N = 149 subjects divided into two groups of patients who were receiving a therapy
+(14=106 patients) and those with no therapy or unknown therapy method (43 patients). The covariates
+are scaled time, baseline age, baseline CD4 and two factors consists of group and cohort. Data are also 
+available through Wang (2013). The analysis using _waveome_ is also provided in 
+[CD4.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/CD4/CD4.ipynb).
+
+Wang, W.-L. (2013), Multivariate t linear mixed models for irregularly observed multiple repeated measures 
+with missing outcomes. _Biom. J._, **55**: 554-571. 
+[10.1002/bimj.201200001](https://onlinelibrary.wiley.com/doi/10.1002/bimj.201200001)
 
 <h2 id="opsin">
 <i>waveome</i> Identifying important metabolites associated with inflammatory bowel disease 
