@@ -49,19 +49,17 @@ Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
    * [Overl requirements](#overal-requirements)
    * [Windows\Linux\Mac](#windowslinuxmac)
    * [Jupyter kernel definition](#jupyter-kernel-definition)
-* [Getting Started with waveome](#getting-started-with-waveome)
-    * [Test waveome](#test-waveome)
-    * [Options](#options)
-    * [Input](#input)
-    * [Output](#output)
-    * [Demo](#demo)
-    * [Tutorial](#tutorial)
+   * [Jupyter kernel definition](#jupyter-kernel-definition)
+* [Loading and preparing data](#loading-and-preparing-data)
+  * [Input](#input)
+  * [Output](#output)
+  * [Tutorial](#tutorial)
 * [Applications](#applications)
-    * [*waveome* identifies important dynamics in metabolites and associations with metadata](#ihmp)
-    * [Application 2](#application2)
-    * [Application 3](#application3)
-    * [Application 4](#application4)
-    * [Application 5](#application5)
+    * [Breast milk microbiome](#breast-milk-microbiome)
+    * [iHMP](#ihmp)
+    * [CD4 counts](#cd4-counts)
+    * [Inflammotory bowel disease](#identifying-important-metabolites-associated-with-inflammatory-bowel-disease-)
+    * [Niche association](#novel-insights-of-niche-associations-in-the-oral-microbiome)
 * [Support](#support)
 
 ------------------------------------------------------------------------------------------------------------------------------
@@ -153,12 +151,12 @@ in the terminal while `waveome_env` is active.
 
 # Loading and preparing data
 
-ß
+<!-- ß
 
 ### Running Kernel search
 
 ### Visualization
-
+-->
 -----------------------------------------------------------------------------------------------------------------------
 
 <!--# Getting Started with waveome
@@ -187,9 +185,9 @@ the sample.
 3. An Omics feature measurement.
 
 All the above-mentioned items must be available in numeric types (`int` or `float`) in the data frame:
-<img height="200" src="/Users/alireza/DataspellProjects/waveome/figures/sample.png" width="600"/>
+![sampledata](https://github.com/omicsEye/waveome/blob/main/figures/sample.png?raw=True)
 
-![](/Users/alireza/DataspellProjects/waveome/figures/sample.png)
+
 The Subject index is used to measure the subject effect. The categorical factors are encouraged to be considered 
 through dummy variables. For instance, in the above example the factor `Sex` is considered as 'is the subject Female?' 
 and '1' means "yes". _waveome_ does not consider the samples with missing values and it is required to delete 
@@ -256,9 +254,7 @@ Wang, W.-L. (2013), Multivariate t linear mixed models for irregularly observed 
 with missing outcomes. _Biom. J._, **55**: 554-571. 
 [10.1002/bimj.201200001](https://onlinelibrary.wiley.com/doi/10.1002/bimj.201200001)
 
-<h2 id="opsin">
-<i>waveome</i> Identifying important metabolites associated with inflammatory bowel disease 
-</h2>
+## Identifying important metabolites associated with inflammatory bowel disease 
 
 ![ihmp](https://github.com/omicsEye/waveome/blob/main/figures/ihmp.png?raw=True)
 
@@ -269,26 +265,22 @@ This [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/main/examples/i
 illustrates the steps.
 
 
-<h2 id="hmp">
-Novel insights of niche associations in the oral microbiome
-</h2>
+## Novel insights of niche associations in the oral microbiome
 
-![hmp](https://github.com/omicsEye/waveome/blob/master/img/hmp/hmp.png?raw=True)  
+<!-- ![hmp](https://github.com/omicsEye/waveome/blob/master/img/hmp/hmp.png?raw=True) -->  
 Microbial species tend to adapt at the genome level to the niche in which they live. We hypothesize
 that genes with essential functions change based on where microbial species live. Here we use microbial strain
 representatives from stool metagenomics data of healthy adults from the
-[Human Microbiome Project](https://doi.org/10.1038/nature11234). The input for waveome consists of 1) an MSA file
+[Human Microbiome Project](https://doi.org/10.1038/nature11234). The input for _waveome_ consists of 1) an MSA file
 with 1006 rows, each a representative strain of a specific microbial species, here Haemophilus parainfluenzae, with
 49839 lengths; and 2) labels for waveome prediction are body sites from which samples were collected.
 This [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/master/examples/discrete_phenotype_HMP.ipynb)
 illustrates the steps.
 
 
-<h2 id="covid">
-<i>waveome</i> reveals important SARS-CoV-2 regions associated with Alpha and Delta variants
-</h2>
+<!-- ## Reveals important SARS-CoV-2 regions associated with Alpha and Delta variants
 
-![sarscov2](https://github.com/omicsEye/waveome/blob/master/img/sars_cov2/sarscov2.png?raw=True)
+
 Variants occur with new mutations in the virus genome. Most mutations in the SARS-CoV-2 genome do not affect the
 functioning of the virus. However, mutations in the spike protein of SARS-CoV-2, which binds to receptors on cells
 lining the inside of the human nose, may make the virus easier to spread or affect how well vaccines protect people.
@@ -300,9 +292,9 @@ the data and find the most important (predictive) positions in these sequences i
 This
 [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/master/examples/discrete_phenotype_SARS_Cov2_variants.ipynb)
 illustrates the steps.
+-->
 
-
-<h2 id="hiv">
+<!-- <h2 id="hiv">
 <i>waveome</i> identifies HIV regions with potentially important functions
 </h2>
 
@@ -319,7 +311,7 @@ the V3 sequences V3 to subtypes B and C. We used the [Los Alamos HIV Database](w
 nucleotide sequences of the V3 loop of subtypes B and C.
 This [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/master/examples/discrete_phenotype_HIV.ipynb)
 illustrates the steps.
-
+-->
 # Support #
 
 * Please submit your questions or issues with the software at
