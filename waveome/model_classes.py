@@ -6,8 +6,8 @@ import tensorflow as tf
 
 # Not currently using below because it presents warning on M1 mac
 # from tensorflow.keras.optimizers import Adam
-import tensorflow_probability as tfp
-from gpflow.base import RegressionData
+# import tensorflow_probability as tfp
+# from gpflow.base import RegressionData
 from joblib import Parallel, delayed
 from tensorflow.keras.optimizers.legacy import Adam
 from tensorflow_probability import distributions as tfd
@@ -16,16 +16,18 @@ from tqdm import tqdm
 from .kernels import Empty
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import make_folds
-from .utilities import (
+from .utilities import (  # hmc_sampling,
     calc_bic,
     find_variance_components,
     find_variance_components_tf,
     gp_likelihood_crosswalk,
-    hmc_sampling,
     print_kernel_names,
+    search_through_kernel_list_,
     tqdm_joblib,
     variance_contributions,
 )
+
+f64 = gpflow.utilities.to_default_float
 
 
 class BaseGP(gpflow.models.SVGP):
@@ -103,6 +105,7 @@ class BaseGP(gpflow.models.SVGP):
         self.kernel = kernel
         self.kernel_name = ""
         self.verbose = verbose
+        self.optimizer = None
 
         if hasattr(self, "num_inducing_points") is False:
             self.num_inducing_points = X.shape[0]
@@ -230,41 +233,57 @@ class BaseGP(gpflow.models.SVGP):
         # Source: (https://gpflow.github.io/GPflow/develop/
         # notebooks/advanced/natural_gradients.html#Natural-gradients)
 
-        # Can we just use BFGS for "smaller" models?
+        # Can we just use BFGS for "smaller" models? Exclude variational params
         tot_params = 0
-        for var in self.trainable_variables:
-            num_params = np.prod(var.shape)
-            tot_params += num_params
-        if tot_params <= 10000:
+        for var_set in [
+            self.mean_function.trainable_variables,
+            self.kernel.trainable_variables
+        ]:
+            for var in var_set:
+                num_params = np.prod(var.shape)
+                tot_params += num_params
+
+        if tot_params <= 100:
             if self.verbose:
                 print(f"Number of params: {tot_params}, using Scipy optimizer")
-            # try:
-            gpflow.optimizers.Scipy().minimize(
-                closure=self.training_loss_closure(
-                    data=self.data,
-                    compile=True
-                ),
-                variables=self.trainable_variables,
-                method="L-BFGS-B",
-                options={"maxiter": num_opt_iter}
-            )
-            # except TypeError:
-            #     for param in self.parameters:
-            #         param = tf.cast(param, tf.float32)
-            #     gpflow.optimizers.Scipy().minimize(
-            #         closure=self.training_loss_closure(
-            #             data=(
-            #                 tf.cast(self.data[0], tf.float32),
-            #                 tf.cast(self.data[1], tf.float32)
-            #             ),
-            #             compile=True
-            #         ),
-            #         variables=self.trainable_variables,
-            #         method="L-BFGS-B",
-            #         options={"maxiter": num_opt_iter}
-            #     )
+            self.optimizer = "scipy"
+
+            # Make sure we freeze inducing points if the kernel is Constant()
+            # otherwise we get unconnected gradient error
+            # issue: https://github.com/GPflow/GPflow/issues/1600
+            if self.kernel.name == "constant":
+                gpflow.utilities.set_trainable(self.inducing_variable, False)
+
+            try:
+                gpflow.optimizers.Scipy().minimize(
+                    closure=self.training_loss_closure(
+                        data=self.data,
+                        compile=True
+                    ),
+                    variables=self.trainable_variables,
+                    method="L-BFGS-B",
+                    options={"maxiter": num_opt_iter}
+                )
+            except TypeError:
+                for param in self.parameters:
+                    param = tf.cast(param, tf.float64)
+                gpflow.optimizers.Scipy().minimize(
+                    closure=self.training_loss_closure(
+                        data=(
+                            tf.cast(self.data[0], tf.float64),
+                            tf.cast(self.data[1], tf.float64)
+                        ),
+                        # compile=True
+                    ),
+                    variables=self.trainable_variables,
+                    method="L-BFGS-B",
+                    options={"maxiter": num_opt_iter}
+                )
 
             return None
+        
+        # Set optimizer otherwise
+        self.optimizer = "adam/gradient"
 
         # Stop Adam from optimizing the variational parameters
         gpflow.set_trainable(self.q_mu, False)
@@ -278,7 +297,9 @@ class BaseGP(gpflow.models.SVGP):
 
         # Compile loss closure based on training data
         compiled_loss = self.training_loss_closure(
-            data=(self.X, self.Y), compile=True
+            # data=(self.X, self.Y), 
+            data=self.data,
+            compile=True
         )
 
         @tf.function
@@ -444,7 +465,7 @@ class VarGP(BaseGP):
         mean_function=gpflow.functions.Constant(c=0.0),
         kernel=gpflow.kernels.SquaredExponential(active_dims=[0]),
         likelihood="gaussian",
-        variational_priors=True,
+        # variational_priors=True,
         verbose=False,
         **basegp_kwargs,
     ):
@@ -480,9 +501,11 @@ class VarGP(BaseGP):
             )
 
         # Set variational priors if requested
-        if variational_priors is True:
-            self.q_mu.prior = tfd.Normal(loc=0.0, scale=100.0)
-            self.q_sqrt.prior = tfd.HalfNormal(scale=100.0)
+        # TODO: Need to figure out why priors lead to tf.float64 vs float32
+        # issues with scipy optimizer
+        # if variational_priors is True:
+        #     self.q_mu.prior = tfd.Normal(loc=f64(0), scale=f64(100))
+        #     self.q_sqrt.prior = tfd.HalfNormal(scale=f64(100))
 
 
 class SparseGP(BaseGP):
@@ -519,15 +542,16 @@ class SparseGP(BaseGP):
 
         # Check inducing point size compared to training data
         # If more than we need then we set to dataset size and don't train
-        if num_inducing_points > X.shape[0]:
+        if num_inducing_points >= X.shape[0]:
             if verbose:
                 print(
                     "Number of inducing points requested "
-                    f"({num_inducing_points}) greater than "
-                    f"original data ({X.shape[0]})"
+                    f"({num_inducing_points}) greater than or equal to "
+                    f"original data size ({X.shape[0]})"
                 )
             num_inducing_points = X.shape[0]
             train_inducing = False
+            random_points = False
 
             self.num_inducing_points = num_inducing_points
 
@@ -556,7 +580,9 @@ class SparseGP(BaseGP):
             obs_idx = np.arange(num_inducing_points)
 
         self.inducing_variable = gpflow.inducing_variables.InducingPoints(
-            X[obs_idx, :].copy()
+            X.numpy()[obs_idx, :].copy()
+            if tf.is_tensor(X)
+            else X[obs_idx, :].copy()
         )
         gpflow.utilities.set_trainable(self.inducing_variable, train_inducing)
 
@@ -630,7 +656,8 @@ class PenalizedGP(BaseGP):
 
     def penalization_search(
         self,
-        penalization_factor_list=np.exp(np.linspace(0, 10, 5)),
+        # penalization_factor_list=np.exp(np.linspace(0, 10, 5)),
+        penalization_factor_list=[0.0, 0.1, 1.0, 10.0, 100.0],
         k_fold=3,
         fit_best=True,
         max_jobs=-1,
@@ -639,6 +666,7 @@ class PenalizedGP(BaseGP):
         randomization_options={},
         optimization_options={},
         random_seed=None,
+        selection_type="se"
     ):
         # Split training data into k-folds
         folds = make_folds(self.X, self.unit_col, k_fold, random_seed)
@@ -735,6 +763,16 @@ class PenalizedGP(BaseGP):
             cur_val = parallel_results[
                 parallel_results[:, 0] == factor, 2
             ].mean()
+
+            # Calculate one standard error if requested
+            if selection_type == "se":
+                cur_sd = parallel_results[
+                    parallel_results[:, 0] == factor, 2
+                ].std()
+                cur_se = cur_sd / np.sqrt(k_fold)
+                cur_val -= cur_se
+
+            # Check to see if the new factor value is better
             if cur_val > max_val:
                 max_factor = factor
                 max_val = cur_val
@@ -785,7 +823,8 @@ class PenalizedGP(BaseGP):
     #     return None
 
     def cut_kernel_components(self, var_cutoff: float = 0.001):
-        """Prune out kernel components with small variance parameters
+        """Prune out kernel components with small variance parameters and large
+        lengthscale parameters (w.r.t. input domain).
 
         Parameters
         ----------
@@ -821,6 +860,14 @@ class PenalizedGP(BaseGP):
         else:
             self.kernel = Empty()
 
+        # Prune by lengthscale as well
+        if hasattr(self.kernel, "kernels"):
+            self.kernel = search_through_kernel_list_(
+                kernel_list=self.kernel.kernels,
+                list_type=self.kernel.name,
+                X=self.X
+            )
+
         # Also make sure we only keep base variances that remain
         # This will not be used post refactor of code base
         if hasattr(self, "base_variances"):
@@ -830,7 +877,11 @@ class PenalizedGP(BaseGP):
         return None
 
 
-class PSVGP(PenalizedGP, SparseGP, VarGP):
+class PSVGP(
+    PenalizedGP,
+    SparseGP,
+    VarGP
+):
     """Combine all of the Gaussian process types into the main entry point.
 
     Attributes
@@ -905,7 +956,9 @@ class PSVGP(PenalizedGP, SparseGP, VarGP):
 #             kernel=kernel,
 #             likelihood=likelihood,
 #             inducing_variable=inducing_variable
-#             # inducing_variable=gpflow.inducing_variables.InducingPoints(data[0]),
+#             inducing_variable=gpflow.inducing_variables.InducingPoints(
+#                  data[0]
+#              ),
 #             # **svgpmc_kwargs,
 #         )
 

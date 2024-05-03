@@ -319,7 +319,13 @@ illustrates the steps.
 * For community discussions, questions, and issue reporting, please visit our
   forum [here](https://forum.omicseye.org/c/omics-downstream-analysis/waveome/12)
 
+## Installation
+To install the package it is suggested that you create a new conda environment (required to have Python >= 3.9 and <= 3.11 for tensorflow)   
+`conda create -n waveome python=3.11`   
+`conda activate waveome`   
+and then pip install _waveome_ using    
+`pip install git+https://github.com/omicsEye/waveome.git`.
 
-
-
+## Jupyter Notebook
+If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new waveome environment. This can be done with `conda install -n waveome ipykernel` and then `python -m ipykernel install --user --name=waveome`.
 

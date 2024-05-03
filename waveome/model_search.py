@@ -10,11 +10,13 @@ import seaborn as sns
 import tensorflow as tf
 from gpflow.utilities import set_trainable
 from joblib import Parallel, delayed
-from tensorflow_probability import distributions as tfd
+
+# from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
 from .kernels import Categorical
-from .likelihoods import ZeroInflatedNegativeBinomial
+
+# from .likelihoods import ZeroInflatedNegativeBinomial
 from .model_classes import PSVGP
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import full_kernel_build
@@ -54,7 +56,6 @@ class GPSearch:
 
     Attributes
     ----------
-
     """
 
     def __init__(
@@ -693,6 +694,7 @@ def kernel_test(
     X,
     Y,
     k,
+    mean_function=gpflow.mean_functions.Constant(),
     num_restarts=5,
     random_init=True,
     verbose=False,
@@ -716,138 +718,165 @@ def kernel_test(
 
     """
 
-    # Randomize initial values for a number of restarts
-    # np.random.seed(9012)
-    best_loglik = -np.Inf
-    best_model = None
+    # # Randomize initial values for a number of restarts
+    # # np.random.seed(9012)
+    # best_loglik = -np.Inf
+    # best_model = None
 
-    for i in range(num_restarts):
-        # Specify model
-        if likelihood == "gaussian":
-            m = gpflow.models.GPR(
-                #             m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,
-            )  # +gpflow.kernels.Constant())#,
-            # mean_function=gpflow.mean_functions.Constant())#,
-        #                 likelihood=gpflow.likelihoods.Gaussian())
-        elif likelihood == "exponential":
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,
-                # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Exponential(),
-            )
-        elif likelihood == "poisson":
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,
-                # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Poisson(),
-            )
-        elif likelihood == "gamma":
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,
-                # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Gamma(),
-            )
-        elif likelihood == "bernoulli":
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,  # +gpflow.kernels.Constant(),
-                # mean_function=gpflow.mean_functions.Constant(),
-                likelihood=gpflow.likelihoods.Bernoulli(),
-            )
-        elif likelihood == "zeroinflated_negativebinomial":
-            m = gpflow.models.VGP(
-                data=(X, Y),
-                kernel=k,
-                likelihood=ZeroInflatedNegativeBinomial(),
-            )
-        else:
-            print("Unknown likelihood requested.")
+    # for i in range(num_restarts):
+    #     # Specify model
+    #     if likelihood == "gaussian":
+    #         m = gpflow.models.GPR(
+    #             #             m = gpflow.models.VGP(
+    #             data=(X, Y),
+    #             kernel=k,
+    #         )  # +gpflow.kernels.Constant())#,
+    #         # mean_function=gpflow.mean_functions.Constant())#,
+    #     #                 likelihood=gpflow.likelihoods.Gaussian())
+    #     elif likelihood == "exponential":
+    #         m = gpflow.models.VGP(
+    #             data=(X, Y),
+    #             kernel=k,
+    #             # mean_function=gpflow.mean_functions.Constant(),
+    #             likelihood=gpflow.likelihoods.Exponential(),
+    #         )
+    #     elif likelihood == "poisson":
+    #         m = gpflow.models.VGP(
+    #             data=(X, Y),
+    #             kernel=k,
+    #             # mean_function=gpflow.mean_functions.Constant(),
+    #             likelihood=gpflow.likelihoods.Poisson(),
+    #         )
+    #     elif likelihood == "gamma":
+    #         m = gpflow.models.VGP(
+    #             data=(X, Y),
+    #             kernel=k,
+    #             # mean_function=gpflow.mean_functions.Constant(),
+    #             likelihood=gpflow.likelihoods.Gamma(),
+    #         )
+    #     elif likelihood == "bernoulli":
+    #         m = gpflow.models.VGP(
+    #             data=(X, Y),
+    #             kernel=k,  # +gpflow.kernels.Constant(),
+    #             # mean_function=gpflow.mean_functions.Constant(),
+    #             likelihood=gpflow.likelihoods.Bernoulli(),
+    #         )
+    #     elif likelihood == "zeroinflated_negativebinomial":
+    #         m = gpflow.models.VGP(
+    #             data=(X, Y),
+    #             kernel=k,
+    #             likelihood=ZeroInflatedNegativeBinomial(),
+    #         )
+    #     else:
+    #         print("Unknown likelihood requested.")
 
-        # # Set priors
-        if use_priors:
-            for p in m.parameters:
-                # We don't want to mess with the Q points in VGP model
-                if len(p.shape) <= 1:
-                    if p.name == "identity":
-                        p.prior = tfd.Uniform(f64(-100), f64(100))
-                    else:
-                        p.prior = tfd.Uniform(f64(0), f64(100))
-                        # p.prior = tfd.Gamma(f64(1), f64(0.5))
+    #     # # Set priors
+    #     if use_priors:
+    #         for p in m.parameters:
+    #             # We don't want to mess with the Q points in VGP model
+    #             if len(p.shape) <= 1:
+    #                 if p.name == "identity":
+    #                     p.prior = tfd.Uniform(f64(-100), f64(100))
+    #                 else:
+    #                     p.prior = tfd.Uniform(f64(0), f64(100))
+    #                     # p.prior = tfd.Gamma(f64(1), f64(0.5))
 
-        # Randomize initial values if not trained already
-        if random_init:
-            for p in m.kernel.trainable_parameters:
-                # Should we actually not have this requirement?
-                # if p.numpy() == 1 and
-                if len(p.shape) <= 1:
-                    unconstrain_vals = np.random.normal(
-                        size=p.numpy().size
-                    ).reshape(p.numpy().shape)
-                    p.assign(p.transform_fn(unconstrain_vals))
+    #     # Randomize initial values if not trained already
+    #     if random_init:
+    #         for p in m.kernel.trainable_parameters:
+    #             # Should we actually not have this requirement?
+    #             # if p.numpy() == 1 and
+    #             if len(p.shape) <= 1:
+    #                 unconstrain_vals = np.random.normal(
+    #                     size=p.numpy().size
+    #                 ).reshape(p.numpy().shape)
+    #                 p.assign(p.transform_fn(unconstrain_vals))
 
-            for p in m.likelihood.trainable_parameters:
-                if len(p.shape) <= 1:
-                    unconstrain_vals = np.random.normal(
-                        size=p.numpy().size
-                    ).reshape(p.numpy().shape)
-                    p.assign(p.transform_fn(unconstrain_vals))
+    #         for p in m.likelihood.trainable_parameters:
+    #             if len(p.shape) <= 1:
+    #                 unconstrain_vals = np.random.normal(
+    #                     size=p.numpy().size
+    #                 ).reshape(p.numpy().shape)
+    #                 p.assign(p.transform_fn(unconstrain_vals))
 
-        # Optimization step for hyperparameters
-        try:
-            gpflow.optimizers.Scipy().minimize(
-                m.training_loss,
-                m.trainable_variables,
-                # options={'maxiter': 10000}
-            )
-            # adam_opt_params(m)
-            # scipy_opt_params(m)
+    #     # Optimization step for hyperparameters
+    #     try:
+    #         gpflow.optimizers.Scipy().minimize(
+    #             m.training_loss,
+    #             m.trainable_variables,
+    #             # options={'maxiter': 10000}
+    #         )
+    #         # adam_opt_params(m)
+    #         # scipy_opt_params(m)
 
-        except Exception as e:
-            if verbose:
-                print(f"Optimization not successful, skipping. Error: {e}")
-            if best_model is None and i == num_restarts - 1:
-                return best_model, -1 * best_loglik
-            continue
+    #     except Exception as e:
+    #         if verbose:
+    #             print(f"Optimization not successful, skipping. Error: {e}")
+    #         if best_model is None and i == num_restarts - 1:
+    #             return best_model, -1 * best_loglik
+    #         continue
 
-        #         print(opt_results)
-        # Now check to see if this is invertible
-        try:
-            m_, v_ = m.predict_y(m.data[0])
-        except Exception as e:
-            if verbose:
-                print(f"error: {e}")
-                print("Covariance matrix not invertible, removing model.")
-            # If not invertible then revert back to best model, unless last try
-            if best_model is None and i == num_restarts - 1:
-                return best_model, -1 * best_loglik
-            else:
-                m = best_model
+    #     #         print(opt_results)
+    #     # Now check to see if this is invertible
+    #     try:
+    #         m_, v_ = m.predict_y(m.data[0])
+    #     except Exception as e:
+    #         if verbose:
+    #             print(f"error: {e}")
+    #             print("Covariance matrix not invertible, removing model.")
+    #         # If not invertible then revert back to best model, unless last try
+    #         if best_model is None and i == num_restarts - 1:
+    #             return best_model, -1 * best_loglik
+    #         else:
+    #             m = best_model
 
-        # Check if better values found and save if so
-        #         if m.log_marginal_likelihood() > best_loglik:
-        if m.log_posterior_density() > best_loglik:
-            best_loglik = (
-                m.log_posterior_density()
-            )  # m.log_marginal_likelihood()
-            best_model = gpflow.utilities.deepcopy(m)
-            if verbose:
-                print(f"New best log likelihood: {best_loglik.numpy()}")
-        else:
-            del m
+    #     # Check if better values found and save if so
+    #     #         if m.log_marginal_likelihood() > best_loglik:
+    #     if m.log_posterior_density() > best_loglik:
+    #         best_loglik = (
+    #             m.log_posterior_density()
+    #         )  # m.log_marginal_likelihood()
+    #         best_model = gpflow.utilities.deepcopy(m)
+    #         if verbose:
+    #             print(f"New best log likelihood: {best_loglik.numpy()}")
+    #     else:
+    #         del m
 
-    #     # Set hyperparameters to best found values
-    #     for l in range(len(m.trainable_parameters)):
-    #         print(best_params[l])
-    #         m.trainable_parameters[l].assign(best_params[l])
+    # #     # Set hyperparameters to best found values
+    # #     for l in range(len(m.trainable_parameters)):
+    # #         print(best_params[l])
+    # #         m.trainable_parameters[l].assign(best_params[l])
 
-    # Return none and worst BIC if we can't fit a single
-    if best_model is None:
-        return best_model, -1 * best_loglik
+    # # Return none and worst BIC if we can't fit a single
+    # if best_model is None:
+    #     return best_model, -1 * best_loglik
+
+    # Specify model structure
+    best_model = PSVGP(
+        X=X,
+        Y=Y,
+        mean_function=mean_function,
+        kernel=k,
+        verbose=verbose,
+        penalized_options={"penalization_factor": 0.0},
+        sparse_options={},
+        variational_options={
+            "likelihood": likelihood,
+            # "variational_priors": use_priors
+        }
+    )
+
+    if random_init and num_restarts > 1:
+        best_model.random_restart_optimize(
+            num_restart=num_restarts
+        )
+    elif num_restarts > 1:
+        best_model.random_restart_optimize(
+            num_restart=num_restarts,
+            randomize_kwargs={"scale": 0.0}
+        )
+    else:
+        best_model.optimize_params()
 
     # Calculate information criteria
     if split:
@@ -861,7 +890,9 @@ def kernel_test(
         )
         bic = round(-1 * estimated_loglik, 2)
     else:
-        estimated_loglik = best_model.log_posterior_density().numpy()
+        estimated_loglik = best_model.log_posterior_density(
+            data=(X, Y)
+        ).numpy()
 
         bic = round(
             calc_bic(
@@ -938,7 +969,7 @@ def loc_kernel_search(
         # Add no /static/ kernel to test if first level and first feature
         if f == 0 and depth == 1:  # and lik=='gaussian':
             # print(f'Current list of kernels: {k_list}')
-            empty_kernel = gpflow.kernels.Constant(variance=1e-6)
+            empty_kernel = gpflow.kernels.Constant(variance=f64(1e-6))
             set_trainable(empty_kernel.variance, False)
             k_list += [empty_kernel]
             # k_list += [Empty()]
