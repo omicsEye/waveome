@@ -310,7 +310,7 @@ class GPSearch:
         )
         tot_tasks = len(self.out_names) * k_fold * n_factors
 
-        with tqdm_joblib(tqdm(desc="GPSearch", total=tot_tasks)) as _:
+        with tqdm_joblib(tqdm(desc="GPPenalized", total=tot_tasks)) as _:
             with Parallel(n_jobs=num_jobs) as parallel:
                 for outcome, model in self.models.items():
                     model.penalization_search(

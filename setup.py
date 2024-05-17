@@ -15,11 +15,21 @@ setuptools.setup(
     license="MIT",
     packages=["waveome"],
     install_requires=[
+        
+        # Need to pin TF and TF prob together
+        # Pin for python 3.11.8 - not mac specific
+        "tensorflow==2.15.1",
+        "tensorflow_probability==0.23.0",
+
         # Main package - doesn't handle TF well at install
         "gpflow==2.9.1",
-        # Need to pin TF and TF prob together
-        "tensorflow_probability==0.23.0",
-        "tensorflow==2.15.1",
+        # "tf-keras", # Don't use this for the time being with keras opts
+
+        # # Pin for python 3.8.12 (tensorflow-metal GPU)
+        # "tensorflow==2.13.0",
+        # "tensorflow-metal==1.0.1",
+        # "tensorflow_probability==0.21.0",
+
         "pandas",
         "numpy",
         "scipy",

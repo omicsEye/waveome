@@ -8,7 +8,8 @@ import tensorflow_probability as tfp
 from gpflow.utilities import set_trainable
 from tensorflow_probability import distributions as tfd
 
-from .likelihoods import ZeroInflatedNegativeBinomial
+from .kernels import Empty
+from .likelihoods import NegativeBinomial, ZeroInflatedNegativeBinomial
 
 # from multiprocessing import Value
 
@@ -142,7 +143,12 @@ def calc_residuals(m, X=None, Y=None):
     var_resp = m.likelihood._conditional_variance(X=X, F=mean)
 
     # Calculate standardized residuals
-    resids = ((tf.cast(Y, tf.float64) - mean_resp) / np.sqrt(var_resp)).numpy()
+    resids = (
+        (
+            (tf.cast(Y, gpflow.default_float()) - mean_resp) /
+            np.sqrt(var_resp)
+        ).numpy()
+    )
 
     return resids
 
@@ -652,12 +658,16 @@ def gp_likelihood_crosswalk(likelihood_str):
         return gpflow.likelihoods.Bernoulli()
     elif likelihood_str == "gamma":
         return gpflow.likelihoods.Gamma()
+    elif likelihood_str == "negativebinomial":
+        return NegativeBinomial()
     elif likelihood_str == "zeroinflated_negativebinomial":
         return ZeroInflatedNegativeBinomial()
     else:
         print(
             "Not sure what likelihood requested. Can use 'gaussian',"
-            " 'poisson', 'binomial', and 'gamma'."
+            " 'poisson', 'binomial', 'bernoulli', 'gamma',"
+            " 'negativebinomial', "
+            " and 'zeroinflated_negativebinomial'."
         )
         return None
 
@@ -756,7 +766,7 @@ def find_variance_components_tf(
         if kern.name == "periodic":
             return kern.base_kernel.variance
         elif kern.name == "empty":
-            return tf.zeros(1, shape=())
+            return tf.zeros(shape=(), dtype=tf.dtypes.float64)
         else:
             return tf.reduce_sum(kern.variance)
 
@@ -830,12 +840,14 @@ def search_through_kernel_list_(kernel_list, list_type="sum", X=None):
     
     # Stich together components based on type
     out_kernel = None
-    if list_type == "sum":
-        out_kernel = gpflow.kernels.Sum(out_list)
-    elif list_type == "product":
-        if len(out_list) > 1:
+    if len(out_list) > 1:
+        if list_type == "sum":
+            out_kernel = gpflow.kernels.Sum(out_list)
+        elif list_type == "product":
             out_kernel = gpflow.kernels.Product(out_list)
-        else:
-            out_kernel = out_list[0]
+    elif len(out_list) == 1:
+        out_kernel = out_list[0]
+    else:
+        out_kernel = Empty()
 
     return out_kernel
