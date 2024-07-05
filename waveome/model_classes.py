@@ -97,8 +97,9 @@ class BaseGP(gpflow.models.SVGP):
         **svgp_kwargs,
     ):
         # Set values
-        self.X = X.astype(gpflow.default_float())
-        self.Y = Y.astype(gpflow.default_float())
+        # Comment this out for now to save memory
+        # self.X = X.astype(gpflow.default_float())
+        # self.Y = Y.astype(gpflow.default_float())
         self.data = (
             tf.convert_to_tensor(
                 X,
@@ -257,16 +258,22 @@ class BaseGP(gpflow.models.SVGP):
         #     for var in var_set:
         #         num_params = np.prod(var.shape)
         #         tot_params += num_params
-        if self.num_trainable_params == np.nan:
+        if np.isnan(self.num_trainable_params):
             tot_params = 0
             for var in self.trainable_variables:
-                num_params = np.prod(var.shape)
+                if "fill_triangular" in var.name:
+                    num_params = var.shape[0]
+                else:
+                    num_params = np.prod(var.shape)
                 tot_params += num_params
             self.num_trainable_params = tot_params
 
-        if self.num_trainable_params <= 100 or optimizer == "scipy":
+        if self.num_trainable_params <= 1000 or optimizer == "scipy":
             if self.verbose:
-                print(f"Number of params: {tot_params}, using Scipy optimizer")
+                print(
+                    f"Number of params: {self.num_trainable_params},",
+                    " using Scipy optimizer"
+                )
             self.optimizer = "scipy"
 
             # Make sure we freeze inducing points if the kernel is Constant()
@@ -487,13 +494,18 @@ class BaseGP(gpflow.models.SVGP):
         if metric == "BIC":
             return calc_bic(
                 loglik=self.log_posterior_density(self.data),
-                n=self.X.shape[0],
+                n=self.data[0].shape[0],  # self.X.shape[0],
                 k=len(self.trainable_parameters),
             )
 
     def plot_functions(self, x_idx, col_names, **kwargs):
         return gp_predict_fun(
-            self, x_idx, col_names, X=self.X, Y=self.Y, **kwargs
+            self,
+            x_idx,
+            col_names,
+            X=self.data[0].numpy(),  # self.X,
+            Y=self.data[1].numpy(),  # self.Y,
+            **kwargs
         )
 
     def plot_parts(self, x_idx, col_names, lik=None, **kwargs):
@@ -532,8 +544,8 @@ class VarGP(BaseGP):
         **basegp_kwargs,
     ):
         # Set values
-        self.X = X
-        self.Y = Y
+        # self.X = X
+        # self.Y = Y
         self.mean_function = deepcopy(mean_function)
         self.kernel = deepcopy(kernel)
         self.verbose = verbose
@@ -595,8 +607,8 @@ class SparseGP(BaseGP):
         **basegp_kwargs,
     ):
         # Set values
-        self.X = X
-        self.Y = Y
+        # self.X = X
+        # self.Y = Y
         self.mean_function = deepcopy(mean_function)
         self.kernel = deepcopy(kernel)
         self.verbose = verbose
@@ -743,7 +755,12 @@ class PenalizedGP(BaseGP):
         selection_type="se"
     ):
         # Split training data into k-folds
-        folds = make_folds(self.X, self.unit_col, k_fold, random_seed)
+        folds = make_folds(
+            self.data[0].numpy(),  # self.X,
+            self.unit_col,
+            k_fold,
+            random_seed
+        )
 
         # Set random seed in randomization options if not defined
         if "random_seed" not in randomization_options.keys():
@@ -760,20 +777,25 @@ class PenalizedGP(BaseGP):
         def parallel_fit(pf, holdout_fold, holdout_index):
             # temp_model = copy.deepcopy(self)
             temp_model = PenalizedGP(
-                X=np.delete(self.X, holdout_fold, axis=0),
-                Y=np.delete(self.Y, holdout_fold, axis=0),
+                X=np.delete(
+                    self.data[0].numpy(),  # self.X,
+                    holdout_fold,
+                    axis=0
+                ),
+                Y=np.delete(
+                    self.data[1].numpy(),  # self.Y,
+                    holdout_fold,
+                    axis=0
+                ),
                 mean_function=deepcopy(self.mean_function),
                 kernel=deepcopy(self.kernel),
                 penalization_factor=pf,
                 verbose=self.verbose,
             )
-            # temp_model.set_penalization_factor(pf)
-            holdout_X = self.X[holdout_fold]
-            holdout_Y = self.Y[holdout_fold]
-            # temp_model.X = np.delete(self.X, holdout_fold, axis=0)
-            # temp_model.Y = np.delete(self.Y, holdout_fold, axis=0)
-            # temp_model.randomize_params(**randomization_options)
-            # temp_model.optimize_params(**optimization_options)
+            # holdout_X = self.X[holdout_fold]
+            # holdout_Y = self.Y[holdout_fold]
+            holdout_X = self.data[0].numpy()[holdout_fold]
+            holdout_Y = self.data[1].numpy()[holdout_fold]
             temp_model.random_restart_optimize(
                 randomize_kwargs=randomization_options,
                 optimize_kwargs=optimization_options,
@@ -950,7 +972,7 @@ class PenalizedGP(BaseGP):
             self.kernel = search_through_kernel_list_(
                 kernel_list=self.kernel.kernels,
                 list_type=self.kernel.name,
-                X=self.X
+                X=self.data[0].numpy(),  # self.X
             )
 
         # Also make sure we only keep base variances that remain
