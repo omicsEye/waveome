@@ -10,9 +10,10 @@
 # Use short queue
 #SBATCH -p short
 
-# Timelimit (4 hours)
-#SBATCH -t 4:00:00
+# Timelimit (12 hours)
+#SBATCH -t 12:00:00
 
 module load python3
-
+python3 -m pip install ../../.
 python3 ihmp_waveome_hpc_run.py
+
