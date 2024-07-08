@@ -225,7 +225,7 @@ class BaseGP(gpflow.models.SVGP):
         adam_learning_rate=0.1,
         nat_gradient_gamma=0.001,
         num_opt_iter=50000,
-        convergence_threshold=1e-6,
+        convergence_threshold=1e-4,
         optimizer="adam",
     ):
         """Optimize hyperparameters of model.
@@ -279,7 +279,10 @@ class BaseGP(gpflow.models.SVGP):
                 tot_params += num_params
             self.num_trainable_params = tot_params
 
-        if self.num_trainable_params <= 1000 or optimizer == "scipy":
+        if (
+            (self.num_trainable_params <= 1000 and optimizer is None)
+            or optimizer == "scipy"
+        ):
             if self.verbose:
                 print(
                     f"Number of params: {self.num_trainable_params},",
@@ -329,7 +332,10 @@ class BaseGP(gpflow.models.SVGP):
 
             return None
         
-        if optimizer is None or optimizer == "adam/gradient":
+        if (
+            (self.num_trainable_params > 1000 and optimizer is None)
+            or optimizer == "adam/gradient"
+        ):
             # Set optimizer otherwise
             self.optimizer = "adam/gradient"
 

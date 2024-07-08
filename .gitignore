@@ -7,3 +7,4 @@
 .virtual_documents
 
 __pycache__
+build/
