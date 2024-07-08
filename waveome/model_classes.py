@@ -520,8 +520,8 @@ class BaseGP(gpflow.models.SVGP):
     def plot_functions(self, x_idx, col_names, **kwargs):
         return gp_predict_fun(
             self,
-            x_idx,
-            col_names,
+            x_idx=x_idx,
+            col_names=col_names,
             X=self.data[0].numpy(),  # self.X,
             Y=self.data[1].numpy(),  # self.Y,
             **kwargs

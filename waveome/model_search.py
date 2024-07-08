@@ -649,6 +649,7 @@ class GPSearch:
         gpf = m.plot_functions(
             x_idx=x_idx,
             col_names=self.feat_names,
+            unit_idx=self.unit_idx,
             unit_label=unit_label,
             num_funs=num_funs,
             ax=ax,
