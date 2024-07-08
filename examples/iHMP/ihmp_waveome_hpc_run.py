@@ -159,7 +159,7 @@ gps = GPSearch(
             "active_disease",
         ]
     ],
-    Y=mbx.loc[~x_miss_idx, :].iloc[:, :5],
+    Y=mbx.loc[~x_miss_idx, :],
     unit_col="participant_id",
     categorical_vars=[
         "site_name",
