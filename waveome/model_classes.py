@@ -19,6 +19,7 @@ from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import make_folds
 from .utilities import (  # hmc_sampling,
     calc_bic,
+    calc_rsquare,
     find_variance_components,
     find_variance_components_tf,
     gp_likelihood_crosswalk,
@@ -101,15 +102,21 @@ class BaseGP(gpflow.models.SVGP):
         # self.X = X.astype(gpflow.default_float())
         # self.Y = Y.astype(gpflow.default_float())
         self.data = (
-            tf.convert_to_tensor(
-                X,
-                dtype=gpflow.default_float()
-                # dtype=tf.float64 if dtype == "float64" else tf.float32
+            tf.reshape(
+                tensor=tf.convert_to_tensor(
+                    X,
+                    dtype=gpflow.default_float()
+                    # dtype=tf.float64 if dtype == "float64" else tf.float32
+                ),
+                shape=(X.shape)
             ),
-            tf.convert_to_tensor(
-                Y,
-                dtype=gpflow.default_float()
-                # dtype=tf.float64 if dtype == "float64" else tf.float32
+            tf.reshape(
+                tensor=tf.convert_to_tensor(
+                    Y,
+                    dtype=gpflow.default_float()
+                    # dtype=tf.float64 if dtype == "float64" else tf.float32
+                ),
+                shape=(-1, 1)
             )
         )
         self.mean_function = deepcopy(mean_function)
@@ -249,6 +256,10 @@ class BaseGP(gpflow.models.SVGP):
         # Source: (https://gpflow.github.io/GPflow/develop/
         # notebooks/advanced/natural_gradients.html#Natural-gradients)
 
+        # Reset graph
+        tf.compat.v1.reset_default_graph()
+        tf.keras.backend.clear_session()
+
         # Can we just use BFGS for "smaller" models? Exclude variational params
         # tot_params = 0
         # for var_set in [
@@ -262,9 +273,9 @@ class BaseGP(gpflow.models.SVGP):
             tot_params = 0
             for var in self.trainable_variables:
                 if "fill_triangular" in var.name:
-                    num_params = var.shape[0]
+                    num_params = tf.shape(var)[0]
                 else:
-                    num_params = np.prod(var.shape)
+                    num_params = np.prod(tf.shape(var))
                 tot_params += num_params
             self.num_trainable_params = tot_params
 
@@ -274,7 +285,14 @@ class BaseGP(gpflow.models.SVGP):
                     f"Number of params: {self.num_trainable_params},",
                     " using Scipy optimizer"
                 )
+                print(gpflow.utilities.print_summary(self))
             self.optimizer = "scipy"
+
+            optimizer = gpflow.optimizers.Scipy()
+            opt_options = {
+                "maxiter": num_opt_iter,
+                "ftol": convergence_threshold
+            }
 
             # Make sure we freeze inducing points if the kernel is Constant()
             # otherwise we get unconnected gradient error
@@ -283,32 +301,30 @@ class BaseGP(gpflow.models.SVGP):
                 gpflow.utilities.set_trainable(self.inducing_variable, False)
 
             try:
-                gpflow.optimizers.Scipy().minimize(
+                optimizer.minimize(
                     closure=self.training_loss_closure(
                         data=self.data,
-                        compile=True
+                        # compile=False
+                        # Need to not compile with Scipy optimizer
                     ),
                     variables=self.trainable_variables,
                     method="L-BFGS-B",
-                    options={
-                        "maxiter": num_opt_iter,
-                        "ftol": convergence_threshold
-                    }
+                    options=opt_options
                 )
             except TypeError:
                 for param in self.parameters:
                     param = tf.cast(param, tf.float64)
-                gpflow.optimizers.Scipy().minimize(
+                optimizer.minimize(
                     closure=self.training_loss_closure(
                         data=(
                             tf.cast(self.data[0], tf.float64),
                             tf.cast(self.data[1], tf.float64)
                         ),
-                        # compile=True
+                        # compile=False
                     ),
                     variables=self.trainable_variables,
                     method="L-BFGS-B",
-                    options={"maxiter": num_opt_iter}
+                    options=opt_options
                 )
 
             return None
@@ -480,10 +496,13 @@ class BaseGP(gpflow.models.SVGP):
         None
             Variance contributions in self.variance_explained
         """
+        # self.variance_explained = list(
+        #     variance_contributions(
+        #         self, k_names=self.kernel_name, lik=self.likelihood.name
+        #     )
+        # )
         self.variance_explained = list(
-            variance_contributions(
-                self, k_names=self.kernel_name, lik=self.likelihood.name
-            )
+            calc_rsquare(self)
         )
 
         # return self.variance_explained
@@ -775,23 +794,39 @@ class PenalizedGP(BaseGP):
 
         # Fit combinations in parallel if possible
         def parallel_fit(pf, holdout_fold, holdout_index):
-            # temp_model = copy.deepcopy(self)
-            temp_model = PenalizedGP(
-                X=np.delete(
-                    self.data[0].numpy(),  # self.X,
-                    holdout_fold,
-                    axis=0
+            temp_model = copy.deepcopy(self)
+            temp_model.data = (
+                tf.convert_to_tensor(
+                    np.delete(
+                        self.data[0].numpy(),
+                        holdout_fold,
+                        axis=0
+                    )
                 ),
-                Y=np.delete(
-                    self.data[1].numpy(),  # self.Y,
-                    holdout_fold,
-                    axis=0
-                ),
-                mean_function=deepcopy(self.mean_function),
-                kernel=deepcopy(self.kernel),
-                penalization_factor=pf,
-                verbose=self.verbose,
+                tf.convert_to_tensor(
+                    np.delete(
+                        self.data[1].numpy(),
+                        holdout_fold,
+                        axis=0
+                    )
+                )
             )
+            # temp_model = PenalizedGP(
+            #     X=np.delete(
+            #         self.data[0].numpy(),  # self.X,
+            #         holdout_fold,
+            #         axis=0
+            #     ),
+            #     Y=np.delete(
+            #         self.data[1].numpy(),  # self.Y,
+            #         holdout_fold,
+            #         axis=0
+            #     ),
+            #     mean_function=deepcopy(self.mean_function),
+            #     kernel=deepcopy(self.kernel),
+            #     penalization_factor=pf,
+            #     verbose=self.verbose,
+            # )
             # holdout_X = self.X[holdout_fold]
             # holdout_Y = self.Y[holdout_fold]
             holdout_X = self.data[0].numpy()[holdout_fold]
