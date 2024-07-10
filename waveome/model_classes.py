@@ -280,7 +280,7 @@ class BaseGP(gpflow.models.SVGP):
             self.num_trainable_params = tot_params
 
         if (
-            (self.num_trainable_params <= 1000 and optimizer is None)
+            (self.num_trainable_params <= 5000 and optimizer is None)
             or optimizer == "scipy"
         ):
             if self.verbose:
@@ -303,37 +303,41 @@ class BaseGP(gpflow.models.SVGP):
             if self.kernel.name == "constant":
                 gpflow.utilities.set_trainable(self.inducing_variable, False)
 
-            try:
-                optimizer.minimize(
-                    closure=self.training_loss_closure(
-                        data=self.data,
-                        # compile=False
-                        # Need to not compile with Scipy optimizer
-                    ),
-                    variables=self.trainable_variables,
-                    method="L-BFGS-B",
-                    options=opt_options
-                )
-            except TypeError:
-                for param in self.parameters:
-                    param = tf.cast(param, tf.float64)
-                optimizer.minimize(
-                    closure=self.training_loss_closure(
-                        data=(
-                            tf.cast(self.data[0], tf.float64),
-                            tf.cast(self.data[1], tf.float64)
+            for attempt in range(5):
+                try:
+                    optimizer.minimize(
+                        closure=self.training_loss_closure(
+                            data=self.data,
+                            # compile=False
+                            # Need to not compile with Scipy optimizer
                         ),
-                        # compile=False
-                    ),
-                    variables=self.trainable_variables,
-                    method="L-BFGS-B",
-                    options=opt_options
-                )
+                        variables=self.trainable_variables,
+                        method="L-BFGS-B",
+                        options=opt_options
+                    )
+                    break
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Attempt {attempt+1} - Scipy exception: {e}")
+                    for param in self.parameters:
+                        param = tf.cast(param, tf.float64)
+                # optimizer.minimize(
+                #     closure=self.training_loss_closure(
+                #         data=(
+                #             tf.cast(self.data[0], tf.float64),
+                #             tf.cast(self.data[1], tf.float64)
+                #         ),
+                #         # compile=False
+                #     ),
+                #     variables=self.trainable_variables,
+                #     method="L-BFGS-B",
+                #     options=opt_options
+                # )
 
             return None
         
         if (
-            (self.num_trainable_params > 1000 and optimizer is None)
+            (self.num_trainable_params > 5000 and optimizer is None)
             or optimizer == "adam/gradient"
         ):
             # Set optimizer otherwise
