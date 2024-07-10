@@ -173,7 +173,7 @@ gps = GPSearch(
 )
 
 # Run search
-gps.run_search(random_seed=9102)
+gps.run_search(random_seed=9102, num_jobs=40)
 
 # Save output in pickle file
 with open("ihmp_waveome_output.pickle", "wb") as handle:
