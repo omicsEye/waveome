@@ -177,7 +177,7 @@ class GPSearch:
             "kerns": [gpflow.kernels.SquaredExponential()],
         },
         penalization_factor=1.0,
-        num_restart=3,
+        num_restart=1,
         sparse_options={},
         variational_options={},
         optimization_options={},
@@ -255,7 +255,7 @@ class GPSearch:
         },
         penalized_options={},
         search_options={
-            "num_restart": 3
+            "num_restart": 1
         },
         sparse_options={},
         variational_options={},
@@ -343,7 +343,7 @@ class GPSearch:
         prune=True,
         keep_all=False,
         metric_diff=6,
-        num_restart=3,
+        num_restart=1,
         random_seed=None,
         num_jobs=-2,
         verbose=False,

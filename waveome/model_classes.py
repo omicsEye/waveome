@@ -226,7 +226,7 @@ class BaseGP(gpflow.models.SVGP):
         nat_gradient_gamma=0.001,
         num_opt_iter=50000,
         convergence_threshold=1e-4,
-        optimizer="adam",
+        optimizer=None,
     ):
         """Optimize hyperparameters of model.
 
