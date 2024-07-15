@@ -88,11 +88,12 @@ class GPSearch:
                 print(f"Converting {c} to numeric")
                 factor_out = pd.factorize(X[c])
                 self.categorical_dict[c] = factor_out
-                X.loc[:, c] = factor_out[0].astype(float)
+                X.loc[:, c] = factor_out[0]
+                X = X.astype({c: float})
 
         # Make sure all resulting columns are the same type
         float_match = X.columns.isin(X.select_dtypes(include=[float]).columns)
-        if not min(float_match):
+        if len(float_match) != len(X.columns): #not min(float_match):
             raise TypeError(
                 "X columns must all be float type."
                 f" Cast {X.columns[~float_match]} to float."
@@ -100,7 +101,7 @@ class GPSearch:
                 " pandas.DataFrame.astype()."
             )
         float_match = Y.columns.isin(Y.select_dtypes(include=[float]).columns)
-        if not min(float_match):
+        if len(float_match) != len(Y.columns): #not min(float_match):
             raise TypeError(
                 "Y columns must all be float type."
                 f" Cast {Y.columns[~float_match]} to float."
@@ -176,7 +177,7 @@ class GPSearch:
             "kerns": [gpflow.kernels.SquaredExponential()],
         },
         penalization_factor=1.0,
-        num_random_restarts=5,
+        num_restart=1,
         sparse_options={},
         variational_options={},
         optimization_options={},
@@ -228,7 +229,7 @@ class GPSearch:
 
                     # Random restarts to find optimal parameters
                     self.models[feat].random_restart_optimize(
-                        num_restart=num_random_restarts,
+                        num_restart=num_restart,
                         randomize_kwargs={"random_seed": random_seed},
                         optimize_kwargs=optimization_options,
                     )
@@ -248,10 +249,14 @@ class GPSearch:
         mean_function=gpflow.functions.Constant(c=0.0),
         kernel_options={
             "second_order_numeric": False,
-            "kerns": [gpflow.kernels.SquaredExponential(active_dims=[0])],
+            "kerns": [
+                gpflow.kernels.SquaredExponential(active_dims=[0]),
+                gpflow.kernels.Matern12(active_dims=[0])],
         },
         penalized_options={},
-        search_options={},
+        search_options={
+            "num_restart": 1
+        },
         sparse_options={},
         variational_options={},
         optimization_options={},
@@ -310,7 +315,7 @@ class GPSearch:
         )
         tot_tasks = len(self.out_names) * k_fold * n_factors
 
-        with tqdm_joblib(tqdm(desc="GPSearch", total=tot_tasks)) as _:
+        with tqdm_joblib(tqdm(desc="GPPenalized", total=tot_tasks)) as _:
             with Parallel(n_jobs=num_jobs) as parallel:
                 for outcome, model in self.models.items():
                     model.penalization_search(
@@ -333,11 +338,12 @@ class GPSearch:
     def run_search(
         self,
         kernels=None,
-        max_depth=5,
+        max_depth=3,
         early_stopping=True,
         prune=True,
         keep_all=False,
         metric_diff=6,
+        num_restart=1,
         random_seed=None,
         num_jobs=-2,
         verbose=False,
@@ -355,6 +361,7 @@ class GPSearch:
 
         # Set model selection type
         self.model_selection_type = "stepwise"
+        self.verbose = verbose
 
         # Set default kernel if none passed in
         if kernels is None:
@@ -381,6 +388,7 @@ class GPSearch:
                     keep_all=keep_all,
                     lik=self.likelihood,
                     metric_diff=metric_diff,
+                    num_restart=num_restart,
                     random_seed=random_seed,
                     verbose=verbose,
                     debug=debug,
@@ -391,7 +399,15 @@ class GPSearch:
         # Make dictionary of outcomes as lookups
         dict_out = {feat: mod for feat, mod in zip(self.out_names, models_out)}
 
-        self.models = dict_out
+        self.search_info = dict_out
+        self.models = {
+            feat: mod["models"][mod["best_model"]]["model"]
+            for feat, mod in zip(self.out_names, models_out)
+        }
+
+        # Also calculate variance explained
+        for o, m in self.models.items():
+            m.get_variance_explained()
 
         return None
 
@@ -423,12 +439,12 @@ class GPSearch:
         cluster=True,
     ):
         # Get the percent of variance explained for each component from models
-        if self.model_selection_type == "penalized":
-            var_components = [
-                x.variance_explained for x in self.models.values()
-            ]
-        else:
-            var_components = [x["var_exp"] for x in self.models.values()]
+        # if self.model_selection_type == "penalized":
+        var_components = [
+            x.variance_explained for x in self.models.values()
+        ]
+        # else:
+        #     var_components = [x["var_exp"] for x in self.models.values()]
 
         # Normalize to get the percentage of variance explained
         var_percent = [
@@ -437,12 +453,12 @@ class GPSearch:
         ]
 
         # Pull off kernel names from best models
-        if self.model_selection_type == "penalized":
-            kernels = [x.kernel_name.split("+") for x in self.models.values()]
-        else:
-            kernels = [
-                x["best_model"].split("+") for x in self.models.values()
-            ]
+        # if self.model_selection_type == "penalized":
+        kernels = [x.kernel_name.split("+") for x in self.models.values()]
+        # else:
+        #     kernels = [
+        #         x["best_model"].split("+") for x in self.models.values()
+        #     ]
         distinct_kernels = np.unique(
             [item for sublist in kernels for item in sublist]
         )
@@ -586,28 +602,28 @@ class GPSearch:
 
         """
 
-        if self.model_selection_type == "penalized":
-            pkp = self.models[out_label].plot_parts(
-                x_idx=self.feat_names.index(x_axis_label),
-                # unit_idx=self.unit_idx,
-                col_names=self.feat_names,
-                lik=self.likelihood,
-                categorical_dict=self.categorical_dict,
-                **kwargs,
-            )
-        else:
-            # Pull off specific model from trained models
-            m = self.models[out_label]
+        # if self.model_selection_type == "penalized":
+        pkp = self.models[out_label].plot_parts(
+            x_idx=self.feat_names.index(x_axis_label),
+            # unit_idx=self.unit_idx,
+            col_names=self.feat_names,
+            lik=self.likelihood,
+            categorical_dict=self.categorical_dict,
+            **kwargs,
+        )
+        # else:
+        #     # Pull off specific model from trained models
+        #     m = self.models[out_label]
 
-            pkp = pred_kernel_parts(
-                m=m["models"][m["best_model"]]["model"],
-                x_idx=self.feat_names.index(x_axis_label),
-                x_idx_min=x_idx_min,
-                x_idx_max=x_idx_max,
-                # unit_idx=self.unit_idx,
-                col_names=self.feat_names,
-                lik=self.likelihood,
-            )
+        #     pkp = pred_kernel_parts(
+        #         m=m["models"][m["best_model"]]["model"],
+        #         x_idx=self.feat_names.index(x_axis_label),
+        #         x_idx_min=x_idx_min,
+        #         x_idx_max=x_idx_max,
+        #         # unit_idx=self.unit_idx,
+        #         col_names=self.feat_names,
+        #         lik=self.likelihood,
+        #     )
 
         return pkp
 
@@ -629,28 +645,29 @@ class GPSearch:
         x_idx = self.feat_names.index(x_axis_label)
         y_idx = self.out_names.index(out_label)
 
-        if self.model_selection_type == "penalized":
-            gpf = m.plot_functions(
-                x_idx=x_idx,
-                col_names=self.feat_names,
-                unit_label=unit_label,
-                num_funs=num_funs,
-                ax=ax,
-                plot_points=plot_points,
-                **kwargs,
-            )
-        else:
-            gpf = gp_predict_fun(
-                m=m["models"][m["best_model"]]["model"],
-                x_idx=x_idx,
-                unit_idx=self.unit_idx,
-                col_names=self.feat_names,
-                unit_label=unit_label,
-                num_funs=num_funs,
-                ax=ax,
-                plot_points=plot_points,
-                **kwargs,
-            )
+        # if self.model_selection_type == "penalized":
+        gpf = m.plot_functions(
+            x_idx=x_idx,
+            col_names=self.feat_names,
+            unit_idx=self.unit_idx,
+            unit_label=unit_label,
+            num_funs=num_funs,
+            ax=ax,
+            plot_points=plot_points,
+            **kwargs,
+        )
+        # else:
+        #     gpf = gp_predict_fun(
+        #         m=m["models"][m["best_model"]]["model"],
+        #         x_idx=x_idx,
+        #         unit_idx=self.unit_idx,
+        #         col_names=self.feat_names,
+        #         unit_label=unit_label,
+        #         num_funs=num_funs,
+        #         ax=ax,
+        #         plot_points=plot_points,
+        #         **kwargs,
+        #     )
 
         # Reverse transform if requested
         if reverse_transform_axes is True:
@@ -695,8 +712,9 @@ def kernel_test(
     Y,
     k,
     mean_function=gpflow.mean_functions.Constant(),
-    num_restarts=5,
+    num_restart=5,
     random_init=True,
+    random_seed=None,
     verbose=False,
     likelihood="gaussian",
     use_priors=True,
@@ -717,140 +735,6 @@ def kernel_test(
         m (gpflow model): fitted GPflow model
 
     """
-
-    # # Randomize initial values for a number of restarts
-    # # np.random.seed(9012)
-    # best_loglik = -np.Inf
-    # best_model = None
-
-    # for i in range(num_restarts):
-    #     # Specify model
-    #     if likelihood == "gaussian":
-    #         m = gpflow.models.GPR(
-    #             #             m = gpflow.models.VGP(
-    #             data=(X, Y),
-    #             kernel=k,
-    #         )  # +gpflow.kernels.Constant())#,
-    #         # mean_function=gpflow.mean_functions.Constant())#,
-    #     #                 likelihood=gpflow.likelihoods.Gaussian())
-    #     elif likelihood == "exponential":
-    #         m = gpflow.models.VGP(
-    #             data=(X, Y),
-    #             kernel=k,
-    #             # mean_function=gpflow.mean_functions.Constant(),
-    #             likelihood=gpflow.likelihoods.Exponential(),
-    #         )
-    #     elif likelihood == "poisson":
-    #         m = gpflow.models.VGP(
-    #             data=(X, Y),
-    #             kernel=k,
-    #             # mean_function=gpflow.mean_functions.Constant(),
-    #             likelihood=gpflow.likelihoods.Poisson(),
-    #         )
-    #     elif likelihood == "gamma":
-    #         m = gpflow.models.VGP(
-    #             data=(X, Y),
-    #             kernel=k,
-    #             # mean_function=gpflow.mean_functions.Constant(),
-    #             likelihood=gpflow.likelihoods.Gamma(),
-    #         )
-    #     elif likelihood == "bernoulli":
-    #         m = gpflow.models.VGP(
-    #             data=(X, Y),
-    #             kernel=k,  # +gpflow.kernels.Constant(),
-    #             # mean_function=gpflow.mean_functions.Constant(),
-    #             likelihood=gpflow.likelihoods.Bernoulli(),
-    #         )
-    #     elif likelihood == "zeroinflated_negativebinomial":
-    #         m = gpflow.models.VGP(
-    #             data=(X, Y),
-    #             kernel=k,
-    #             likelihood=ZeroInflatedNegativeBinomial(),
-    #         )
-    #     else:
-    #         print("Unknown likelihood requested.")
-
-    #     # # Set priors
-    #     if use_priors:
-    #         for p in m.parameters:
-    #             # We don't want to mess with the Q points in VGP model
-    #             if len(p.shape) <= 1:
-    #                 if p.name == "identity":
-    #                     p.prior = tfd.Uniform(f64(-100), f64(100))
-    #                 else:
-    #                     p.prior = tfd.Uniform(f64(0), f64(100))
-    #                     # p.prior = tfd.Gamma(f64(1), f64(0.5))
-
-    #     # Randomize initial values if not trained already
-    #     if random_init:
-    #         for p in m.kernel.trainable_parameters:
-    #             # Should we actually not have this requirement?
-    #             # if p.numpy() == 1 and
-    #             if len(p.shape) <= 1:
-    #                 unconstrain_vals = np.random.normal(
-    #                     size=p.numpy().size
-    #                 ).reshape(p.numpy().shape)
-    #                 p.assign(p.transform_fn(unconstrain_vals))
-
-    #         for p in m.likelihood.trainable_parameters:
-    #             if len(p.shape) <= 1:
-    #                 unconstrain_vals = np.random.normal(
-    #                     size=p.numpy().size
-    #                 ).reshape(p.numpy().shape)
-    #                 p.assign(p.transform_fn(unconstrain_vals))
-
-    #     # Optimization step for hyperparameters
-    #     try:
-    #         gpflow.optimizers.Scipy().minimize(
-    #             m.training_loss,
-    #             m.trainable_variables,
-    #             # options={'maxiter': 10000}
-    #         )
-    #         # adam_opt_params(m)
-    #         # scipy_opt_params(m)
-
-    #     except Exception as e:
-    #         if verbose:
-    #             print(f"Optimization not successful, skipping. Error: {e}")
-    #         if best_model is None and i == num_restarts - 1:
-    #             return best_model, -1 * best_loglik
-    #         continue
-
-    #     #         print(opt_results)
-    #     # Now check to see if this is invertible
-    #     try:
-    #         m_, v_ = m.predict_y(m.data[0])
-    #     except Exception as e:
-    #         if verbose:
-    #             print(f"error: {e}")
-    #             print("Covariance matrix not invertible, removing model.")
-    #         # If not invertible then revert back to best model, unless last try
-    #         if best_model is None and i == num_restarts - 1:
-    #             return best_model, -1 * best_loglik
-    #         else:
-    #             m = best_model
-
-    #     # Check if better values found and save if so
-    #     #         if m.log_marginal_likelihood() > best_loglik:
-    #     if m.log_posterior_density() > best_loglik:
-    #         best_loglik = (
-    #             m.log_posterior_density()
-    #         )  # m.log_marginal_likelihood()
-    #         best_model = gpflow.utilities.deepcopy(m)
-    #         if verbose:
-    #             print(f"New best log likelihood: {best_loglik.numpy()}")
-    #     else:
-    #         del m
-
-    # #     # Set hyperparameters to best found values
-    # #     for l in range(len(m.trainable_parameters)):
-    # #         print(best_params[l])
-    # #         m.trainable_parameters[l].assign(best_params[l])
-
-    # # Return none and worst BIC if we can't fit a single
-    # if best_model is None:
-    #     return best_model, -1 * best_loglik
-
     # Specify model structure
     best_model = PSVGP(
         X=X,
@@ -866,14 +750,20 @@ def kernel_test(
         }
     )
 
-    if random_init and num_restarts > 1:
+    if random_init and num_restart > 1:
         best_model.random_restart_optimize(
-            num_restart=num_restarts
+            num_restart=num_restart,
+            randomize_kwargs={
+                "random_seed": random_seed
+            }
         )
-    elif num_restarts > 1:
+    elif num_restart > 1:
         best_model.random_restart_optimize(
-            num_restart=num_restarts,
-            randomize_kwargs={"scale": 0.0}
+            num_restart=num_restart,
+            randomize_kwargs={
+                "scale": 0.0,
+                "random_seed": random_seed
+            }
         )
     else:
         best_model.optimize_params()
@@ -941,7 +831,7 @@ def loc_kernel_search(
     prev_models=None,
     lik="gaussian",
     verbose=False,
-    num_restarts=5,
+    num_restart=5,
     random_seed=None,
     X_holdout=None,
     Y_holdout=None,
@@ -1017,7 +907,8 @@ def loc_kernel_search(
                             k,
                             likelihood=lik,
                             verbose=verbose,
-                            num_restarts=num_restarts,
+                            num_restart=num_restart,
+                            random_seed=random_seed,
                             X_holdout=X_holdout,
                             Y_holdout=Y_holdout,
                             split=split,
@@ -1071,7 +962,8 @@ def loc_kernel_search(
                             k,
                             likelihood=lik,
                             verbose=verbose,
-                            num_restarts=num_restarts,
+                            num_restart=num_restart,
+                            random_seed=random_seed,
                             X_holdout=X_holdout,
                             Y_holdout=Y_holdout,
                             split=split,
@@ -1106,7 +998,8 @@ def loc_kernel_search(
                         prev_models=prev_models,
                         depth=depth,
                         lik=lik,
-                        num_restarts=num_restarts,
+                        num_restart=num_restart,
+                        random_seed=random_seed,
                         X_holdout=X_holdout,
                         Y_holdout=Y_holdout,
                         split=split,
@@ -1119,7 +1012,8 @@ def loc_kernel_search(
                     k,
                     likelihood=lik,
                     verbose=verbose,
-                    num_restarts=num_restarts,
+                    num_restart=num_restart,
+                    random_seed=random_seed,
                     X_holdout=X_holdout,
                     Y_holdout=Y_holdout,
                     split=split,
@@ -1146,7 +1040,8 @@ def prod_kernel_creation(
     depth,
     lik,
     verbose=False,
-    num_restarts=5,
+    num_restart=5,
+    random_seed=None,
     prev_models=[],
     X_holdout=None,
     Y_holdout=None,
@@ -1217,7 +1112,8 @@ def prod_kernel_creation(
                     temp_kernel,
                     likelihood=lik,
                     verbose=verbose,
-                    num_restarts=num_restarts,
+                    num_restart=num_restart,
+                    random_seed=random_seed,
                     X_holdout=X_holdout,
                     Y_holdout=Y_holdout,
                     split=split,
@@ -1291,7 +1187,14 @@ def keep_top_k(res_dict, depth, metric_diff=6, split=False):
     return out_dict
 
 
-def prune_best_model(res_dict, depth, lik, verbose=False, num_restarts=5):
+def prune_best_model(
+    res_dict,
+    depth,
+    lik,
+    verbose=False,
+    num_restart=5,
+    random_seed=None
+):
     out_dict = res_dict.copy()
 
     # Get best model from current depth
@@ -1333,7 +1236,8 @@ def prune_best_model(res_dict, depth, lik, verbose=False, num_restarts=5):
             k,
             likelihood=lik,
             verbose=verbose,
-            num_restarts=num_restarts,
+            num_restart=num_restart,
+            random_seed=random_seed
         )
         # If better model found then save it
         if bic < best_bic:
@@ -1350,7 +1254,14 @@ def prune_best_model(res_dict, depth, lik, verbose=False, num_restarts=5):
     return out_dict
 
 
-def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
+def prune_best_model2(
+        res_dict,
+        depth,
+        lik,
+        verbose=False,
+        num_restart=5,
+        random_seed=None
+    ):
     out_dict = res_dict.copy()
 
     # Get best model from current depth
@@ -1414,7 +1325,8 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
                 other_name=other_name,
                 lik=lik,
                 verbose=verbose,
-                num_restarts=num_restarts,
+                num_restart=num_restart,
+                random_seed=random_seed
             )
 
             # Skip the rest of the iteration if product was involved
@@ -1438,7 +1350,8 @@ def prune_best_model2(res_dict, depth, lik, verbose=False, num_restarts=5):
                 k,
                 likelihood=lik,
                 verbose=verbose,
-                num_restarts=num_restarts,
+                num_restart=num_restart,
+                random_seed=random_seed
             )
         # If better model found then save it
         if bic < best_bic:
@@ -1468,7 +1381,8 @@ def prune_prod_kernel(
     other_name="",
     lik="gaussian",
     verbose=False,
-    num_restarts=5,
+    num_restart=5,
+    random_seed=None,
     **kwargs,
 ):
     out_dict = res_dict.copy()
@@ -1531,7 +1445,8 @@ def prune_prod_kernel(
                 k=k,
                 likelihood=lik,
                 verbose=verbose,
-                num_restarts=num_restarts,
+                num_restart=num_restart,
+                random_seed=random_seed
             )
 
             if verbose:
@@ -1563,7 +1478,7 @@ def full_kernel_search(
     metric_diff=6,
     early_stopping=True,
     prune=True,
-    num_restarts=5,
+    num_restart=5,
     lik="gaussian",
     verbose=False,
     debug=False,
@@ -1615,7 +1530,7 @@ def full_kernel_search(
                 depth=d,
                 lik=lik,
                 verbose=debug,
-                num_restarts=num_restarts,
+                num_restart=num_restart,
             )
         else:
             # Create temporary dictionary to hold new results
@@ -1649,7 +1564,7 @@ def full_kernel_search(
                     operation="sum",
                     prev_models=temp_dict.keys(),
                     verbose=debug,
-                    num_restarts=num_restarts,
+                    num_restart=num_restart,
                 )
                 temp_dict.update(new_res)
 
@@ -1672,7 +1587,7 @@ def full_kernel_search(
                     operation=op,
                     prev_models=temp_dict.keys(),
                     verbose=debug,
-                    num_restarts=num_restarts,
+                    num_restart=num_restart,
                 )
                 temp_dict.update(new_res)
 
@@ -1729,7 +1644,7 @@ def full_kernel_search(
                         depth=d,
                         lik=lik,
                         verbose=verbose,
-                        num_restarts=num_restarts,
+                        num_restart=num_restart,
                     )
 
                 break
@@ -1785,7 +1700,7 @@ def full_kernel_search(
                 depth=d,
                 lik=lik,
                 verbose=verbose,
-                num_restarts=num_restarts,
+                num_restart=num_restart,
             )
 
         if verbose:
@@ -1844,7 +1759,7 @@ def split_kernel_search(
     metric_diff=1,
     early_stopping=True,
     prune=True,
-    num_restarts=5,
+    num_restart=5,
     lik="gaussian",
     verbose=False,
     debug=False,
@@ -1907,7 +1822,7 @@ def split_kernel_search(
                 depth=d,
                 lik=lik,
                 verbose=debug,
-                num_restarts=num_restarts,
+                num_restart=num_restart,
                 X_holdout=X_holdout,
                 Y_holdout=Y_holdout,
                 split=True,
@@ -1944,7 +1859,7 @@ def split_kernel_search(
                     operation="sum",
                     prev_models=temp_dict.keys(),
                     verbose=debug,
-                    num_restarts=num_restarts,
+                    num_restart=num_restart,
                     X_holdout=X_holdout,
                     Y_holdout=Y_holdout,
                     split=True,
@@ -1970,7 +1885,7 @@ def split_kernel_search(
                     operation=op,
                     prev_models=temp_dict.keys(),
                     verbose=debug,
-                    num_restarts=num_restarts,
+                    num_restart=num_restart,
                     X_holdout=X_holdout,
                     Y_holdout=Y_holdout,
                     split=True,
@@ -2005,7 +1920,7 @@ def split_kernel_search(
                         depth=d,
                         lik=lik,
                         verbose=verbose,
-                        num_restarts=num_restarts,
+                        num_restart=num_restart,
                     )
 
                 break
@@ -2049,7 +1964,7 @@ def split_kernel_search(
                     depth=d,
                     lik=lik,
                     verbose=verbose,
-                    num_restarts=num_restarts,
+                    num_restart=num_restart,
                 )
 
         if verbose:

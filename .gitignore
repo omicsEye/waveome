@@ -6,4 +6,5 @@
 .pytest_cache
 .virtual_documents
 
-waveome/__pycache__
+__pycache__
+build/

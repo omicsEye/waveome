@@ -3,6 +3,7 @@ import copy
 import gpflow
 import numpy as np
 import tensorflow as tf
+from gpflow.utilities import deepcopy
 
 # Not currently using below because it presents warning on M1 mac
 # from tensorflow.keras.optimizers import Adam
@@ -18,6 +19,7 @@ from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import make_folds
 from .utilities import (  # hmc_sampling,
     calc_bic,
+    calc_rsquare,
     find_variance_components,
     find_variance_components_tf,
     gp_likelihood_crosswalk,
@@ -48,13 +50,13 @@ class BaseGP(gpflow.models.SVGP):
     -------
     update_kernel_name()
         Updates the saved kernel name string based on kernel components.
-    randomize_params(loc=0.0, scale=1.0, random_seed=None)
+    randomize_params(loc=0.0, scale=10.0, random_seed=None)
         Randomizes traininable parameters in model.
     optimize_params(
-        adam_learning_rate=0.01,
-        nat_gradient_gamma=0.01,
+        adam_learning_rate=0.001,
+        nat_gradient_gamma=0.001,
         num_opt_iter=5000,
-        convergence_threshold=1e-6,
+        convergence_threshold=0.1,
     )
         Optimizes trainable parameters in model using Adam and Natural
         Gradient methods.
@@ -85,27 +87,44 @@ class BaseGP(gpflow.models.SVGP):
         self,
         X: np.array,
         Y: np.array,
-        mean_function: gpflow.functions.Function = gpflow.functions.Constant(
-            c=0.0
+        mean_function: gpflow.functions.Function = (
+            gpflow.functions.Constant(c=0.0)
         ),
-        kernel: gpflow.kernels.Kernel = gpflow.kernels.SquaredExponential(
-            active_dims=[0]
+        kernel: gpflow.kernels.Kernel = (
+            gpflow.kernels.SquaredExponential(active_dims=[0])
         ),
         verbose: bool = False,
+        dtype="float64",
         **svgp_kwargs,
     ):
         # Set values
-        self.X = X
-        self.Y = Y
+        # Comment this out for now to save memory
+        # self.X = X.astype(gpflow.default_float())
+        # self.Y = Y.astype(gpflow.default_float())
         self.data = (
-            tf.convert_to_tensor(X, dtype=tf.float64),
-            tf.convert_to_tensor(Y, dtype=tf.float64)
+            tf.reshape(
+                tensor=tf.convert_to_tensor(
+                    X,
+                    dtype=gpflow.default_float()
+                    # dtype=tf.float64 if dtype == "float64" else tf.float32
+                ),
+                shape=(X.shape)
+            ),
+            tf.reshape(
+                tensor=tf.convert_to_tensor(
+                    Y,
+                    dtype=gpflow.default_float()
+                    # dtype=tf.float64 if dtype == "float64" else tf.float32
+                ),
+                shape=(-1, 1)
+            )
         )
-        self.mean_function = mean_function
-        self.kernel = kernel
+        self.mean_function = deepcopy(mean_function)
+        self.kernel = deepcopy(kernel)
         self.kernel_name = ""
         self.verbose = verbose
         self.optimizer = None
+        self.num_trainable_params = np.nan
 
         if hasattr(self, "num_inducing_points") is False:
             self.num_inducing_points = X.shape[0]
@@ -120,8 +139,8 @@ class BaseGP(gpflow.models.SVGP):
 
         # Fill in information for parent class
         super().__init__(
-            mean_function=mean_function,
-            kernel=kernel,
+            mean_function=deepcopy(mean_function),
+            kernel=deepcopy(kernel),
             likelihood=gpflow.likelihoods.Gaussian(),
             inducing_variable=gpflow.inducing_variables.InducingPoints(X),
             **svgp_kwargs,
@@ -177,8 +196,9 @@ class BaseGP(gpflow.models.SVGP):
                     #   scale=scale, size=(self.X.shape[0])
                     # )
                     np.random.exponential(
-                        scale=scale, size=self.num_inducing_points
-                    )
+                        scale=scale,
+                        size=self.num_inducing_points
+                    ).astype(gpflow.default_float())
                 )
                 try:
                     p.assign(tf.convert_to_tensor(sample_matrix[None, :, :]))
@@ -191,8 +211,10 @@ class BaseGP(gpflow.models.SVGP):
 
             else:
                 unconstrain_vals = np.random.normal(
-                    loc=loc, scale=scale, size=p.numpy().shape
-                )
+                    loc=loc,
+                    scale=scale,
+                    size=p.numpy().shape
+                ).astype(gpflow.default_float())
 
                 # Assign those values to the trainable variable
                 p.assign(p.transform_fn(unconstrain_vals))
@@ -200,10 +222,11 @@ class BaseGP(gpflow.models.SVGP):
 
     def optimize_params(
         self,
-        adam_learning_rate=0.01,
-        nat_gradient_gamma=1.0,
-        num_opt_iter=20000,
-        convergence_threshold=1e-3,
+        adam_learning_rate=0.1,
+        nat_gradient_gamma=0.001,
+        num_opt_iter=50000,
+        convergence_threshold=1e-4,
+        optimizer=None,
     ):
         """Optimize hyperparameters of model.
 
@@ -233,20 +256,46 @@ class BaseGP(gpflow.models.SVGP):
         # Source: (https://gpflow.github.io/GPflow/develop/
         # notebooks/advanced/natural_gradients.html#Natural-gradients)
 
-        # Can we just use BFGS for "smaller" models? Exclude variational params
-        tot_params = 0
-        for var_set in [
-            self.mean_function.trainable_variables,
-            self.kernel.trainable_variables
-        ]:
-            for var in var_set:
-                num_params = np.prod(var.shape)
-                tot_params += num_params
+        # Reset graph
+        tf.compat.v1.reset_default_graph()
+        tf.keras.backend.clear_session()
 
-        if tot_params <= 100:
+        # Can we just use BFGS for "smaller" models? Exclude variational params
+        # tot_params = 0
+        # for var_set in [
+        #     self.mean_function.trainable_variables,
+        #     self.kernel.trainable_variables
+        # ]:
+        #     for var in var_set:
+        #         num_params = np.prod(var.shape)
+        #         tot_params += num_params
+        if np.isnan(self.num_trainable_params):
+            tot_params = 0
+            for var in self.trainable_variables:
+                if "fill_triangular" in var.name:
+                    num_params = tf.shape(var)[0]
+                else:
+                    num_params = np.prod(tf.shape(var))
+                tot_params += num_params
+            self.num_trainable_params = tot_params
+
+        if (
+            (self.num_trainable_params <= 5000 and optimizer is None)
+            or optimizer == "scipy"
+        ):
             if self.verbose:
-                print(f"Number of params: {tot_params}, using Scipy optimizer")
+                print(
+                    f"Number of params: {self.num_trainable_params},",
+                    " using Scipy optimizer"
+                )
+                print(gpflow.utilities.print_summary(self))
             self.optimizer = "scipy"
+
+            optimizer = gpflow.optimizers.Scipy()
+            opt_options = {
+                "maxiter": num_opt_iter,
+                "ftol": convergence_threshold
+            }
 
             # Make sure we freeze inducing points if the kernel is Constant()
             # otherwise we get unconnected gradient error
@@ -254,73 +303,97 @@ class BaseGP(gpflow.models.SVGP):
             if self.kernel.name == "constant":
                 gpflow.utilities.set_trainable(self.inducing_variable, False)
 
-            try:
-                gpflow.optimizers.Scipy().minimize(
-                    closure=self.training_loss_closure(
-                        data=self.data,
-                        compile=True
-                    ),
-                    variables=self.trainable_variables,
-                    method="L-BFGS-B",
-                    options={"maxiter": num_opt_iter}
-                )
-            except TypeError:
-                for param in self.parameters:
-                    param = tf.cast(param, tf.float64)
-                gpflow.optimizers.Scipy().minimize(
-                    closure=self.training_loss_closure(
-                        data=(
-                            tf.cast(self.data[0], tf.float64),
-                            tf.cast(self.data[1], tf.float64)
+            for attempt in range(5):
+                try:
+                    optimizer.minimize(
+                        closure=self.training_loss_closure(
+                            data=self.data,
+                            # compile=False
+                            # Need to not compile with Scipy optimizer
                         ),
-                        # compile=True
-                    ),
-                    variables=self.trainable_variables,
-                    method="L-BFGS-B",
-                    options={"maxiter": num_opt_iter}
-                )
+                        variables=self.trainable_variables,
+                        method="L-BFGS-B",
+                        options=opt_options
+                    )
+                    break
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Attempt {attempt+1} - Scipy exception: {e}")
+                    for param in self.parameters:
+                        param = tf.cast(param, tf.float64)
+                # optimizer.minimize(
+                #     closure=self.training_loss_closure(
+                #         data=(
+                #             tf.cast(self.data[0], tf.float64),
+                #             tf.cast(self.data[1], tf.float64)
+                #         ),
+                #         # compile=False
+                #     ),
+                #     variables=self.trainable_variables,
+                #     method="L-BFGS-B",
+                #     options=opt_options
+                # )
 
             return None
         
-        # Set optimizer otherwise
-        self.optimizer = "adam/gradient"
+        if (
+            (self.num_trainable_params > 5000 and optimizer is None)
+            or optimizer == "adam/gradient"
+        ):
+            # Set optimizer otherwise
+            self.optimizer = "adam/gradient"
 
-        # Stop Adam from optimizing the variational parameters
-        gpflow.set_trainable(self.q_mu, False)
-        gpflow.set_trainable(self.q_sqrt, False)
+            # Stop Adam from optimizing the variational parameters
+            gpflow.set_trainable(self.q_mu, False)
+            gpflow.set_trainable(self.q_sqrt, False)
 
-        # Create the optimize_tensors for VGP with natural gradients
-        adam_opt = Adam(learning_rate=adam_learning_rate)
-        natgrad_opt = gpflow.optimizers.NaturalGradient(
-            gamma=nat_gradient_gamma
-        )
+            # Create the optimize_tensors for VGP with natural gradients
+            adam_opt = Adam(learning_rate=adam_learning_rate)
+            natgrad_opt = gpflow.optimizers.NaturalGradient(
+                gamma=nat_gradient_gamma
+            )
 
+            @tf.function
+            def split_optimization_step():
+                adam_opt.minimize(
+                    compiled_loss,
+                    var_list=self.trainable_variables,
+                )
+                natgrad_opt.minimize(
+                    compiled_loss, var_list=[(self.q_mu, self.q_sqrt)]
+                )
+        elif optimizer == "adam":
+            self.optimizer = "adam"
+            adam_opt = Adam(learning_rate=adam_learning_rate)
+
+            @tf.function
+            def split_optimization_step():
+                adam_opt.minimize(
+                    compiled_loss,
+                    var_list=self.trainable_variables,
+                )
+        else:
+            ValueError(
+                "Unknown optimizer selected!",
+                " Current options: ['scipy', 'adam', 'adam/gradient', None]"
+            )
+        
         # Compile loss closure based on training data
         compiled_loss = self.training_loss_closure(
-            # data=(self.X, self.Y), 
             data=self.data,
             compile=True
         )
 
-        @tf.function
-        def split_optimization_step():
-            adam_opt.minimize(
-                compiled_loss,
-                var_list=self.trainable_variables,
-            )
-            natgrad_opt.minimize(
-                compiled_loss, var_list=[(self.q_mu, self.q_sqrt)]
-            )
-
         loss_list = []
+
+        # Save initial values
+        previous_values = gpflow.utilities.deepcopy(
+            gpflow.utilities.parameter_dict(self)
+        )
         # Now optimize the parameters
         for i in range(num_opt_iter):
             
-            # Save previous values
-            previous_values = gpflow.utilities.deepcopy(
-                gpflow.utilities.parameter_dict(self)
-            )
-
+            # optimization step
             try:
                 split_optimization_step()
             except tf.errors.InvalidArgumentError:
@@ -330,9 +403,30 @@ class BaseGP(gpflow.models.SVGP):
                 )
                 gpflow.utilities.multiple_assign(self, previous_values)
                 break
-            if i % 5 == 0:
-                cur_loss = self.training_loss((self.X, self.Y))
-                loss_list.append(cur_loss)
+
+            # Checkpoint!
+            if i % 50 == 0:
+                # Save previous values
+                previous_values = gpflow.utilities.deepcopy(
+                    gpflow.utilities.parameter_dict(self)
+                )
+
+                # Calculate loss
+                cur_loss = self.training_loss(self.data)
+                # Check to make sure we haven't gone off the rails
+                if np.isnan(cur_loss):
+                    print("NaN loss, something went wrong - stopping!")
+                    break
+                else:
+                    loss_list.append(cur_loss)
+
+                # Update adam learning rate (decay)
+                adam_opt.learning_rate = (
+                    (0.99 ** i) *
+                    adam_learning_rate
+                )
+
+                # Print output if requested
                 if i % 500 == 0 and self.verbose:
                     print(f"Round {i} training loss: {cur_loss}")
 
@@ -347,7 +441,8 @@ class BaseGP(gpflow.models.SVGP):
                 break
 
         if i == (num_opt_iter - 1):
-            print(f"Optimization not converged after {i+1} rounds")
+            if self.verbose:
+                print(f"Optimization not converged after {i+1} rounds")
 
         return None
 
@@ -384,7 +479,7 @@ class BaseGP(gpflow.models.SVGP):
 
             # Check if log likelihood is better
             cur_max_ll = self.maximum_log_likelihood_objective(
-                data=(self.X, self.Y)
+                data=self.data
             )
             if cur_max_ll > max_ll:
                 max_ll = cur_max_ll
@@ -411,10 +506,13 @@ class BaseGP(gpflow.models.SVGP):
         None
             Variance contributions in self.variance_explained
         """
+        # self.variance_explained = list(
+        #     variance_contributions(
+        #         self, k_names=self.kernel_name, lik=self.likelihood.name
+        #     )
+        # )
         self.variance_explained = list(
-            variance_contributions(
-                self, k_names=self.kernel_name, lik=self.likelihood.name
-            )
+            calc_rsquare(self)
         )
 
         # return self.variance_explained
@@ -425,13 +523,18 @@ class BaseGP(gpflow.models.SVGP):
         if metric == "BIC":
             return calc_bic(
                 loglik=self.log_posterior_density(self.data),
-                n=self.X.shape[0],
+                n=self.data[0].shape[0],  # self.X.shape[0],
                 k=len(self.trainable_parameters),
             )
 
     def plot_functions(self, x_idx, col_names, **kwargs):
         return gp_predict_fun(
-            self, x_idx, col_names, X=self.X, Y=self.Y, **kwargs
+            self,
+            x_idx=x_idx,
+            col_names=col_names,
+            X=self.data[0].numpy(),  # self.X,
+            Y=self.data[1].numpy(),  # self.Y,
+            **kwargs
         )
 
     def plot_parts(self, x_idx, col_names, lik=None, **kwargs):
@@ -470,18 +573,18 @@ class VarGP(BaseGP):
         **basegp_kwargs,
     ):
         # Set values
-        self.X = X
-        self.Y = Y
-        self.mean_function = mean_function
-        self.kernel = kernel
+        # self.X = X
+        # self.Y = Y
+        self.mean_function = deepcopy(mean_function)
+        self.kernel = deepcopy(kernel)
         self.verbose = verbose
 
         # Fill in information for parent class
         super().__init__(
             X=X,
             Y=Y,
-            mean_function=mean_function,
-            kernel=kernel,
+            mean_function=deepcopy(mean_function),
+            kernel=deepcopy(kernel),
             verbose=verbose,
             **basegp_kwargs,
         )
@@ -533,10 +636,10 @@ class SparseGP(BaseGP):
         **basegp_kwargs,
     ):
         # Set values
-        self.X = X
-        self.Y = Y
-        self.mean_function = mean_function
-        self.kernel = kernel
+        # self.X = X
+        # self.Y = Y
+        self.mean_function = deepcopy(mean_function)
+        self.kernel = deepcopy(kernel)
         self.verbose = verbose
         self.num_inducing_points = num_inducing_points
 
@@ -559,8 +662,8 @@ class SparseGP(BaseGP):
         super().__init__(
             X=X,
             Y=Y,
-            mean_function=mean_function,
-            kernel=kernel,
+            mean_function=deepcopy(mean_function),
+            kernel=deepcopy(kernel),
             verbose=verbose,
             q_mu=np.zeros(num_inducing_points)[:, None],
             q_sqrt=np.eye(num_inducing_points)[None, :, :],
@@ -612,8 +715,8 @@ class PenalizedGP(BaseGP):
         super().__init__(
             X=X,
             Y=Y,
-            mean_function=mean_function,
-            kernel=kernel,
+            mean_function=deepcopy(mean_function),
+            kernel=deepcopy(kernel),
             verbose=verbose,
             **basegp_kwargs,
         )
@@ -625,17 +728,27 @@ class PenalizedGP(BaseGP):
         self.unit_col = None
         self.penalization_search_results = None
 
-    def maximum_log_likelihood_objective(self, data):
+    def maximum_log_likelihood_objective(self, data, use_factor=True):
         model_fit = self.elbo(data)
-        model_var = (
-            data[0].shape[0]
-            * self.penalization_factor
-            * find_variance_components_tf(self.kernel)
-        )
-        return model_fit - model_var
+
+        # I cannot seem to get the penalization factor to work
+        # so instead I will use Exponential priors on variance terms
+        if use_factor:
+            model_var = (
+                # data[0].shape[0] *
+                self.penalization_factor *
+                find_variance_components_tf(self.kernel)
+            )
+            # out_fit = tf.math.log(tf.math.exp(model_fit) - model_var)
+            out_fit = model_fit - model_var
+        else:
+            out_fit = model_fit
+        return out_fit
 
     def set_penalization_factor(self, penalization_factor, use_prior=False):
-        self.penalization_factor = penalization_factor
+        self.penalization_factor = gpflow.utilities.to_default_float(
+            penalization_factor
+        )
 
         if use_prior:
             # Set prior on kernel variance terms
@@ -658,6 +771,7 @@ class PenalizedGP(BaseGP):
         self,
         # penalization_factor_list=np.exp(np.linspace(0, 10, 5)),
         penalization_factor_list=[0.0, 0.1, 1.0, 10.0, 100.0],
+        # penalization_factor_list=[0.0, 1.0, 100.0],
         k_fold=3,
         fit_best=True,
         max_jobs=-1,
@@ -666,10 +780,16 @@ class PenalizedGP(BaseGP):
         randomization_options={},
         optimization_options={},
         random_seed=None,
+        num_restart=5,
         selection_type="se"
     ):
         # Split training data into k-folds
-        folds = make_folds(self.X, self.unit_col, k_fold, random_seed)
+        folds = make_folds(
+            self.data[0].numpy(),  # self.X,
+            self.unit_col,
+            k_fold,
+            random_seed
+        )
 
         # Set random seed in randomization options if not defined
         if "random_seed" not in randomization_options.keys():
@@ -684,21 +804,48 @@ class PenalizedGP(BaseGP):
 
         # Fit combinations in parallel if possible
         def parallel_fit(pf, holdout_fold, holdout_index):
-            # temp_model = copy.deepcopy(self)
-            temp_model = PenalizedGP(
-                X=np.delete(self.X, holdout_fold, axis=0),
-                Y=np.delete(self.Y, holdout_fold, axis=0),
-                kernel=copy.deepcopy(self.kernel),
-                penalization_factor=pf,
-                verbose=self.verbose,
+            temp_model = copy.deepcopy(self)
+            temp_model.data = (
+                tf.convert_to_tensor(
+                    np.delete(
+                        self.data[0].numpy(),
+                        holdout_fold,
+                        axis=0
+                    )
+                ),
+                tf.convert_to_tensor(
+                    np.delete(
+                        self.data[1].numpy(),
+                        holdout_fold,
+                        axis=0
+                    )
+                )
             )
-            # temp_model.set_penalization_factor(pf)
-            holdout_X = self.X[holdout_fold]
-            holdout_Y = self.Y[holdout_fold]
-            # temp_model.X = np.delete(self.X, holdout_fold, axis=0)
-            # temp_model.Y = np.delete(self.Y, holdout_fold, axis=0)
-            temp_model.randomize_params(**randomization_options)
-            temp_model.optimize_params(**optimization_options)
+            # temp_model = PenalizedGP(
+            #     X=np.delete(
+            #         self.data[0].numpy(),  # self.X,
+            #         holdout_fold,
+            #         axis=0
+            #     ),
+            #     Y=np.delete(
+            #         self.data[1].numpy(),  # self.Y,
+            #         holdout_fold,
+            #         axis=0
+            #     ),
+            #     mean_function=deepcopy(self.mean_function),
+            #     kernel=deepcopy(self.kernel),
+            #     penalization_factor=pf,
+            #     verbose=self.verbose,
+            # )
+            # holdout_X = self.X[holdout_fold]
+            # holdout_Y = self.Y[holdout_fold]
+            holdout_X = self.data[0].numpy()[holdout_fold]
+            holdout_Y = self.data[1].numpy()[holdout_fold]
+            temp_model.random_restart_optimize(
+                randomize_kwargs=randomization_options,
+                optimize_kwargs=optimization_options,
+                num_restart=num_restart
+            )
             holdout = np.mean(
                 temp_model.predict_log_density(data=(holdout_X, holdout_Y))
             )
@@ -790,8 +937,13 @@ class PenalizedGP(BaseGP):
         # Fit full model with best penalization value found
         if fit_best:
             self.set_penalization_factor(best_factor)
-            self.randomize_params(**randomization_options)
-            self.optimize_params(**optimization_options)
+            # self.randomize_params(**randomization_options)
+            # self.optimize_params(**optimization_options)
+            self.random_restart_optimize(
+                randomize_kwargs=randomization_options,
+                optimize_kwargs=optimization_options,
+                num_restart=num_restart
+            )
 
     # def penalized_optimization(self, holdout_X, holdout_Y):
         
@@ -865,7 +1017,7 @@ class PenalizedGP(BaseGP):
             self.kernel = search_through_kernel_list_(
                 kernel_list=self.kernel.kernels,
                 list_type=self.kernel.name,
-                X=self.X
+                X=self.data[0].numpy(),  # self.X
             )
 
         # Also make sure we only keep base variances that remain
@@ -907,6 +1059,7 @@ class PSVGP(
         mean_function=gpflow.functions.Constant(c=0.0),
         kernel=gpflow.kernels.SquaredExponential(active_dims=[0]),
         verbose=False,
+        dtype="float64",
         penalized_options={},
         sparse_options={},
         variational_options={},
@@ -914,9 +1067,10 @@ class PSVGP(
         super().__init__(
             X=X,
             Y=Y,
-            mean_function=mean_function,
-            kernel=kernel,
+            mean_function=deepcopy(mean_function),
+            kernel=deepcopy(kernel),
             verbose=verbose,
+            dtype=dtype,
             **penalized_options,
             **sparse_options,
             **variational_options,
