@@ -430,6 +430,10 @@ def cut_kernel_components(model, var_cutoff: float = 0.001):
     # Return empty model object if none passed in
     if model is None:
         return model
+    
+    # Return same model if we are using coregion for multioutput
+    if model.kernel.name == "linear_coregionalization":
+        return model
 
     # Get variance components for each additive kernel part
     var_parts = find_variance_components(model.kernel, sum_reduce=False)

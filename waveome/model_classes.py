@@ -1,6 +1,8 @@
 import copy
+from socket import has_dualstack_ipv6
 
 import gpflow
+import gpflow.inducing_variables as iv
 import numpy as np
 import tensorflow as tf
 from gpflow.utilities import deepcopy
@@ -89,40 +91,72 @@ class BaseGP(gpflow.models.SVGP):
             gpflow.kernels.SquaredExponential(active_dims=[0])
         ),
         verbose: bool = False,
+        num_latent_gps=1,
         dtype="float64",
         **svgp_kwargs,
     ):
+
+        # Set up inducing variables
+        if num_latent_gps == 1:
+            inducing_variable = iv.InducingPoints(X)
+        else:
+            inducing_variable = (
+                iv.SeparateIndependentInducingVariables([
+                    gpflow.inducing_variables.InducingPoints(X_)
+                    for X_ in [X.copy() for _ in range(num_latent_gps)]
+                ])
+            )
+
+        # Fill in information for parent class
+        super().__init__(
+            mean_function=deepcopy(mean_function),
+            kernel=deepcopy(kernel),
+            likelihood=gpflow.likelihoods.Gaussian(),
+            inducing_variable=inducing_variable,
+            num_latent_gps=num_latent_gps,
+            **svgp_kwargs,
+        )
+
         # Set values
         # Comment this out for now to save memory
         # self.X = X.astype(gpflow.default_float())
         # self.Y = Y.astype(gpflow.default_float())
-        # self.data = (
-        #     tf.reshape(
-        #         tensor=tf.convert_to_tensor(
-        #             X,
-        #             dtype=gpflow.default_float()
-        #             # dtype=tf.float64 if dtype == "float64" else tf.float32
-        #         ),
-        #         shape=(X.shape)
-        #     ),
-        #     tf.reshape(
-        #         tensor=tf.convert_to_tensor(
-        #             Y,
-        #             dtype=gpflow.default_float()
-        #             # dtype=tf.float64 if dtype == "float64" else tf.float32
-        #         ),
-        #         shape=(-1, 1)
-        #     )
-        # )
-        self.mean_function = deepcopy(mean_function)
-        self.kernel = deepcopy(kernel)
+        self.data = (
+            tf.reshape(
+                tensor=tf.convert_to_tensor(
+                    X,
+                    dtype=gpflow.default_float()
+                    # dtype=tf.float64 if dtype == "float64" else tf.float32
+                ),
+                shape=(X.shape)
+            ),
+            tf.reshape(
+                tensor=tf.convert_to_tensor(
+                    Y,
+                    dtype=gpflow.default_float()
+                    # dtype=tf.float64 if dtype == "float64" else tf.float32
+                ),
+                shape=(Y.shape)
+            )
+        )
+        # self.mean_function = deepcopy(mean_function)
+        # self.kernel = deepcopy(kernel)
         self.kernel_name = ""
         self.verbose = verbose
         self.optimizer = None
         self.num_trainable_params = np.nan
+        self.num_latent_gps = num_latent_gps
 
         if hasattr(self, "num_inducing_points") is False:
             self.num_inducing_points = X.shape[0]
+
+        # Rest variational parameters because num_latent_gps isn't respected
+        self._init_variational_parameters(
+            num_inducing=self.num_inducing_points,
+            q_mu=None,
+            q_sqrt=None,
+            q_diag=False
+        )
 
         # Check for missing data
         assert (
@@ -131,15 +165,6 @@ class BaseGP(gpflow.models.SVGP):
         assert (
             np.isnan(Y).sum() == 0
         ), "Missing values in Y found. This is currently not allowed!"
-
-        # Fill in information for parent class
-        super().__init__(
-            mean_function=deepcopy(mean_function),
-            kernel=deepcopy(kernel),
-            likelihood=gpflow.likelihoods.Gaussian(),
-            inducing_variable=gpflow.inducing_variables.InducingPoints(X),
-            **svgp_kwargs,
-        )
 
         # Get the string for the kernel name as well
         self.update_kernel_name()
@@ -287,7 +312,6 @@ class BaseGP(gpflow.models.SVGP):
                     f"Number of params: {self.num_trainable_params},",
                     " using Scipy optimizer"
                 )
-                print(gpflow.utilities.print_summary(self))
             self.optimizer = "scipy"
 
             optimizer = gpflow.optimizers.Scipy()
@@ -608,17 +632,18 @@ class VarGP(BaseGP):
         mean_function=gpflow.functions.Constant(c=0.0),
         kernel=gpflow.kernels.SquaredExponential(active_dims=[0]),
         likelihood="gaussian",
+        num_latent_gps=1,
         scale_value=None,
         # variational_priors=True,
         verbose=False,
         **basegp_kwargs,
     ):
-        # Set values
-        # self.X = X
-        # self.Y = Y
-        self.mean_function = deepcopy(mean_function)
-        self.kernel = deepcopy(kernel)
-        self.verbose = verbose
+        # # Set values
+        # # self.X = X
+        # # self.Y = Y
+        # self.mean_function = deepcopy(mean_function)
+        # self.kernel = deepcopy(kernel)
+        # self.verbose = verbose
 
         # Fill in information for parent class
         super().__init__(
@@ -626,6 +651,7 @@ class VarGP(BaseGP):
             Y=Y,
             mean_function=deepcopy(mean_function),
             kernel=deepcopy(kernel),
+            num_latent_gps=num_latent_gps,
             verbose=verbose,
             **basegp_kwargs,
         )
@@ -680,12 +706,25 @@ class SparseGP(BaseGP):
         verbose=False,
         **basegp_kwargs,
     ):
+        
+        # Fill in information for parent class
+        super().__init__(
+            X=X,
+            Y=Y,
+            mean_function=deepcopy(mean_function),
+            kernel=deepcopy(kernel),
+            verbose=verbose,
+            q_mu=np.zeros(num_inducing_points)[:, None],
+            q_sqrt=np.eye(num_inducing_points)[None, :, :],
+            **basegp_kwargs,
+        )
+
         # Set values
-        # self.X = X
-        # self.Y = Y
-        self.mean_function = deepcopy(mean_function)
-        self.kernel = deepcopy(kernel)
-        self.verbose = verbose
+        # # self.X = X
+        # # self.Y = Y
+        # self.mean_function = deepcopy(mean_function)
+        # self.kernel = deepcopy(kernel)
+        # self.verbose = verbose
         self.num_inducing_points = num_inducing_points
 
         # Check inducing point size compared to training data
@@ -703,18 +742,6 @@ class SparseGP(BaseGP):
 
             self.num_inducing_points = num_inducing_points
 
-        # Fill in information for parent class
-        super().__init__(
-            X=X,
-            Y=Y,
-            mean_function=deepcopy(mean_function),
-            kernel=deepcopy(kernel),
-            verbose=verbose,
-            q_mu=np.zeros(num_inducing_points)[:, None],
-            q_sqrt=np.eye(num_inducing_points)[None, :, :],
-            **basegp_kwargs,
-        )
-
         # Set inducing points
         if random_points is True:
             if random_seed is not None:
@@ -724,14 +751,26 @@ class SparseGP(BaseGP):
                 size=num_inducing_points,
                 replace=False,
             )
-        else:
-            obs_idx = np.arange(num_inducing_points)
 
-        self.inducing_variable = gpflow.inducing_variables.InducingPoints(
-            X.numpy()[obs_idx, :].copy()
-            if tf.is_tensor(X)
-            else X[obs_idx, :].copy()
-        )
+            # Choose subset for random inducing points
+            sub_X = (
+                X.numpy()[obs_idx, :].copy()
+                if tf.is_tensor(X)
+                else X[obs_idx, :].copy()
+            )
+            if self.num_latent_gps == 1:
+                self.inducing_variable = iv.InducingPoints(sub_X)
+            else:
+                self.inducing_variable = (
+                    iv.SeparateIndependentInducingVariables([
+                        gpflow.inducing_variables.InducingPoints(X_)
+                        for X_ in [
+                            sub_X.copy() for _ in range(self.num_latent_gps)
+                        ]
+                    ])
+                )
+
+        # Train inducing points if subset otherwise freeze
         gpflow.utilities.set_trainable(self.inducing_variable, train_inducing)
 
 
@@ -1093,17 +1132,20 @@ class PSVGP(
         mean_function=gpflow.functions.Constant(c=0.0),
         kernel=gpflow.kernels.SquaredExponential(active_dims=[0]),
         verbose=False,
+        num_latent_gps=1,
         dtype="float64",
         penalized_options={},
         sparse_options={},
         variational_options={},
     ):
+        
         super().__init__(
             X=X,
             Y=Y,
             mean_function=deepcopy(mean_function),
             kernel=deepcopy(kernel),
             verbose=verbose,
+            num_latent_gps=num_latent_gps,
             dtype=dtype,
             **penalized_options,
             **sparse_options,
