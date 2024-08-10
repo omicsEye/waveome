@@ -791,6 +791,7 @@ class PenalizedGP(BaseGP):
         Y,
         mean_function=gpflow.functions.Constant(c=0.0),
         kernel=gpflow.kernels.SquaredExponential(active_dims=[0]),
+        num_latent_gps=1,
         penalization_factor=1.0,
         verbose=False,
         **basegp_kwargs,
@@ -801,6 +802,7 @@ class PenalizedGP(BaseGP):
             Y=Y,
             mean_function=deepcopy(mean_function),
             kernel=deepcopy(kernel),
+            num_latent_gps=num_latent_gps,
             verbose=verbose,
             **basegp_kwargs,
         )
