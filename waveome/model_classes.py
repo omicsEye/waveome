@@ -769,6 +769,14 @@ class SparseGP(BaseGP):
                         ]
                     ])
                 )
+            
+            # Reset variational parameters
+            self._init_variational_parameters(
+                num_inducing=self.num_inducing_points,
+                q_mu=None,
+                q_sqrt=None,
+                q_diag=False
+            )
 
         # Train inducing points if subset otherwise freeze
         gpflow.utilities.set_trainable(self.inducing_variable, train_inducing)
