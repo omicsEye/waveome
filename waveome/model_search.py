@@ -1,11 +1,15 @@
 import os
 import re
+import time
 import warnings
+from xml.sax.handler import feature_external_pes
 
 import gpflow
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import psutil
+import ray
 import seaborn as sns
 import tensorflow as tf
 from gpflow.utilities import set_trainable
@@ -21,10 +25,14 @@ from .model_classes import PSVGP
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import full_kernel_build
 from .utilities import (
+    ParallelTqdm,
     calc_bic,
+    calc_deviance_explained_components,
     calc_rsquare,
     check_if_model_exists,
+    convert_data_to_tensors,
     print_kernel_names,
+    replace_kernel_variables,
     tqdm_joblib,
 )
 
@@ -64,7 +72,7 @@ class GPSearch:
         Y,
         unit_col=None,
         standardize_X=True,
-        Y_transform="scale",
+        Y_transform=None,
         categorical_vars=[],
         outcome_likelihood="gaussian",
     ):
@@ -165,20 +173,26 @@ class GPSearch:
             self.Y_stds = self.Y.std(axis=0)
             self.Y_original = self.Y.copy()
             self.Y = self.Y / self.Y_stds
+        
+        elif Y_transform is None and self.likelihood == "negativebinomial":
+            self.Y_stds = self.Y.std(axis=0)
 
     def penalized_optimization(
         self,
         full_kernel=None,
-        num_jobs=-2,
+        num_jobs=-1,
         verbose=False,
         mean_function=gpflow.mean_functions.Constant(),
         kernel_options={
             "second_order_numeric": False,
-            "kerns": [gpflow.kernels.SquaredExponential()],
+            "kerns": [
+                gpflow.kernels.SquaredExponential(),
+                gpflow.kernels.Linear()
+            ],
         },
-        penalization_factor=1.0,
+        penalization_factor=1.,
         num_restart=1,
-        sparse_options={},
+        sparse_options={"num_inducing_points": 100},
         variational_options={},
         optimization_options={},
         random_seed=None,
@@ -205,39 +219,146 @@ class GPSearch:
         # Add likelihood information
         variational_options["likelihood"] = self.likelihood
 
-        # Load up model dictionary
+        def model_build_steps(
+                self_X,
+                self_Y,
+                self_likelihood,
+                self_Y_stds,
+                feat
+        ):
+
+            # Add scale if negative binomial
+            if (self_likelihood == "negativebinomial" and
+                    self_Y_stds is not None):
+                variational_options["scale_value"] = self_Y_stds[feat] 
+
+            # Specify model
+            mod = PSVGP(
+                X=self_X.to_numpy(),
+                Y=self_Y[feat].to_numpy().reshape(-1, 1),
+                mean_function=gpflow.utilities.deepcopy(mean_function),
+                kernel=gpflow.utilities.deepcopy(full_kernel),
+                verbose=verbose,
+                penalized_options={
+                    "penalization_factor": penalization_factor
+                },
+                sparse_options=sparse_options,
+                variational_options=variational_options,
+            )
+
+            # Random restarts to find optimal parameters
+            mod.random_restart_optimize(
+                data=convert_data_to_tensors(
+                    self_X.to_numpy(),
+                    self_Y[feat].to_numpy().reshape(-1, 1)
+                ),
+                num_restart=num_restart,
+                randomize_kwargs={"random_seed": random_seed},
+                optimize_kwargs=optimization_options,
+            )
+
+            # Clean up final model
+            mod.cut_kernel_components(
+                data=convert_data_to_tensors(self_X, self_Y)
+            )
+            mod.update_kernel_name()
+            mod.get_variance_explained(
+                data=convert_data_to_tensors(
+                    self_X.to_numpy(),
+                    self_Y[feat].to_numpy().reshape(-1, 1)
+                )
+            )
+
+            return mod
+
+        # # Joblib parallel for model building
+        # out = ParallelTqdm(
+        #     desc="Penalized optimization (no search)",
+        #     total_tasks=len(self.out_names),
+        #     n_jobs=num_jobs,
+        #     backend="loky"
+        # )([
+        #     delayed(model_build_steps)(
+        #         self.X,
+        #         self.Y,
+        #         self.likelihood,
+        #         self.Y_stds,
+        #         feat
+        #     ) for feat in self.out_names
+        # ])
+        
+        # Loop to build models on Ray cluster
         self.models = {}
 
-        with tqdm_joblib(
-            tqdm(desc="GPOptimize (no search)", total=len(self.out_names))
-        ) as _:
-            with Parallel(n_jobs=num_jobs) as _:
-                for feat in self.out_names:
-                    # Specify model
-                    self.models[feat] = PSVGP(
-                        X=self.X.to_numpy(),
-                        Y=self.Y[feat].to_numpy().reshape(-1, 1),
-                        mean_function=gpflow.utilities.deepcopy(mean_function),
-                        kernel=gpflow.utilities.deepcopy(full_kernel),
-                        verbose=verbose,
-                        penalized_options={
-                            "penalization_factor": penalization_factor
-                        },
-                        sparse_options=sparse_options,
-                        variational_options=variational_options,
-                    )
+        # Make sublists of outcomes
+        if num_jobs == -1:
+            num_processes = None
+            num_feats_per_round = 5 * psutil.cpu_count()
+        else:
+            num_processes = num_jobs
+            num_feats_per_round = 5 * num_processes
+        grouped_feat_list = [
+            self.out_names[x:x+num_feats_per_round]
+            for x in range(0, len(self.out_names), num_feats_per_round)
+        ]
 
-                    # Random restarts to find optimal parameters
-                    self.models[feat].random_restart_optimize(
-                        num_restart=num_restart,
-                        randomize_kwargs={"random_seed": random_seed},
-                        optimize_kwargs=optimization_options,
-                    )
+        print(f"Building {len(self.out_names)} models...")
+        start_time = time.time()
+        c = 0
+        num_feats = len(self.out_names)
+        for i in grouped_feat_list:
+            # Initialize ray
+            ray.init(
+                num_cpus=num_processes,
+                include_dashboard=False,
+                configure_logging=False
+            )
 
-                    # Clean up final model
-                    self.models[feat].cut_kernel_components()
-                    self.models[feat].update_kernel_name()
-                    self.models[feat].get_variance_explained()
+            # Put main information in shared data store
+            # self_ref = ray.put(self)
+            self_X = ray.put(self.X)
+            self_Y = ray.put(self.Y)
+            self_likelihood = ray.put(self.likelihood)
+            if hasattr(self, "Y_stds"):
+                self_Y_stds = ray.put(self.Y_stds)
+            else:
+                self_Y_stds = ray.put(None)
+
+            # Load function
+            model_build_steps_remote = ray.remote(model_build_steps)
+
+            # Retrieve models
+            out = ray.get([
+                model_build_steps_remote.remote(
+                    self_X,
+                    self_Y,
+                    self_likelihood,
+                    self_Y_stds,
+                    feat
+                )
+                for feat in i  # self.out_names
+            ])
+
+            # Add models to dictionary
+            for m, feat in zip(out, i):
+                self.models[feat] = m
+
+            ray.shutdown()
+
+            # Add number of finished models
+            c += len(i)
+
+            # Print output
+            # if c % 10 == 0 and c > 0:
+            prop_done = int(np.round(100*c/num_feats))
+            elapsed_time = np.round((time.time() - start_time)/60, 1)
+            print(
+                f"Finished {c} models ({prop_done}%),",
+                f"elapsed time: {elapsed_time} minutes"
+            )
+
+        # # Load up model dictionary
+        # self.models = {feat: mod for feat, mod in zip(self.out_names, out)}
 
         return None
 
@@ -319,19 +440,33 @@ class GPSearch:
             with Parallel(n_jobs=num_jobs) as parallel:
                 for outcome, model in self.models.items():
                     model.penalization_search(
+                        data=convert_data_to_tensors(
+                            self.X.to_numpy(),
+                            self.Y[outcome].to_numpy().reshape(-1, 1)
+                        ),
                         parallel_object=parallel,
                         optimization_options=optimization_options,
                         **search_options,
                     )
 
                     # Clean up models (prune)
-                    model.cut_kernel_components()
+                    model.cut_kernel_components(
+                        data=convert_data_to_tensors(
+                            self.X.to_numpy(),
+                            self.Y[outcome].to_numpy().reshape(-1, 1)
+                        )
+                    )
 
                     # Update kernel names
                     model.update_kernel_name()
 
                     # Also attach variance explained
-                    model.get_variance_explained()
+                    model.get_variance_explained(
+                        data=convert_data_to_tensors(
+                            self.X.to_numpy(),
+                            self.Y[outcome].to_numpy().reshape(-1, 1)
+                        )
+                    )
 
         return None
 
@@ -407,7 +542,12 @@ class GPSearch:
 
         # Also calculate variance explained
         for o, m in self.models.items():
-            m.get_variance_explained()
+            m.get_variance_explained(
+                data=convert_data_to_tensors(
+                    self.X.to_numpy(),
+                    self.Y[o].to_numpy().reshape(-1, 1)
+                )
+            )
 
         return None
 
@@ -433,125 +573,115 @@ class GPSearch:
     def plot_heatmap(
         self,
         var_cutoff=0.8,
-        feat=None,
+        feature_name=None,
         show_vals=True,
         figsize=(15, 5),
         cluster=True,
+        print_drop_count=False
     ):
-        # Get the percent of variance explained for each component from models
-        # if self.model_selection_type == "penalized":
-        var_components = [
-            x.variance_explained for x in self.models.values()
-        ]
-        # else:
-        #     var_components = [x["var_exp"] for x in self.models.values()]
 
-        # Normalize to get the percentage of variance explained
-        var_percent = [
-            [y / sum(x) if sum(x) > 0 else 0 for y in x][:-1]
-            for x in var_components
-        ]
+        # Specify output dataframe
+        out_info = pd.DataFrame()
 
-        # Pull off kernel names from best models
-        # if self.model_selection_type == "penalized":
-        kernels = [x.kernel_name.split("+") for x in self.models.values()]
-        # else:
-        #     kernels = [
-        #         x["best_model"].split("+") for x in self.models.values()
-        #     ]
-        distinct_kernels = np.unique(
-            [item for sublist in kernels for item in sublist]
-        )
-        kernel_array = np.zeros(shape=(len(kernels), len(distinct_kernels)))
+        # Drop counters
+        n_feature_drops = 0
+        n_explained_drops = 0
 
-        # See where the best kernels coincide with the distinct indicator
-        kernel_idxs = np.vstack(
-            [
-                sum([np.where(distinct_kernels == y, 1, 0) for y in x])
-                for x in kernels
-            ]
-        )
+        # Loop through all models
+        for o in self.out_names:
 
-        # Fill in variance explained
-        kernel_array[kernel_idxs == 1] = [x for y in var_percent for x in y]
+            # Copy model
+            m_copy = gpflow.utilities.deepcopy(self.models[o])
 
-        # Only keep outcomes that have variance explained or more
-        kernel_array_filtered = kernel_array[
-            kernel_array.sum(axis=1) > var_cutoff, :
-        ]
+            # First see if a feature is in each model
+            if feature_name is not None:
+                
+                # Get index of specified feature
+                feature_index = np.where(self.X.columns == feature_name)[0][0]
+                # Figure out where it is in the model kernel
+                feature_kernel_flags = [
+                    str(feature_index) in y for y in [
+                        re.findall(r"\[(\d+)\]", x)
+                        for x in m_copy.kernel_name.split("+")
+                        ]
+                    ]
+                # If this feature is in the selected model then subset model
+                if sum(feature_kernel_flags) > 0 and m_copy.kernel.name == "sum":
+                    feature_kernel_index = np.where(feature_kernel_flags)[0]
 
-        # Check if this results in any kernels
-        if len(kernel_array_filtered) == 0:
-            return "No outcomes meet variance threshold!"
+                    if len(feature_kernel_index) > 1:
+                        new_k = gpflow.kernels.Sum([
+                            m_copy.kernel.kernels[x]
+                            for x in feature_kernel_index
+                        ])
+                    else:
+                        new_k = m_copy.kernel.kernels[feature_kernel_index[0]]
+                    m_copy.kernel = new_k
+                    m_copy.update_kernel_name()
+                # If this feature is the only feature in the model
+                # elif sum(feature_kernel_flags) == 1:
+                    
+                # If this feature doesn't exist in the model then pass
+                elif sum(feature_kernel_flags) == 0:
+                    n_feature_drops += 1
+                    continue
+                    
+            else:
+                feature_index = None
 
-        # Only keep kernels that can explain anything left over
-        kernel_array_filtered2 = kernel_array_filtered[
-            :, kernel_array_filtered.sum(axis=0) > 0
-        ]
+            # Now calculate the variance explained for each component and overall
+            var_explained = calc_deviance_explained_components(
+                model=m_copy,
+                data=(
+                    self.X.to_numpy(),
+                    self.Y[o].to_numpy().reshape(-1, 1)
+                )
+            )
 
-        # Do the same thing for the list of distinct kernel names
-        distinct_kernel_names = distinct_kernels.copy()
-        distinct_kernel_names = distinct_kernel_names[
-            kernel_array_filtered.sum(axis=0) > 0
-        ]
+            # Now check to make sure we have explained "enough" variance
+            if (1 - var_explained[-1]) < var_cutoff:
+                n_explained_drops += 1
+                continue
 
-        # Swap out kernel indexes for the feature names
-        for i, c in enumerate(["[" + x + "]" for x in self.feat_names]):
-            distinct_kernel_names = [
-                x.replace("[" + str(i) + "]", c) for x in distinct_kernel_names
-            ]
+            # If we are still investigating this feature then save output for plotting
+            kname = replace_kernel_variables(
+                m_copy.kernel_name,
+                self.feat_names
+            )
 
-        # Only keep the outcome labels that meet the criteria
-        out_index = np.array(self.out_names)[
-            kernel_array.sum(axis=1) > var_cutoff
-        ]
+            # Now add this row to our output dataframe
+            new_row = pd.DataFrame(
+                data=np.array(var_explained[:-1]).reshape(1, -1),
+                columns=kname.split("+"),
+                index=[o]
+            )
+            out_info = pd.concat(
+                objs=[out_info, new_row]
+            )
 
-        # See if we only want to filter to specific features
-        if feat is not None:
-            # See which kernels have the feature of interest
-            feat_flag = ["[" + feat + "]" in x for x in distinct_kernel_names]
+        # Fill in missing explained boxes with zero
+        out_info.fillna(value=0, inplace=True)
 
-            # Subset kernel names that have that feature
-            distinct_kernel_names = np.array(distinct_kernel_names)[feat_flag]
+        if print_drop_count:
+            if feature_name is not None:
+                print(f"Number of models dropped because feature not present: {n_feature_drops}")
+            print(f"Number of models dropped because of explained threshold not met: {n_explained_drops}")
 
-            # Now only keep heatmap columns that have those kernels
-            kernel_array_filtered2 = kernel_array_filtered2[:, feat_flag]
-
-            # Subset the outcomes to the variance threshold
-            out_index = out_index[
-                kernel_array_filtered2.sum(axis=1) > var_cutoff
-            ]
-            kernel_array_filtered2 = kernel_array_filtered2[
-                kernel_array_filtered2.sum(axis=1) > var_cutoff, :
-            ]
-
-            # Make sure that those resulting kernels have some outcomes
-            kernel_threshold_flag = kernel_array_filtered2.sum(axis=0) > 0
-            kernel_array_filtered2 = kernel_array_filtered2[
-                :, kernel_threshold_flag
-            ]
-            distinct_kernel_names = distinct_kernel_names[
-                kernel_threshold_flag
-            ]
-
+        # Now plot
         if cluster:
-            assert len(out_index) > 1, (
+            assert len(out_info.index) > 1, (
                 "Not enough models meet criteria (clustermap) requested!"
-                f"  (N={len(out_index)})"
+                f"  (N={len(out_info.index)})"
             )
         else:
-            assert len(out_index) > 0, (
+            assert len(out_info.index) > 0, (
                 "Not enough models meet criteria (heatmap) requested!"
-                f" (N={len(out_index)})"
+                f" (N={len(out_info.index)})"
             )
 
         if cluster:
             clm = sns.clustermap(
-                pd.DataFrame(
-                    kernel_array_filtered2,
-                    index=out_index,
-                    columns=distinct_kernel_names,
-                ).transpose(),
+                out_info.transpose(),
                 figsize=figsize,
                 annot=show_vals,
                 vmin=0,
@@ -574,23 +704,23 @@ class GPSearch:
         else:
             fig, ax = plt.subplots(1, 1, figsize=figsize)
             clm = sns.heatmap(
-                pd.DataFrame(
-                    kernel_array_filtered2,
-                    index=out_index,
-                    columns=distinct_kernel_names,
-                ).transpose(),
+                out_info.transpose(),
                 ax=ax,
                 annot=show_vals,
                 vmin=0,
                 vmax=1,
                 cmap="Greens",
             )
-            # TODO: Update the heatmap to rotate x-axis ticks 45 degrees
 
         return clm
 
     def plot_parts(
-        self, out_label, x_axis_label, x_idx_min=None, x_idx_max=None, **kwargs
+        self,
+        out_label,
+        x_axis_label,
+        x_idx_min=None,
+        x_idx_max=None,
+        **kwargs
     ):
         """Plot independent kernel components.
 
@@ -602,28 +732,15 @@ class GPSearch:
 
         """
 
-        # if self.model_selection_type == "penalized":
         pkp = self.models[out_label].plot_parts(
             x_idx=self.feat_names.index(x_axis_label),
             # unit_idx=self.unit_idx,
             col_names=self.feat_names,
             lik=self.likelihood,
             categorical_dict=self.categorical_dict,
+            data=(self.X.values, self.Y[out_label].values.reshape(-1, 1)),
             **kwargs,
         )
-        # else:
-        #     # Pull off specific model from trained models
-        #     m = self.models[out_label]
-
-        #     pkp = pred_kernel_parts(
-        #         m=m["models"][m["best_model"]]["model"],
-        #         x_idx=self.feat_names.index(x_axis_label),
-        #         x_idx_min=x_idx_min,
-        #         x_idx_max=x_idx_max,
-        #         # unit_idx=self.unit_idx,
-        #         col_names=self.feat_names,
-        #         lik=self.likelihood,
-        #     )
 
         return pkp
 
@@ -647,6 +764,10 @@ class GPSearch:
 
         # if self.model_selection_type == "penalized":
         gpf = m.plot_functions(
+            data=convert_data_to_tensors(
+                self.X.to_numpy(),
+                self.Y[out_label].to_numpy().reshape(-1, 1)
+            ),
             x_idx=x_idx,
             col_names=self.feat_names,
             unit_idx=self.unit_idx,
@@ -671,40 +792,81 @@ class GPSearch:
 
         # Reverse transform if requested
         if reverse_transform_axes is True:
+            if hasattr(self, "X_stds"):
+                plt.xticks(
+                    ticks=plt.xticks()[0],
+                    labels=np.round(
+                        self.reverse_transform(
+                            np.array(plt.xticks()[0], dtype=np.float64),
+                            index=x_idx,
+                            input_type="X"
+                        ),
+                        # (
+                        #     self.X_stds.iloc[x_idx]
+                        #     * np.array(plt.xticks()[0], dtype=np.float64)
+                        #     + self.X_means.iloc[x_idx]
+                        # ),
+                        1,
+                    ),
+                )
+
+            if hasattr(self, "Y_stds"):
+                plt.yticks(
+                    ticks=plt.yticks()[0],
+                    labels=np.round(
+                        self.reverse_transform(
+                            np.array(plt.yticks()[0], dtype=np.float64),
+                            index=y_idx,
+                            input_type="Y"
+                        )
+                        # (
+                        #     self.Y_stds.iloc[y_idx]
+                        #     * np.array(plt.yticks()[0], dtype=np.float64)
+                        #     + (
+                        #         self.Y_means.iloc[y_idx]
+                        #         if hasattr(self, "Y_means")
+                        #         else 0
+                        #     )
+                        # )
+                    ),
+                )
+
+        return gpf
+
+    def reverse_transform(
+        self,
+        array,
+        index=None,
+        input_type="X"
+    ):
+        """ Return input values on original scale.
+        """
+
+        if input_type == "X":
             assert hasattr(
                 self, "X_stds"
             ), "Standardize_X wasn't called in GPSearch()"
+
+            scale_vals = self.X_stds if index is None else self.X_stds.iloc[index]
+            shift_vals = self.X_means if index is None else self.X_means.iloc[index]
+
+        elif input_type == "Y":
             assert hasattr(
                 self, "Y_stds"
             ), "Y_transform wasn't called in GPSearch()"
-            plt.xticks(
-                ticks=plt.xticks()[0],
-                labels=np.round(
-                    (
-                        self.X_stds[x_idx]
-                        * np.array(plt.xticks()[0], dtype=np.float64)
-                        + self.X_means[x_idx]
-                    ),
-                    1,
-                ),
-            )
 
-            plt.yticks(
-                ticks=plt.yticks()[0],
-                labels=np.round(
-                    (
-                        self.Y_stds[y_idx]
-                        * np.array(plt.yticks()[0], dtype=np.float64)
-                        + (
-                            self.Y_means[y_idx]
-                            if hasattr(self, "Y_means")
-                            else 0
-                        )
-                    )
-                ),
-            )
+            scale_vals = self.Y_stds if index is None else self.Y_stds.iloc[index]
+            if hasattr(self, "Y_means"):
+                shift_vals = self.Y_means if index is None else self.Y_means.iloc[index]
+            else:
+                shift_vals = np.zeros_like(scale_vals)
+        else:
+            raise ValueError("Unknown type requested for transform!")
 
-        return gpf
+        # Perform transformation
+        array_transformed = scale_vals * array + shift_vals
+
+        return array_transformed
 
 
 def kernel_test(
@@ -752,6 +914,7 @@ def kernel_test(
 
     if random_init and num_restart > 1:
         best_model.random_restart_optimize(
+            data=convert_data_to_tensors(X, Y),
             num_restart=num_restart,
             randomize_kwargs={
                 "random_seed": random_seed
@@ -759,6 +922,7 @@ def kernel_test(
         )
     elif num_restart > 1:
         best_model.random_restart_optimize(
+            data=convert_data_to_tensors(X, Y),
             num_restart=num_restart,
             randomize_kwargs={
                 "scale": 0.0,
@@ -766,7 +930,7 @@ def kernel_test(
             }
         )
     else:
-        best_model.optimize_params()
+        best_model.optimize_params(data=convert_data_to_tensors(X, Y))
 
     # Calculate information criteria
     if split:

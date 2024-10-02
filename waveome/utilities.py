@@ -3,9 +3,12 @@ import contextlib
 import gpflow
 import joblib
 import numpy as np
+import scipy
 import tensorflow as tf
 import tensorflow_probability as tfp
+import tqdm
 from gpflow.utilities import set_trainable
+from joblib import Parallel
 from tensorflow_probability import distributions as tfd
 
 from .kernels import Empty
@@ -15,6 +18,16 @@ from .likelihoods import NegativeBinomial, ZeroInflatedNegativeBinomial
 
 
 f64 = gpflow.utilities.to_default_float
+
+
+def convert_data_to_tensors(X: np.array, Y: np.array):
+
+    tensor_tuple = (
+        tf.convert_to_tensor(X),
+        tf.convert_to_tensor(Y)
+    )
+
+    return tensor_tuple
 
 
 def calc_bic(loglik: float, n: int, k: int):
@@ -71,7 +84,7 @@ def coregion_search(kern_list):
             coregion_freeze(k)
 
 
-def calc_rsquare(m):
+def calc_rsquare(m, data=None):
     """
     Calculate the r-squared values of each kernel component.
     """
@@ -79,9 +92,13 @@ def calc_rsquare(m):
     # Save output list
     rsq = []
 
-    # Pull off data from stored model
-    X = m.data[0].numpy()
-    Y = m.data[1].numpy()
+    if data is None:
+        # Pull off data from stored model
+        X = m.data[0].numpy()
+        Y = m.data[1].numpy()
+    else:
+        X = data[0] if isinstance(data[0], np.ndarray) else data[0].numpy()
+        Y = data[1] if isinstance(data[1], np.ndarray) else data[1].numpy()
 
     # Make copy of model
     m_copy = gpflow.utilities.deepcopy(m)
@@ -95,6 +112,7 @@ def calc_rsquare(m):
     # Calculate overall model predictions
     mu_all_hat, var_all_hat = m.predict_y(X)
     ssr_total = np.sum((Y - mu_all_hat) ** 2)
+    # print(f"{sse=}, {ssr_total=}")
     total_rsq = 1 - (ssr_total / sse)
 
     # For each kernel component gather predictions
@@ -106,7 +124,7 @@ def calc_rsquare(m):
             # m_copy.kernel = k_sub
             # mu_hat, var_hat = m_copy.predict_y(X)
             mu_hat, var_hat, samps_, cov_hat = individual_kernel_predictions(
-                model=m, kernel_idx=k_idx, X=m.data[0]
+                model=m, kernel_idx=k_idx, data=(X, Y), X=X
             )
             ssr_list += [np.sum((mu_all_hat - mu_hat) ** 2)]
 
@@ -412,6 +430,7 @@ def variance_contributions(m, k_names, lik="gaussian"):
 
 
 def variance_contributions_diag(m, lik="gaussian"):
+    # TODO: Add arg for data and pass into individual_kernel_predictions()
     variance_list = []
     k = m.kernel
 
@@ -439,9 +458,134 @@ def variance_contributions_diag(m, lik="gaussian"):
     return variance_list
 
 
+def calc_deviance_explained(model, data=None, model_mu=None, model_var=None):
+    """ Calculates explained deviance for model components compared to null
+    model.
+    """
+
+    # Get likelihood of model
+    lk_fn = model.likelihood.name
+
+    # Retrieve likelihood function
+    try:
+        log_dens_fn = getattr(gpflow.logdensities, lk_fn)
+    except AttributeError:
+        log_dens_fn = getattr(
+            scipy.stats,
+            "nbinom" if lk_fn == "negative_binomial" else lk_fn
+        ).logpmf
+
+    # Calculate log likelihoods
+    if lk_fn == "gaussian":
+        y_var = np.var(data[1])
+        sat_ll = log_dens_fn(
+            x=data[1],
+            mu=data[1],
+            var=y_var
+        )
+        int_ll = log_dens_fn(
+            x=data[1],
+            mu=np.mean(data[1]),
+            var=y_var
+        )
+        mod_ll = log_dens_fn(
+            x=data[1],
+            mu=model_mu,
+            var=y_var
+        )
+    elif lk_fn in ["bernoulli", "poisson"]:
+        sat_ll = log_dens_fn(
+            data[1], data[1]
+        )
+        int_ll = log_dens_fn(
+            data[1], np.mean(data[1])
+        )
+        mod_ll = log_dens_fn(
+            data[1], model_mu
+        )
+    elif lk_fn == "negative_binomial":
+
+        sat_mu_ = np.array(data[1]) + 1e-6
+        # mu_[mu_ == 0] = 0.1
+        # sat_var_ = sat_mu_ + 1
+        sat_var_ = sat_mu_ + model.likelihood.alpha.numpy() * (sat_mu_ ** 2)
+        sat_n = (sat_mu_)**2 / (sat_var_ - sat_mu_)
+        sat_p = sat_mu_ / sat_var_
+        sat_ll = log_dens_fn(k=data[1], n=sat_n, p=sat_p)
+
+        int_mu_ = max(1e-6, np.mean(data[1]))
+        # int_var_ = max(2e-6, np.var(data[1]))
+        int_var_ = int_mu_ + model.likelihood.alpha.numpy() * (int_mu_ ** 2)
+        int_n = (int_mu_)**2 / (int_var_ - int_mu_)
+        int_p = int_mu_ / int_var_
+        int_ll = log_dens_fn(
+            k=data[1],
+            n=int_n,
+            p=int_p
+        )
+
+        model_n = (model_mu)**2 / (model_var - model_mu)
+        model_p = model_mu / model_var
+        mod_ll = log_dens_fn(k=data[1], n=model_n, p=model_p)
+    else:
+        raise ValueError("Unknown likelihood to calculate deviance")
+
+    # Now calculate the deviances
+    # Null deviance should always be greater than model deviance!
+    null_deviance = 2 * np.sum(sat_ll - int_ll)
+    model_deviance = 2 * np.sum(sat_ll - mod_ll)
+
+    # And then the deviance explained
+    deviance_explained = 1 - (model_deviance / null_deviance)
+    return deviance_explained
+
+
+def calc_deviance_explained_components(model, data=None):
+    """ Calculate deviance explained for each additive component.
+    """
+
+    # Save output list
+    de_list = []
+
+    # For each kernel component gather predictions
+    k = model.kernel
+
+    # Get full model prediction and deviance
+    mu_hat, var_hat = model.predict_y(data[0])
+    full_de = np.round(
+        calc_deviance_explained(
+            model=model, data=data, model_mu=mu_hat, model_var=var_hat
+        ), 3
+    )
+
+    if k.name == "sum":
+        for k_idx in range(len(k.kernels)):
+            # Break off kernel component
+            mu_hat, var_hat, samps_, cov_hat = individual_kernel_predictions(
+                model=model,
+                kernel_idx=k_idx,
+                data=data,
+                X=data[0],
+                predict_type="mean"
+            )
+            de_list += [np.round(calc_deviance_explained(
+                model=model, data=data, model_mu=mu_hat, model_var=var_hat
+                ), 3
+            )]
+
+    else:
+        de_list += [full_de]
+
+    # Gather the final bit for noise
+    de_list += [np.round(1 - full_de, 3)]
+
+    return de_list
+
+
 def individual_kernel_predictions(
     model,
     kernel_idx,
+    data=None,
     product_term=False,
     X=None,
     white_noise_amt=1e-6,
@@ -464,10 +608,11 @@ def individual_kernel_predictions(
                       Amount of diagonal noise to add to covariance matricies
 
     predict_type : String
-                Add Gaussian noise from likelihood function?
+        Add Gaussian noise from likelihood function?
+        Options: ["func", "latent", "mean"]
 
     num_samples : Integer
-                  Number of samples to draw from the posterior component
+        Number of samples to draw from the posterior component
 
     Attributes
     ----------
@@ -475,7 +620,7 @@ def individual_kernel_predictions(
     """
 
     # Set model data if not supplied
-    if hasattr(model, "data") is False:
+    if hasattr(model, "data") is False and data is None:
         if latent is True:
             model_data = (
                 model.inducing_variable.inducing_variable_list[
@@ -487,11 +632,43 @@ def individual_kernel_predictions(
             assert (
                 model_data is not None
             ), "Need to supply model_data argument for this model type."
+    elif data is not None:
+        model_data = data
     else:
         model_data = model.data
 
     # Copy model component of interest
     sub_model = gpflow.utilities.deepcopy(model)
+
+    # Make sure we have additive components, otherwise return the full model
+    if sub_model.kernel.name == "sum":
+
+        # Check to make sure there is an appropriate kernel index
+        if kernel_idx >= len(sub_model.kernel.kernels):
+            raise ValueError(
+                "Not enough kernel components for index requested!"
+            )
+
+        # Now subset the copied model to the specific kernel component
+        sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
+
+    # # Then generate predictions
+    # pred_mu, pred_var = sub_model.predict_f(X)
+    # _, pred_cov = sub_model.predict_f(X, full_cov=True)
+    # sample_fns = tf.transpose(
+    #     sub_model.predict_f_samples(X, num_samples=num_samples)[:, :, 0]
+    # )
+
+    # # Transform output as needed
+    # if predict_type == "mean":
+    #     sample_fns = model.likelihood._conditional_mean(X=X, F=sample_fns)
+    #     pred_var = model.likelihood._conditional_variance(X=X, F=pred_mu)
+    #     pred_mu = model.likelihood._conditional_mean(X=X, F=pred_mu)
+    #     pred_cov = None
+
+    # return pred_mu, pred_var, sample_fns, pred_cov
+
+
 
     # Only pull of kernel of interest if there are multiple kernels
     # Also need to deal with product term
@@ -851,3 +1028,103 @@ def search_through_kernel_list_(kernel_list, list_type="sum", X=None):
         out_kernel = Empty()
 
     return out_kernel
+
+
+class ParallelTqdm(Parallel):
+    """joblib.Parallel, but with a tqdm progressbar
+
+    Source: https://github.com/joblib/joblib/issues/972
+
+    Additional parameters:
+    ----------------------
+    total_tasks: int, default: None
+        the number of expected jobs. Used in the tqdm progressbar.
+        If None, try to infer from the length of the called iterator, and
+        fallback to use the number of remaining items as soon as we finish
+        dispatching.
+        Note: use a list instead of an iterator if you want the total_tasks
+        to be inferred from its length.
+
+    desc: str, default: None
+        the description used in the tqdm progressbar.
+
+    disable_progressbar: bool, default: False
+        If True, a tqdm progressbar is not used.
+
+    show_joblib_header: bool, default: False
+        If True, show joblib header before the progressbar.
+
+    Removed parameters:
+    -------------------
+    verbose: will be ignored
+
+
+    Usage:
+    ------
+    >>> from joblib import delayed
+    >>> from time import sleep
+    >>> ParallelTqdm(n_jobs=-1)([delayed(sleep)(.1) for _ in range(10)])
+    80%|████████  | 8/10 [00:02<00:00,  3.12tasks/s]
+
+    """
+
+    def __init__(
+        self,
+        *,
+        total_tasks: int | None = None,
+        desc: str | None = None,
+        disable_progressbar: bool = False,
+        show_joblib_header: bool = False,
+        **kwargs
+    ):
+        if "verbose" in kwargs:
+            raise ValueError(
+                "verbose is not supported. "
+                "Use show_progressbar and show_joblib_header instead."
+            )
+        super().__init__(verbose=(1 if show_joblib_header else 0), **kwargs)
+        self.total_tasks = total_tasks
+        self.desc = desc
+        self.disable_progressbar = disable_progressbar
+        self.progress_bar: tqdm.tqdm | None = None
+
+    def __call__(self, iterable):
+        try:
+            if self.total_tasks is None:
+                # try to infer total_tasks from the length of the called iterator
+                try:
+                    self.total_tasks = len(iterable)
+                except (TypeError, AttributeError):
+                    pass
+            # call parent function
+            return super().__call__(iterable)
+        finally:
+            # close tqdm progress bar
+            if self.progress_bar is not None:
+                self.progress_bar.close()
+
+    __call__.__doc__ = Parallel.__call__.__doc__
+
+    def dispatch_one_batch(self, iterator):
+        # start progress_bar, if not started yet.
+        if self.progress_bar is None:
+            self.progress_bar = tqdm.tqdm(
+                desc=self.desc,
+                total=self.total_tasks,
+                disable=self.disable_progressbar,
+                unit="tasks",
+            )
+        # call parent function
+        return super().dispatch_one_batch(iterator)
+
+    dispatch_one_batch.__doc__ = Parallel.dispatch_one_batch.__doc__
+
+    def print_progress(self):
+        """Display the process of the parallel execution using tqdm"""
+        # if we finish dispatching, find total_tasks from the number of remaining items
+        if self.total_tasks is None and self._original_iterator is None:
+            self.total_tasks = self.n_dispatched_tasks
+            self.progress_bar.total = self.total_tasks
+            self.progress_bar.refresh()
+        # update progressbar
+        self.progress_bar.update(self.n_completed_tasks - self.progress_bar.n)

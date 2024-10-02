@@ -19,7 +19,9 @@ from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import make_folds
 from .utilities import (  # hmc_sampling,
     calc_bic,
+    calc_deviance_explained_components,
     calc_rsquare,
+    convert_data_to_tensors,
     find_variance_components,
     find_variance_components_tf,
     gp_likelihood_crosswalk,
@@ -101,24 +103,24 @@ class BaseGP(gpflow.models.SVGP):
         # Comment this out for now to save memory
         # self.X = X.astype(gpflow.default_float())
         # self.Y = Y.astype(gpflow.default_float())
-        self.data = (
-            tf.reshape(
-                tensor=tf.convert_to_tensor(
-                    X,
-                    dtype=gpflow.default_float()
-                    # dtype=tf.float64 if dtype == "float64" else tf.float32
-                ),
-                shape=(X.shape)
-            ),
-            tf.reshape(
-                tensor=tf.convert_to_tensor(
-                    Y,
-                    dtype=gpflow.default_float()
-                    # dtype=tf.float64 if dtype == "float64" else tf.float32
-                ),
-                shape=(-1, 1)
-            )
-        )
+        # self.data = (
+        #     tf.reshape(
+        #         tensor=tf.convert_to_tensor(
+        #             X,
+        #             dtype=gpflow.default_float()
+        #             # dtype=tf.float64 if dtype == "float64" else tf.float32
+        #         ),
+        #         shape=(X.shape)
+        #     ),
+        #     tf.reshape(
+        #         tensor=tf.convert_to_tensor(
+        #             Y,
+        #             dtype=gpflow.default_float()
+        #             # dtype=tf.float64 if dtype == "float64" else tf.float32
+        #         ),
+        #         shape=(-1, 1)
+        #     )
+        # )
         self.mean_function = deepcopy(mean_function)
         self.kernel = deepcopy(kernel)
         self.kernel_name = ""
@@ -227,6 +229,7 @@ class BaseGP(gpflow.models.SVGP):
         num_opt_iter=50000,
         convergence_threshold=1e-4,
         optimizer=None,
+        data=None,
     ):
         """Optimize hyperparameters of model.
 
@@ -307,7 +310,7 @@ class BaseGP(gpflow.models.SVGP):
                 try:
                     optimizer.minimize(
                         closure=self.training_loss_closure(
-                            data=self.data,
+                            data=data,
                             # compile=False
                             # Need to not compile with Scipy optimizer
                         ),
@@ -321,18 +324,6 @@ class BaseGP(gpflow.models.SVGP):
                         print(f"Attempt {attempt+1} - Scipy exception: {e}")
                     for param in self.parameters:
                         param = tf.cast(param, tf.float64)
-                # optimizer.minimize(
-                #     closure=self.training_loss_closure(
-                #         data=(
-                #             tf.cast(self.data[0], tf.float64),
-                #             tf.cast(self.data[1], tf.float64)
-                #         ),
-                #         # compile=False
-                #     ),
-                #     variables=self.trainable_variables,
-                #     method="L-BFGS-B",
-                #     options=opt_options
-                # )
 
             return None
         
@@ -380,7 +371,7 @@ class BaseGP(gpflow.models.SVGP):
         
         # Compile loss closure based on training data
         compiled_loss = self.training_loss_closure(
-            data=self.data,
+            data=data,
             compile=True
         )
 
@@ -392,7 +383,7 @@ class BaseGP(gpflow.models.SVGP):
         )
         # Now optimize the parameters
         for i in range(num_opt_iter):
-            
+
             # optimization step
             try:
                 split_optimization_step()
@@ -412,7 +403,7 @@ class BaseGP(gpflow.models.SVGP):
                 )
 
                 # Calculate loss
-                cur_loss = self.training_loss(self.data)
+                cur_loss = self.training_loss(data)
                 # Check to make sure we haven't gone off the rails
                 if np.isnan(cur_loss):
                     print("NaN loss, something went wrong - stopping!")
@@ -447,7 +438,11 @@ class BaseGP(gpflow.models.SVGP):
         return None
 
     def random_restart_optimize(
-        self, num_restart=5, randomize_kwargs={}, optimize_kwargs={}
+        self,
+        data=None,
+        num_restart=5,
+        randomize_kwargs={},
+        optimize_kwargs={}
     ):
         """Randomize and optimize hyperparameters a certain number of times
         to search space.
@@ -475,11 +470,11 @@ class BaseGP(gpflow.models.SVGP):
             self.randomize_params(**randomize_kwargs)
 
             # Optimize parameters
-            self.optimize_params(**optimize_kwargs)
+            self.optimize_params(**optimize_kwargs, data=data)
 
             # Check if log likelihood is better
             cur_max_ll = self.maximum_log_likelihood_objective(
-                data=self.data
+                data=data
             )
             if cur_max_ll > max_ll:
                 max_ll = cur_max_ll
@@ -494,7 +489,7 @@ class BaseGP(gpflow.models.SVGP):
 
         return None
 
-    def get_variance_explained(self):
+    def get_variance_explained(self, data=None):
         """Calculates variance explained for each additive kernel component.
 
         Arguments
@@ -511,33 +506,39 @@ class BaseGP(gpflow.models.SVGP):
         #         self, k_names=self.kernel_name, lik=self.likelihood.name
         #     )
         # )
-        self.variance_explained = list(
-            calc_rsquare(self)
+        # var_list = calc_rsquare(self, data=data)
+        var_list = calc_deviance_explained_components(
+            model=self,
+            data=data
         )
+        
+
+        # Fix ListWrapper issue with Tensorflow tensors
+        self.variance_explained = list(var_list)
 
         # return self.variance_explained
         return None
 
-    def calc_metric(self, metric="BIC"):
+    def calc_metric(self, data=None, metric="BIC"):
         assert metric == "BIC", "Only BIC currently allowed."
         if metric == "BIC":
             return calc_bic(
-                loglik=self.log_posterior_density(self.data),
-                n=self.data[0].shape[0],  # self.X.shape[0],
+                loglik=self.log_posterior_density(data),
+                n=data[0].shape[0],  # self.X.shape[0],
                 k=len(self.trainable_parameters),
             )
 
-    def plot_functions(self, x_idx, col_names, **kwargs):
+    def plot_functions(self, x_idx, col_names, data=None, **kwargs):
         return gp_predict_fun(
             self,
             x_idx=x_idx,
             col_names=col_names,
-            X=self.data[0].numpy(),  # self.X,
-            Y=self.data[1].numpy(),  # self.Y,
+            X=data[0] if isinstance(data[0], np.ndarray) else data[0].numpy(),
+            Y=data[1] if isinstance(data[1], np.ndarray) else data[1].numpy(),
             **kwargs
         )
 
-    def plot_parts(self, x_idx, col_names, lik=None, **kwargs):
+    def plot_parts(self, x_idx, col_names, data=None, lik=None, **kwargs):
         if lik is None:
             lik = self.likelihood
         return pred_kernel_parts(
@@ -546,6 +547,7 @@ class BaseGP(gpflow.models.SVGP):
             # unit_idx=unit_idx,
             col_names=col_names,
             lik=lik,
+            data=data,
             **kwargs,
         )
 
@@ -568,6 +570,7 @@ class VarGP(BaseGP):
         mean_function=gpflow.functions.Constant(c=0.0),
         kernel=gpflow.kernels.SquaredExponential(active_dims=[0]),
         likelihood="gaussian",
+        scale_value=None,
         # variational_priors=True,
         verbose=False,
         **basegp_kwargs,
@@ -602,6 +605,10 @@ class VarGP(BaseGP):
                 """Unknown likelihood requested. Either string or
                 gpflow.likelihood allowed"""
             )
+        
+        # Set scale value for likelihood
+        if scale_value is not None:
+            self.likelihood.scale = scale_value
 
         # Set variational priors if requested
         # TODO: Need to figure out why priors lead to tf.float64 vs float32
@@ -728,24 +735,27 @@ class PenalizedGP(BaseGP):
         self.unit_col = None
         self.penalization_search_results = None
 
-    def maximum_log_likelihood_objective(self, data, use_factor=True):
+    def maximum_log_likelihood_objective(self, data, use_factor=False):
+        # Returns log likelihood evidence lower bound (dependent on N)
         model_fit = self.elbo(data)
 
         # I cannot seem to get the penalization factor to work
         # so instead I will use Exponential priors on variance terms
         if use_factor:
-            model_var = (
+            model_var = tf.math.log(
                 # data[0].shape[0] *
                 self.penalization_factor *
                 find_variance_components_tf(self.kernel)
             )
+            model_var *= data[0].shape[0]
             # out_fit = tf.math.log(tf.math.exp(model_fit) - model_var)
+            print(f"{model_fit=}, {model_var=}")
             out_fit = model_fit - model_var
         else:
             out_fit = model_fit
         return out_fit
 
-    def set_penalization_factor(self, penalization_factor, use_prior=False):
+    def set_penalization_factor(self, penalization_factor, use_prior=True):
         self.penalization_factor = gpflow.utilities.to_default_float(
             penalization_factor
         )
@@ -769,9 +779,9 @@ class PenalizedGP(BaseGP):
 
     def penalization_search(
         self,
+        data=None,
         # penalization_factor_list=np.exp(np.linspace(0, 10, 5)),
-        penalization_factor_list=[0.0, 0.1, 1.0, 10.0, 100.0],
-        # penalization_factor_list=[0.0, 1.0, 100.0],
+        penalization_factor_list=[0.0, 1.0, 100.0],
         k_fold=3,
         fit_best=True,
         max_jobs=-1,
@@ -783,9 +793,14 @@ class PenalizedGP(BaseGP):
         num_restart=5,
         selection_type="se"
     ):
+        
+        # Check data types
+        X = data[0] if isinstance(data[0], np.ndarray) else data[0].numpy()
+        Y = data[1] if isinstance(data[1], np.ndarray) else data[1].numpy()
+        
         # Split training data into k-folds
         folds = make_folds(
-            self.data[0].numpy(),  # self.X,
+            X,
             self.unit_col,
             k_fold,
             random_seed
@@ -803,65 +818,49 @@ class PenalizedGP(BaseGP):
         ).T.reshape(-1, 2)
 
         # Fit combinations in parallel if possible
-        def parallel_fit(pf, holdout_fold, holdout_index):
+        def parallel_fit(pf, data, holdout_fold, holdout_index):
             temp_model = copy.deepcopy(self)
-            temp_model.data = (
-                tf.convert_to_tensor(
-                    np.delete(
-                        self.data[0].numpy(),
-                        holdout_fold,
-                        axis=0
-                    )
+            # temp_model.data = (
+            #     tf.convert_to_tensor(
+            #         np.delete(
+            #             self.data[0].numpy(),
+            #             holdout_fold,
+            #             axis=0
+            #         )
+            #     ),
+            #     tf.convert_to_tensor(
+            #         np.delete(
+            #             self.data[1].numpy(),
+            #             holdout_fold,
+            #             axis=0
+            #         )
+            #     )
+            # )
+            training_data = convert_data_to_tensors(
+                X=np.delete(
+                    X,
+                    holdout_fold,
+                    axis=0
                 ),
-                tf.convert_to_tensor(
-                    np.delete(
-                        self.data[1].numpy(),
-                        holdout_fold,
-                        axis=0
-                    )
+                Y=np.delete(
+                    Y,
+                    holdout_fold,
+                    axis=0
                 )
             )
-            # temp_model = PenalizedGP(
-            #     X=np.delete(
-            #         self.data[0].numpy(),  # self.X,
-            #         holdout_fold,
-            #         axis=0
-            #     ),
-            #     Y=np.delete(
-            #         self.data[1].numpy(),  # self.Y,
-            #         holdout_fold,
-            #         axis=0
-            #     ),
-            #     mean_function=deepcopy(self.mean_function),
-            #     kernel=deepcopy(self.kernel),
-            #     penalization_factor=pf,
-            #     verbose=self.verbose,
-            # )
-            # holdout_X = self.X[holdout_fold]
-            # holdout_Y = self.Y[holdout_fold]
-            holdout_X = self.data[0].numpy()[holdout_fold]
-            holdout_Y = self.data[1].numpy()[holdout_fold]
+            holdout_X = X[holdout_fold]
+            holdout_Y = Y[holdout_fold]
             temp_model.random_restart_optimize(
+                data=training_data,
                 randomize_kwargs=randomization_options,
                 optimize_kwargs=optimization_options,
                 num_restart=num_restart
             )
             holdout = np.mean(
-                temp_model.predict_log_density(data=(holdout_X, holdout_Y))
+                temp_model.predict_log_density(
+                    data=(holdout_X, holdout_Y)
+                )
             )
-
-            # self.set_penalization_factor(pf)
-            # holdout_X = self.X[holdout_fold]
-            # holdout_Y = self.Y[holdout_fold]
-            # self.X = np.delete(self.X, holdout_fold, axis=0)
-            # self.Y = np.delete(self.Y, holdout_fold, axis=0)
-            # self.randomize_params()
-            # self.optimize_params()
-            # holdout = np.mean(
-            #     self.predict_log_density(
-            #         data=(holdout_X, holdout_Y)
-            #     )
-            # )
 
             return np.array([pf, holdout_index, holdout])
 
@@ -871,6 +870,7 @@ class PenalizedGP(BaseGP):
             parallel_results = parallel_object(
                 delayed(parallel_fit)(
                     pf=penalization_factor_list[i[0]],
+                    data=data,
                     holdout_fold=folds[i[1]],
                     holdout_index=i[1],
                 )
@@ -885,6 +885,7 @@ class PenalizedGP(BaseGP):
                     parallel_results = Parallel(n_jobs=max_jobs)(
                         delayed(parallel_fit)(
                             pf=penalization_factor_list[i[0]],
+                            data=data,
                             holdout_fold=folds[i[1]],
                             holdout_index=i[1],
                         )
@@ -894,6 +895,7 @@ class PenalizedGP(BaseGP):
                 parallel_results = Parallel(n_jobs=max_jobs)(
                     delayed(parallel_fit)(
                         pf=penalization_factor_list[i[0]],
+                        data=data,
                         holdout_fold=folds[i[1]],
                         holdout_index=i[1],
                     )
@@ -940,6 +942,7 @@ class PenalizedGP(BaseGP):
             # self.randomize_params(**randomization_options)
             # self.optimize_params(**optimization_options)
             self.random_restart_optimize(
+                data=data,
                 randomize_kwargs=randomization_options,
                 optimize_kwargs=optimization_options,
                 num_restart=num_restart
@@ -974,7 +977,7 @@ class PenalizedGP(BaseGP):
 
     #     return None
 
-    def cut_kernel_components(self, var_cutoff: float = 0.001):
+    def cut_kernel_components(self, data=None, var_cutoff: float = 0.1):
         """Prune out kernel components with small variance parameters and large
         lengthscale parameters (w.r.t. input domain).
 
@@ -1010,14 +1013,14 @@ class PenalizedGP(BaseGP):
             else:
                 self.kernel = self.kernel
         else:
-            self.kernel = Empty()
+            self.kernel = gpflow.kernels.Constant()
 
         # Prune by lengthscale as well
         if hasattr(self.kernel, "kernels"):
             self.kernel = search_through_kernel_list_(
                 kernel_list=self.kernel.kernels,
                 list_type=self.kernel.name,
-                X=self.data[0].numpy(),  # self.X
+                X=data[0].numpy(),  # self.X
             )
 
         # Also make sure we only keep base variances that remain

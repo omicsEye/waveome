@@ -7,6 +7,7 @@ import seaborn as sns
 import tensorflow as tf
 
 from .utilities import (
+    calc_deviance_explained_components,
     calc_residuals,
     calc_rsquare,
     individual_kernel_predictions,
@@ -24,6 +25,7 @@ def pred_kernel_parts(
     m,
     x_idx,
     col_names,
+    data=None,
     categorical_dict={},
     lik="gaussian",
     x_idx_min=None,
@@ -40,19 +42,23 @@ def pred_kernel_parts(
     # Copy model
     m_copy = gpflow.utilities.deepcopy(m)
 
-    if isinstance(m_copy.data[0], np.ndarray):
+    if data is not None:
+        X = data[0]
+        Y = data[1]
+    elif isinstance(m_copy.data[0], np.ndarray):
         X = m_copy.data[0]
-        # Y = m_copy.data[1]
+        Y = m_copy.data[1]
     else:
         X = m_copy.data[0].numpy()
-        # Y = m_copy.data[1].numpy()
+        Y = m_copy.data[1].numpy()
 
     # Set bounds on x-axis if not specified
     x_idx_min = X[:, x_idx].min() if x_idx_min is None else x_idx_min
     x_idx_max = X[:, x_idx].max() if x_idx_max is None else x_idx_max
 
     # Get variance pieces
-    var_contribs = calc_rsquare(m=m_copy)
+    # var_contribs = calc_rsquare(m=m_copy)
+    var_contribs = calc_deviance_explained_components(model=m_copy, data=data)
     var_percent = [100 * round(x / sum(var_contribs), 3) for x in var_contribs]
 
     # Get kernel names
@@ -64,6 +70,7 @@ def pred_kernel_parts(
         fig, ax = plt.subplots(ncols=1, figsize=(5, 5))
         plot_residuals(
             m,
+            data,
             lik,
             x_idx,
             x_idx_min,
@@ -123,7 +130,7 @@ def pred_kernel_parts(
             ):  # kernel_names[c]):
                 cat_idx = int(cat_idx)
                 # Set up empyty dataset with domain support
-                x_new = np.zeros((1000, m.data[0].shape[1]))
+                x_new = np.zeros((1000, X.shape[1]))
                 x_new[:, x_idx] = np.linspace(x_idx_min, x_idx_max, 1000)
 
                 # For each unique level of category replace and predict values
@@ -136,6 +143,7 @@ def pred_kernel_parts(
                         kernel_idx=np.argwhere(
                             [x == k_name for x in kernel_names]
                         )[0][0],
+                        data=data,
                         product_term=product_term,
                         X=x_new,
                         white_noise_amt=1e-2,
@@ -221,7 +229,7 @@ def pred_kernel_parts(
         ):
             # Grab all of the variable indexes
             x_idxs = [int(x) for x in re.findall(r"\[(\d+)\]", k_name)]
-            x_new = np.zeros((1000, m.data[0].shape[1]))
+            x_new = np.zeros((1000, X.shape[1]))
             # Choose the first one as the main support
             x_new[:, x_idxs[0]] = np.linspace(
                 X[:, x_idxs[0]].min(), X[:, x_idxs[0]].max(), 1000
@@ -235,6 +243,7 @@ def pred_kernel_parts(
                     kernel_idx=np.argwhere(
                         [x == k_name for x in kernel_names]
                     )[0][0],
+                    data=data,
                     product_term=product_term,
                     X=x_new,
                 )
@@ -303,7 +312,7 @@ def pred_kernel_parts(
                 )  # kernel_names[c])[0])
 
             # Add full range of x axis
-            x_new = np.zeros((1000, m.data[0].shape[1]))
+            x_new = np.zeros((1000, X.shape[1]))
             x_new[:, var_idx] = np.linspace(
                 X[:, var_idx].min(), X[:, var_idx].max(), 1000
             )
@@ -314,6 +323,7 @@ def pred_kernel_parts(
                 kernel_idx=np.argwhere([x == k_name for x in kernel_names])[0][
                     0
                 ],
+                data=data,
                 product_term=product_term,
                 X=x_new,
             )
@@ -411,6 +421,7 @@ def pred_kernel_parts(
     # Plot residuals
     plot_residuals(
         m,
+        data,
         lik,
         x_idx,
         x_idx_min,
@@ -438,6 +449,7 @@ def pred_kernel_parts(
 
 def plot_residuals(
     m,
+    data,
     lik,
     x_idx,
     x_idx_min,
@@ -449,8 +461,8 @@ def plot_residuals(
 ):
     # Compute residuals
     # mean_pred, var_pred = m.predict_y(m.data[0])
-    resids = calc_residuals(m)  # tf.cast(m.data[1], tf.float64) - mean_pred
-    ax.scatter(m.data[0][:, x_idx], resids, color="black", alpha=0.5, s=20)
+    resids = calc_residuals(m, X=data[0], Y=data[1])  # tf.cast(m.data[1], tf.float64) - mean_pred
+    ax.scatter(data[0][:, x_idx], resids, color="black", alpha=0.5, s=20)
     # TODO: Think about line of best fit here maybe?
 
     # if lik == 'gaussian':
@@ -554,8 +566,8 @@ def gp_predict_fun(
 
     # Create test points
     # If no reference point given then use median of other values
-    if unit_idx is not None:
-        assert unit_label is not None, print("Need unit_label with unit_idx")
+    if unit_idx is not None and unit_label is not None:
+        # assert unit_label is not None, print("Need unit_label with unit_idx")
         x_new = np.tile(
             A=np.quantile(
                 X_train[X_train[:, unit_idx] == unit_label,],
@@ -564,6 +576,12 @@ def gp_predict_fun(
             ),
             reps=(1000, 1),
         )
+    elif unit_idx is not None and unit_label is None:
+        # Predict for a "new" person using median attributes
+        x_new = np.tile(
+            A=np.quantile(X_train, axis=0, q=ref_quantile), reps=(1000, 1)
+        )
+        x_new[:, unit_idx] == np.inf
     else:
         x_new = np.tile(
             A=np.quantile(X_train, axis=0, q=ref_quantile), reps=(1000, 1)
