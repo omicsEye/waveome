@@ -144,30 +144,29 @@ of _Jupyter Notebook_</ins> run the following in the `waveome_env`:
     python -m pip install git+https://github.com/omicsEye/waveome
     ```
 
-## Jupyter kernel definition
-
-To employ _waveome_ in _Jupyter Notebook_ we need to provide the kernel. This can be done with
+## Run using Jupyter Notebook & Jupyter kernel definition
+If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new `waveome_env` environment. This can be done with
 ```commandline
-conda install ipykernel
+conda install -n waveome_env ipykernel
 ```
-and then
+and then  to employ _waveome_env_ in _Jupyter Notebook_ we need to provide the kernel. This can be done with
+
 ```commandline
-python -m ipykernel install --user --name=waveome
+python -m ipykernel install --user --name=waveome_env
 ```
-in the terminal while `waveome_env` is active.
-
-
-
-## Run using Jupyter Notebook
-If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new waveome environment. This can be done with 
-`conda install -n waveome ipykernel` and then 
-`python -m ipykernel install --user --name=waveome`
 
 Change directory to where you have your iPhyton notebook
 `cd /PATH-TO_YOUR_iPythonNotebook-DiRECTORY`
 
 Then run jupyter notebook in command line
 `jupyter notebook`.
+
+in the terminal while `waveome_env` is active.
+
+
+
+## 
+
 
 # Loading and preparing data
 
