@@ -83,7 +83,9 @@ notebook as a template (an example of the package modeling simulated data)
 that you can use and modify for your input data. Each step is explained with details in following sections of this
 tutorial.
 # Installation
-## Overal requirements
+To install the package it is suggested that you create a new conda environment (required to have Python >= 3.9 and <= 3.11 for tensorflow)   
+
+## Overall requirements
 Installation of _waveome_ is processed in a conda environment. You therefore need to install _conda_ first. Go to the [Anaconda website](https://www.anaconda.com/) and download the latest version for your operating system.
 * **For Windows users:** do not forget to add _conda_ to your system PATH. It will be asked as a part of installation procedure. 
 * Make sure about _conda_ availability. Open a terminal (or command line for Windows users) and run:
@@ -110,7 +112,7 @@ Regardless of what your operating system is, follow these steps:
 
 1. Open a terminal in your Linux or Mac system or command (`ctrl+R` then type `cmd` and press Enter) in your Windows system and use the following code to create a conda environment:
     ```commandline
-    conda create --name waveome_env python=3.9
+    conda create --name waveome_env python=3.11
     ```
 2. Activate your _conda_ environment:
     ```commandline
@@ -157,6 +159,13 @@ in the terminal while `waveome_env` is active.
 # Loading and preparing data
 
 <!-- ß
+
+## Run using Jupyter Notebook
+If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new waveome environment. This can be done with `conda install -n waveome ipykernel` and then `python -m ipykernel install --user --name=waveome`.
+
+`cd /PATH-TO_YOUR_iPythonNotebook-DiRECTORY`
+`jupyter notebook`
+
 
 ### Running Kernel search
 
@@ -231,7 +240,7 @@ Here we try to use the _waveome_ on different datasets and elaborate on the resu
 ## Breastmilk RNA sequence, infant gut microbiome and metabolites analysis
 [GWDBB](https://github.com/gwcbi/GWDBB/tree/master) is a reference data library for clinical trials and omics 
 data. It contains the longitudinal gut microbiome and metabolomics data 
-of infants and mothers breastmilk RNA in different time-points. Two different 
+of infants and mothers breast milk RNA in different time-points. Two different 
 longitudinal analysis has been derived on the data and can be found in 
 [breastmilk_infant_metabolites_Poisson.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/Breastmilk/breastmilk_infant_metabolites_Poisson.ipynb) and 
 [Breastmilk_infant_Microbiome.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/Breastmilk/Breastmilk_infant_Microbiome.ipynb) 
@@ -323,14 +332,3 @@ illustrates the steps.
   [Issues tracker](https://github.com/omicsEye/waveome/issues).
 * For community discussions, questions, and issue reporting, please visit our
   forum [here](https://forum.omicseye.org/c/omics-downstream-analysis/waveome/12)
-
-## Installation
-To install the package it is suggested that you create a new conda environment (required to have Python >= 3.9 and <= 3.11 for tensorflow)   
-`conda create -n waveome python=3.11`   
-`conda activate waveome`   
-and then pip install _waveome_ using    
-`pip install git+https://github.com/omicsEye/waveome.git`.
-
-## Jupyter Notebook
-If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new waveome environment. This can be done with `conda install -n waveome ipykernel` and then `python -m ipykernel install --user --name=waveome`.
-
