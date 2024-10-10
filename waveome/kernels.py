@@ -129,7 +129,7 @@ class Empty(gpflow.kernels.Kernel):
         super().__init__(name="empty")
         self.active_dims = [0]
         self.variance = gpflow.Parameter(
-            gpflow.utilities.to_default_float(0),
+            gpflow.utilities.to_default_float(1e-6),
             trainable=False
         )
 

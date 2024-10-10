@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name="waveome",
-    version="0.0.2",
+    version="0.0.3",
     author="Allen Ross",
     author_email="allenross@gwu.edu",
     description="""
@@ -32,8 +32,9 @@ setuptools.setup(
 
         "pandas",
         "numpy",
+        "ray[default]",
         "scipy",
-        "joblib",
+        "joblib",  # Switch out for ray
         "seaborn",
         "matplotlib",
         "tqdm"
