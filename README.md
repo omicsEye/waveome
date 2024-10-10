@@ -156,21 +156,20 @@ python -m ipykernel install --user --name=waveome
 ```
 in the terminal while `waveome_env` is active.
 
-# Loading and preparing data
 
-<!-- ß
 
 ## Run using Jupyter Notebook
-If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new waveome environment. This can be done with `conda install -n waveome ipykernel` and then `python -m ipykernel install --user --name=waveome`.
+If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new waveome environment. This can be done with 
+`conda install -n waveome ipykernel` and then 
+`python -m ipykernel install --user --name=waveome`
 
+Change directory to where you have your iPhyton notebook
 `cd /PATH-TO_YOUR_iPythonNotebook-DiRECTORY`
-`jupyter notebook`
 
+Then run jupyter notebook in command line
+`jupyter notebook`.
 
-### Running Kernel search
-
-### Visualization
--->
+# Loading and preparing data
 
 <!--# Getting Started with waveome
 
@@ -226,6 +225,13 @@ waveome -sf PATH_TO_SEQUENCE.FASTA -st aa -md PATH_TO_META_DATA.tsv -mv
  META_VARIABLE_NAME -a reg  -dth 0.15 --plot --write
 ```
 -->
+
+<!-- ß
+### Running Kernel search
+
+### Visualization
+-->
+
 ## Tutorial
 
 Multiple detailed ipython notebook of _waveome_ implementations are available in the
