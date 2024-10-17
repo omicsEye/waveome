@@ -14,6 +14,7 @@ import seaborn as sns
 import tensorflow as tf
 from gpflow.utilities import set_trainable
 from joblib import Parallel, delayed
+import matplotlib
 
 # from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
@@ -575,7 +576,7 @@ class GPSearch:
         var_cutoff=0.8,
         feature_name=None,
         show_vals=True,
-        figsize=(15, 5),
+        figsize=None,
         cluster=True,
         print_drop_count=False
     ):
@@ -669,49 +670,82 @@ class GPSearch:
 
         # Now plot
         if cluster:
+            col_cluster = True
+            row_cluster = True
             assert len(out_info.index) > 1, (
                 "Not enough models meet criteria (clustermap) requested!"
                 f"  (N={len(out_info.index)})"
             )
         else:
+            col_cluster = False
+            row_cluster = False
             assert len(out_info.index) > 0, (
                 "Not enough models meet criteria (heatmap) requested!"
                 f" (N={len(out_info.index)})"
             )
+        if figsize is None:
+            c_unit_h = 0.01
+            c_unit_w = 0.01
+            c_min_height = .1 * c_unit_h + 1
+            c_min_width = .1 * c_unit_w + 1
+            c_char_pad = 0.01
+            width = max(c_unit_w * out_info.shape[1], c_min_width)
+            width += c_char_pad * max(list(map(len, out_info.index.tolist())))
+            height = max(c_unit_h * out_info.shape[0], c_min_height)
+            height += c_char_pad * max(list(map(len, out_info.columns.tolist())))
+            figsize = (width, height)
 
-        if cluster:
-            clm = sns.clustermap(
-                out_info.transpose(),
-                figsize=figsize,
-                annot=show_vals,
-                vmin=0,
-                vmax=1,
-                cmap="Greens",
-            )
-            # Adjust text for easier reading
-            plt.setp(
-                clm.ax_heatmap.xaxis.get_majorticklabels(),
-                rotation=45,
-                horizontalalignment="right",
-            )
-            # Add text if requested
-            if show_vals:
-                for t in clm.ax_heatmap.texts:
-                    if float(t.get_text()) > 0:
-                        t.set_text(t.get_text())
-                    else:
-                        t.set_text("")
-        else:
-            fig, ax = plt.subplots(1, 1, figsize=figsize)
-            clm = sns.heatmap(
-                out_info.transpose(),
-                ax=ax,
-                annot=show_vals,
-                vmin=0,
-                vmax=1,
-                cmap="Greens",
-            )
-
+        #cbar_kws = dict(extend='max', shrink=0.8)
+        kwargs = dict(linewidths=0, square=False, cbar=False)
+        #ax = None
+        #if cluster:
+        clm = sns.clustermap(
+            out_info.transpose(),
+            figsize=figsize,
+            annot=show_vals,
+            annot_kws={'size': 6},
+            vmin=0,
+            vmax=1,
+            cmap="Greens",
+            dendrogram_ratio=(0.05, 0.05),
+            col_cluster=col_cluster, row_cluster=row_cluster
+            #cbar=False
+        )
+        clm.ax_row_dendrogram.set_visible(False)
+        clm.ax_col_dendrogram.set_visible(False)
+        clm.cax.set_visible(False)
+        ax = clm.ax_heatmap
+        # else:
+        #     fig, ax = plt.subplots(1, 1, figsize=figsize)
+        #     clm = sns.heatmap(
+        #         out_info.transpose(),
+        #         ax=ax,
+        #         annot=show_vals,
+        #         annot_kws={'size': 6},
+        #         vmin=0,
+        #         vmax=1,
+        #         cmap="Greens",
+        #         **kwargs
+        #     )
+        # Adjust text for easier reading
+        plt.setp(
+            ax.xaxis.get_majorticklabels(),
+            rotation=45,
+            horizontalalignment="right"
+        )
+        # Add text if requested
+        if show_vals:
+            for t in ax.texts:
+                if float(t.get_text()) > 0:
+                    t.set_text(t.get_text())
+                else:
+                    t.set_text("")
+        # Set xlabel on the heatmap axes
+        ax.set_xlabel('Omics features', fontweight='bold', fontsize=8)
+        ax.set_ylabel('Dynamics ', fontweight='bold', fontsize=8)
+        ax.get_xaxis().set_tick_params(which='both', labelsize=7)
+        ax.get_yaxis().set_tick_params(which='both', labelsize=7)
+        ax.set_title("Explained variation", fontweight='bold', fontsize=9, loc='center')
         return clm
 
     def plot_parts(
