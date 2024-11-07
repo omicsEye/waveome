@@ -96,7 +96,7 @@ def pred_kernel_parts(
     num_figs = len(kernel_names) + 1
     num_rows = int(np.ceil(num_figs / num_cols_in_fig))
     if figsize is None:
-        figsize = (5 * num_cols_in_fig, 5 * num_rows)
+        figsize = (7.2, 1.44 * num_rows)#(5 * num_cols_in_fig, 5 * num_rows)
     fig, ax = plt.subplots(
         ncols=num_cols_in_fig,  # len(kernel_names)+1,
         nrows=num_rows,
@@ -654,7 +654,7 @@ def gp_predict_fun(
     # Generate plot
     #     p = plt.figure(figsize=(10, 5))
     if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(7.2, 3.6))
     #     p = sns.scatterplot(x=X[:,x_idx],
     #                     y=Y.flatten(),
     #                     hue=X[:,unit_idx].astype(int).astype(str),
@@ -671,6 +671,7 @@ def gp_predict_fun(
                 #                         legend=False
                 s=100,
                 color="black",
+                linewidths=0.5,
                 ax=ax,
             )
             _ = sns.scatterplot(

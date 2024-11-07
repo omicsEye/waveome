@@ -683,6 +683,7 @@ class GPSearch:
                 "Not enough models meet criteria (heatmap) requested!"
                 f" (N={len(out_info.index)})"
             )
+        scale_size = 1
         if figsize is None:
             c_unit_h = 0.01
             c_unit_w = 0.01
@@ -693,17 +694,17 @@ class GPSearch:
             width += c_char_pad * max(list(map(len, out_info.index.tolist())))
             height = max(c_unit_h * out_info.shape[0], c_min_height)
             height += c_char_pad * max(list(map(len, out_info.columns.tolist())))
-            figsize = (width, height)
+            figsize = (width*scale_size, height*scale_size)
 
         #cbar_kws = dict(extend='max', shrink=0.8)
-        kwargs = dict(linewidths=0, square=False, cbar=False)
+        kwargs = dict(linewidths=.1, square=False, cbar=True)
         #ax = None
         #if cluster:
         clm = sns.clustermap(
             out_info.transpose(),
             figsize=figsize,
             annot=show_vals,
-            annot_kws={'size': 6},
+            annot_kws={'size': 6*scale_size},
             vmin=0,
             vmax=1,
             cmap="Greens",
@@ -711,9 +712,9 @@ class GPSearch:
             col_cluster=col_cluster, row_cluster=row_cluster
             #cbar=False
         )
-        clm.ax_row_dendrogram.set_visible(False)
-        clm.ax_col_dendrogram.set_visible(False)
-        clm.cax.set_visible(False)
+        #clm.ax_row_dendrogram.set_visible(False)
+        #clm.ax_col_dendrogram.set_visible(False)
+        #clm.cax.set_visible(False)
         ax = clm.ax_heatmap
         # else:
         #     fig, ax = plt.subplots(1, 1, figsize=figsize)
@@ -741,11 +742,11 @@ class GPSearch:
                 else:
                     t.set_text("")
         # Set xlabel on the heatmap axes
-        ax.set_xlabel('Omics features', fontweight='bold', fontsize=8)
-        ax.set_ylabel('Dynamics ', fontweight='bold', fontsize=8)
-        ax.get_xaxis().set_tick_params(which='both', labelsize=7)
-        ax.get_yaxis().set_tick_params(which='both', labelsize=7)
-        ax.set_title("Explained variation", fontweight='bold', fontsize=9, loc='center')
+        ax.set_xlabel('Omics features', fontweight='bold', fontsize=8*scale_size)
+        ax.set_ylabel('Dynamics ', fontweight='bold', fontsize=8*scale_size)
+        ax.get_xaxis().set_tick_params(which='both', labelsize=6*scale_size)
+        ax.get_yaxis().set_tick_params(which='both', labelsize=6*scale_size)
+        ax.set_title("Explained variation", fontweight='bold', fontsize=9*scale_size, loc='left')
         return clm
 
     def plot_parts(
