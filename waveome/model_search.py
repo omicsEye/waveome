@@ -14,11 +14,13 @@ import seaborn as sns
 import tensorflow as tf
 from gpflow.utilities import set_trainable
 from joblib import Parallel, delayed
+from matplotlib import scale
+from ray.experimental import tqdm_ray
 
 # from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
-from .kernels import Categorical
+from .kernels import Categorical, Lin
 
 # from .likelihoods import ZeroInflatedNegativeBinomial
 from .model_classes import PSVGP
@@ -33,6 +35,7 @@ from .utilities import (
     convert_data_to_tensors,
     print_kernel_names,
     replace_kernel_variables,
+    run_ray_process,
     tqdm_joblib,
 )
 
@@ -101,28 +104,34 @@ class GPSearch:
 
         # Make sure all resulting columns are the same type
         float_match = X.columns.isin(X.select_dtypes(include=[float]).columns)
-        if len(float_match) != len(X.columns): #not min(float_match):
-            raise TypeError(
-                "X columns must all be float type."
-                f" Cast {X.columns[~float_match]} to float."
-                " Perhaps use pandas.factorize() and"
-                " pandas.DataFrame.astype()."
-            )
+        if sum(float_match) != len(X.columns):
+            try:
+                X = X.astype(float)
+            except:
+                raise TypeError(
+                    "X columns must all be float type."
+                    f" Cast {X.columns[~float_match]} to float."
+                    " Perhaps use pandas.factorize() and"
+                    " pandas.DataFrame.astype()."
+                )
         float_match = Y.columns.isin(Y.select_dtypes(include=[float]).columns)
-        if len(float_match) != len(Y.columns): #not min(float_match):
-            raise TypeError(
-                "Y columns must all be float type."
-                f" Cast {Y.columns[~float_match]} to float."
-                " Perhaps use pandas.factorize() and"
-                " pandas.DataFrame.astype()."
-            )
+        if sum(float_match) != len(Y.columns):
+            try:
+                Y = Y.astype(float)
+            except:
+                raise TypeError(
+                    "Y columns must all be float type."
+                    f" Cast {Y.columns[~float_match]} to float."
+                    " Perhaps use pandas.factorize() and"
+                    " pandas.DataFrame.astype()."
+                )
 
         # Make sure there is no missing data
         assert (
-            X.isna().sum().values[0] == 0
+            X.isna().sum().sum() == 0
         ), "NAs in X, waveome cannot currently handle missing values!"
         assert (
-            Y.isna().sum().values[0] == 0
+            Y.isna().sum().sum() == 0
         ), "NAs in Y, waveome cannot currently handle missing values!"
 
         # Load up attributes
@@ -147,9 +156,16 @@ class GPSearch:
             self.X_means = self.X.iloc[:, self.cont_idx].mean(axis=0)
             self.X_stds = self.X.iloc[:, self.cont_idx].std(axis=0)
             self.X_original = self.X.copy()
-            self.X.iloc[:, self.cont_idx] = (
-                self.X.iloc[:, self.cont_idx] - self.X_means
-            ) / self.X_stds
+            # self.X.iloc[:, np.array(self.cont_idx, dtype="float")] = (
+            #     (
+            #         self.X.iloc[:, self.cont_idx] - self.X_means
+            #     ) / self.X_stds
+            # ).astype(float)
+            for c in self.cont_idx:
+                cont_feat_name = self.feat_names[c]
+                self.X[cont_feat_name] = (
+                    self.X[cont_feat_name] - self.X_means[cont_feat_name]
+                ) / self.X_stds[cont_feat_name]
 
         # Transform Y columns
         # It might only be useful for some likelihoods
@@ -187,7 +203,9 @@ class GPSearch:
             "second_order_numeric": False,
             "kerns": [
                 gpflow.kernels.SquaredExponential(),
-                gpflow.kernels.Linear()
+                gpflow.kernels.Matern12(),
+                Lin(),
+                gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential())
             ],
         },
         penalization_factor=1.,
@@ -224,7 +242,8 @@ class GPSearch:
                 self_Y,
                 self_likelihood,
                 self_Y_stds,
-                feat
+                feat,
+                tqdm_bar
         ):
 
             # Add scale if negative binomial
@@ -261,6 +280,9 @@ class GPSearch:
             mod.cut_kernel_components(
                 data=convert_data_to_tensors(self_X, self_Y)
             )
+
+            # TODO: Prune kernel (specifically interactions)
+
             mod.update_kernel_name()
             mod.get_variance_explained(
                 data=convert_data_to_tensors(
@@ -268,6 +290,9 @@ class GPSearch:
                     self_Y[feat].to_numpy().reshape(-1, 1)
                 )
             )
+
+            # Increment progress bar
+            tqdm_bar.update.remote(1)
 
             return mod
 
@@ -297,10 +322,14 @@ class GPSearch:
         else:
             num_processes = num_jobs
             num_feats_per_round = 5 * num_processes
+
         grouped_feat_list = [
             self.out_names[x:x+num_feats_per_round]
             for x in range(0, len(self.out_names), num_feats_per_round)
         ]
+
+        # Set up ray tqdm tracker
+        remote_tqdm = ray.remote(tqdm_ray.tqdm)
 
         print(f"Building {len(self.out_names)} models...")
         start_time = time.time()
@@ -308,11 +337,20 @@ class GPSearch:
         num_feats = len(self.out_names)
         for i in grouped_feat_list:
             # Initialize ray
-            ray.init(
-                num_cpus=num_processes,
-                include_dashboard=False,
-                configure_logging=False
-            )
+            try:
+                ray.init(
+                    num_cpus=num_processes,
+                    include_dashboard=False,
+                    configure_logging=False
+                )
+            except RuntimeError:
+                ray.shutdown()
+                ray.init(
+                    num_cpus=num_processes,
+                    include_dashboard=False,
+                    configure_logging=False
+                )
+
 
             # Put main information in shared data store
             # self_ref = ray.put(self)
@@ -327,6 +365,9 @@ class GPSearch:
             # Load function
             model_build_steps_remote = ray.remote(model_build_steps)
 
+            # Create progress bar
+            bar = remote_tqdm.remote(total=len(i))
+
             # Retrieve models
             out = ray.get([
                 model_build_steps_remote.remote(
@@ -334,7 +375,8 @@ class GPSearch:
                     self_Y,
                     self_likelihood,
                     self_Y_stds,
-                    feat
+                    feat,
+                    bar
                 )
                 for feat in i  # self.out_names
             ])
@@ -342,6 +384,9 @@ class GPSearch:
             # Add models to dictionary
             for m, feat in zip(out, i):
                 self.models[feat] = m
+
+            # Close progress bar
+            bar.close.remote()
 
             ray.shutdown()
 
@@ -362,6 +407,117 @@ class GPSearch:
 
         return None
 
+    # def run_penalized_search(
+    #     self,
+    #     full_kernel=None,
+    #     num_jobs=-2,
+    #     verbose=False,
+    #     mean_function=gpflow.functions.Constant(c=0.0),
+    #     kernel_options={
+    #         "second_order_numeric": False,
+    #         "kerns": [
+    #             gpflow.kernels.SquaredExponential(),
+    #             gpflow.kernels.Matern12(),
+    #             gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential()),
+    #             Lin()
+    #         ],
+    #     },
+    #     penalized_options={},
+    #     search_options={
+    #         "num_restart": 1
+    #     },
+    #     sparse_options={},
+    #     variational_options={},
+    #     optimization_options={},
+    #     random_seed=None,
+    # ):
+    #     # Set model selection type
+    #     self.model_selection_type = "penalized"
+
+    #     # Set seed if requested
+    #     if random_seed is not None:
+    #         np.random.seed(random_seed)
+
+    #         # Also add it to the search options if not requested
+    #         if "random_seed" not in search_options.keys():
+    #             search_options["random_seed"] = random_seed
+
+    #     # If kernel is none then build out full kernel set
+    #     if full_kernel is None:
+    #         full_kernel, full_kernel_name = full_kernel_build(
+    #             cat_vars=self.cat_idx,
+    #             num_vars=self.cont_idx,
+    #             var_names=self.feat_names,
+    #             return_sum=True,
+    #             **kernel_options,
+    #         )
+    #     else:
+    #         full_kernel = gpflow.utilities.deepcopy(full_kernel)
+
+    #     # Add likelihood information
+    #     variational_options["likelihood"] = self.likelihood
+
+    #     # Load up model dictionary
+    #     self.models = {}
+    #     for feat in self.out_names:
+    #         self.models[feat] = PSVGP(
+    #             X=self.X.to_numpy(),
+    #             Y=self.Y[feat].to_numpy().reshape(-1, 1),
+    #             mean_function=gpflow.utilities.deepcopy(mean_function),
+    #             kernel=gpflow.utilities.deepcopy(full_kernel),
+    #             verbose=verbose,
+    #             penalized_options=penalized_options,
+    #             sparse_options=sparse_options,
+    #             variational_options=variational_options,
+    #         )
+
+    #     # Calculate total number of tasks needed to search over
+    #     k_fold = (
+    #         3
+    #         if "k_fold" not in search_options.keys()
+    #         else search_options["k_fold"]
+    #     )
+    #     n_factors = (
+    #         5
+    #         if "penalization_factor_list" not in search_options.keys()
+    #         else len(search_options["penalization_factor_list"])
+    #     )
+    #     tot_tasks = len(self.out_names) * k_fold * n_factors
+
+    #     with tqdm_joblib(tqdm(desc="GPPenalized", total=tot_tasks)) as _:
+    #         with Parallel(n_jobs=num_jobs) as parallel:
+    #             for outcome, model in self.models.items():
+    #                 model.penalization_search(
+    #                     data=convert_data_to_tensors(
+    #                         self.X.to_numpy(),
+    #                         self.Y[outcome].to_numpy().reshape(-1, 1)
+    #                     ),
+    #                     parallel_object=parallel,
+    #                     optimization_options=optimization_options,
+    #                     **search_options,
+    #                 )
+
+    #                 # Clean up models (prune)
+    #                 model.cut_kernel_components(
+    #                     data=convert_data_to_tensors(
+    #                         self.X.to_numpy(),
+    #                         self.Y[outcome].to_numpy().reshape(-1, 1)
+    #                     )
+    #                 )
+
+    #                 # Update kernel names
+    #                 model.update_kernel_name()
+
+    #                 # Also attach variance explained
+    #                 model.get_variance_explained(
+    #                     data=convert_data_to_tensors(
+    #                         self.X.to_numpy(),
+    #                         self.Y[outcome].to_numpy().reshape(-1, 1)
+    #                     )
+    #                 )
+
+    #     return None
+
     def run_penalized_search(
         self,
         full_kernel=None,
@@ -371,8 +527,11 @@ class GPSearch:
         kernel_options={
             "second_order_numeric": False,
             "kerns": [
-                gpflow.kernels.SquaredExponential(active_dims=[0]),
-                gpflow.kernels.Matern12(active_dims=[0])],
+                gpflow.kernels.SquaredExponential(),
+                gpflow.kernels.Matern12(),
+                gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential()),
+                Lin()
+            ],
         },
         penalized_options={},
         search_options={
@@ -382,6 +541,7 @@ class GPSearch:
         variational_options={},
         optimization_options={},
         random_seed=None,
+        include_dashboard=False
     ):
         # Set model selection type
         self.model_selection_type = "penalized"
@@ -409,12 +569,21 @@ class GPSearch:
         # Add likelihood information
         variational_options["likelihood"] = self.likelihood
 
-        # Load up model dictionary
-        self.models = {}
-        for feat in self.out_names:
-            self.models[feat] = PSVGP(
-                X=self.X.to_numpy(),
-                Y=self.Y[feat].to_numpy().reshape(-1, 1),
+        def build_models(
+            X,
+            Y,
+            mean_function,
+            full_kernel,
+            search_options,
+            variational_options,
+            feat,
+            bar
+        ):
+
+            # Instatiate new model with specifications
+            model = PSVGP(
+                X=X.to_numpy(),
+                Y=Y[feat].to_numpy().reshape(-1, 1),
                 mean_function=gpflow.utilities.deepcopy(mean_function),
                 kernel=gpflow.utilities.deepcopy(full_kernel),
                 verbose=verbose,
@@ -423,64 +592,85 @@ class GPSearch:
                 variational_options=variational_options,
             )
 
-        # Calculate total number of tasks needed to search over
-        k_fold = (
-            3
-            if "k_fold" not in search_options.keys()
-            else search_options["k_fold"]
+            # Calculate total number of tasks needed to search over
+            k_fold = (
+                3
+                if "k_fold" not in search_options.keys()
+                else search_options["k_fold"]
+            )
+
+            # Serial processing for each ray task (model)
+            model.penalization_search(
+                data=convert_data_to_tensors(
+                    self.X.to_numpy(),
+                    self.Y[feat].to_numpy().reshape(-1, 1)
+                ),
+                parallel_object=None,
+                max_jobs=1,
+                optimization_options=optimization_options,
+                k_fold=k_fold,
+                show_progress=False,
+                **search_options,
+            )
+
+            # Clean up models (prune)
+            model.cut_kernel_components(
+                data=convert_data_to_tensors(
+                    self.X.to_numpy(),
+                    self.Y[feat].to_numpy().reshape(-1, 1)
+                )
+            )
+
+            # Update kernel names
+            model.update_kernel_name()
+
+            # Also attach variance explained
+            model.get_variance_explained(
+                data=convert_data_to_tensors(
+                    self.X.to_numpy(),
+                    self.Y[feat].to_numpy().reshape(-1, 1)
+                )
+            )
+
+            # Update progress bar
+            bar.update.remote(1)
+
+            return model
+
+        # Now run each of these tasks in parallel with Ray
+        self.models = run_ray_process(
+            num_jobs=num_jobs,
+            model_output_names=self.out_names,
+            func=build_models,
+            stored_func_args={
+                "X": self.X,
+                "Y": self.Y,
+                "mean_function": mean_function,
+                "full_kernel": full_kernel,
+                "search_options": search_options,
+                "variational_options": variational_options,
+            },
+            include_ray_dashboard=include_dashboard
         )
-        n_factors = (
-            5
-            if "penalization_factor_list" not in search_options.keys()
-            else len(search_options["penalization_factor_list"])
-        )
-        tot_tasks = len(self.out_names) * k_fold * n_factors
-
-        with tqdm_joblib(tqdm(desc="GPPenalized", total=tot_tasks)) as _:
-            with Parallel(n_jobs=num_jobs) as parallel:
-                for outcome, model in self.models.items():
-                    model.penalization_search(
-                        data=convert_data_to_tensors(
-                            self.X.to_numpy(),
-                            self.Y[outcome].to_numpy().reshape(-1, 1)
-                        ),
-                        parallel_object=parallel,
-                        optimization_options=optimization_options,
-                        **search_options,
-                    )
-
-                    # Clean up models (prune)
-                    model.cut_kernel_components(
-                        data=convert_data_to_tensors(
-                            self.X.to_numpy(),
-                            self.Y[outcome].to_numpy().reshape(-1, 1)
-                        )
-                    )
-
-                    # Update kernel names
-                    model.update_kernel_name()
-
-                    # Also attach variance explained
-                    model.get_variance_explained(
-                        data=convert_data_to_tensors(
-                            self.X.to_numpy(),
-                            self.Y[outcome].to_numpy().reshape(-1, 1)
-                        )
-                    )
 
         return None
 
     def run_search(
         self,
-        kernels=None,
-        max_depth=3,
+        kernels=[
+            gpflow.kernels.SquaredExponential(),
+            gpflow.kernels.Matern12(),
+            Lin(),
+            gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential())
+        ],
+        max_depth=5,
         early_stopping=True,
         prune=True,
         keep_all=False,
         metric_diff=6,
         num_restart=1,
         random_seed=None,
-        num_jobs=-2,
+        num_jobs=-1,
         verbose=False,
         debug=False,
     ):
@@ -498,55 +688,151 @@ class GPSearch:
         self.model_selection_type = "stepwise"
         self.verbose = verbose
 
-        # Set default kernel if none passed in
-        if kernels is None:
-            kernels = [gpflow.kernels.SquaredExponential()]
+        # # Calculate number of output columns
+        # num_out = len(self.out_names)
 
-        # Calculate number of output columns
-        num_out = len(self.out_names)
+        # # Take min of output or requested jobs for num_jobs
+        # if num_jobs <= 0:
+        #     num_jobs = os.cpu_count() + num_jobs + 1
+        # num_jobs = min(num_out, num_jobs)
 
-        # Take min of output or requested jobs for num_jobs
-        if num_jobs <= 0:
-            num_jobs = os.cpu_count() + num_jobs + 1
-        num_jobs = min(num_out, num_jobs)
+        # with tqdm_joblib(tqdm(desc="Kernel search", total=num_out)) as _:
+        #     models_out = Parallel(n_jobs=num_jobs, verbose=1)(
+        #         delayed(full_kernel_search)(
+        #             X=self.X,
+        #             Y=self.Y[self.out_names[i]],
+        #             kern_list=kernels,
+        #             cat_vars=self.cat_idx,
+        #             max_depth=max_depth,
+        #             early_stopping=early_stopping,
+        #             prune=prune,
+        #             keep_all=keep_all,
+        #             lik=self.likelihood,
+        #             metric_diff=metric_diff,
+        #             num_restart=num_restart,
+        #             random_seed=random_seed,
+        #             verbose=verbose,
+        #             debug=debug,
+        #         )
+        #         for i in range(num_out)
+        #     )
 
-        with tqdm_joblib(tqdm(desc="Kernel search", total=num_out)) as _:
-            models_out = Parallel(n_jobs=num_jobs, verbose=1)(
-                delayed(full_kernel_search)(
-                    X=self.X,
-                    Y=self.Y[self.out_names[i]],
+        # # Make dictionary of outcomes as lookups
+        # dict_out = {feat: mod for feat, mod in zip(self.out_names, models_out)}
+
+        # self.search_info = dict_out
+        # self.models = {
+        #     feat: mod["models"][mod["best_model"]]["model"]
+        #     for feat, mod in zip(self.out_names, models_out)
+        # }
+
+        # # Also calculate variance explained
+        # for o, m in self.models.items():
+        #     m.get_variance_explained(
+        #         data=convert_data_to_tensors(
+        #             self.X.to_numpy(),
+        #             self.Y[o].to_numpy().reshape(-1, 1)
+        #         )
+        #     )
+
+        # Updated process with Ray cluster
+        self.models = {}
+
+        # Make sublists of outcomes
+        if num_jobs == -1:
+            num_processes = None
+            num_feats_per_round = 5 * psutil.cpu_count()
+        else:
+            num_processes = num_jobs
+            num_feats_per_round = 5 * num_processes
+        grouped_feat_list = [
+            self.out_names[x:x+num_feats_per_round]
+            for x in range(0, len(self.out_names), num_feats_per_round)
+        ]
+
+        print(f"Building {len(self.out_names)} models...")
+        start_time = time.time()
+        c = 0
+        num_feats = len(self.out_names)
+
+        # Loop through groups of outputs
+        for i in grouped_feat_list:
+            # Initialize ray
+            try:
+                ray.init(
+                    num_cpus=num_processes,
+                    include_dashboard=False,
+                    configure_logging=False
+                )
+            except RuntimeError:
+                ray.shutdown()
+                ray.init(
+                    num_cpus=num_processes,
+                    include_dashboard=False,
+                    configure_logging=False
+                )
+
+            # Put main information in shared data store
+            self_X = ray.put(self.X)
+            self_Y = ray.put(self.Y)
+            self_cat_vars = ray.put(self.cat_idx)
+            self_likelihood = ray.put(self.likelihood)
+            if hasattr(self, "Y_stds"):
+                self_Y_stds = ray.put(self.Y_stds)
+            else:
+                self_Y_stds = ray.put(None)
+
+            # Load function
+            full_kernel_search_remote = ray.remote(full_kernel_search)
+
+            # Retrieve models
+            out = ray.get([
+                full_kernel_search_remote.remote(
+                    X=self_X,
+                    Y=self_Y,
                     kern_list=kernels,
-                    cat_vars=self.cat_idx,
+                    cat_vars=self_cat_vars,
                     max_depth=max_depth,
                     early_stopping=early_stopping,
                     prune=prune,
                     keep_all=keep_all,
-                    lik=self.likelihood,
+                    lik=self_likelihood,
+                    scale_value=self_Y_stds,
                     metric_diff=metric_diff,
                     num_restart=num_restart,
                     random_seed=random_seed,
                     verbose=verbose,
                     debug=debug,
+                    feature_name=feat
                 )
-                for i in range(num_out)
-            )
+                for feat in self.out_names
+            ])
 
-        # Make dictionary of outcomes as lookups
-        dict_out = {feat: mod for feat, mod in zip(self.out_names, models_out)}
+            # TODO: Make dictionary of outcomes as lookups
+            # self.search_info = {feat: mod for feat, mod in zip(self.out_names, out)}
 
-        self.search_info = dict_out
-        self.models = {
-            feat: mod["models"][mod["best_model"]]["model"]
-            for feat, mod in zip(self.out_names, models_out)
-        }
-
-        # Also calculate variance explained
-        for o, m in self.models.items():
-            m.get_variance_explained(
-                data=convert_data_to_tensors(
-                    self.X.to_numpy(),
-                    self.Y[o].to_numpy().reshape(-1, 1)
+            # Add models to dictionary and calculate explained values
+            for m, feat in zip(out, i):
+                self.models[feat] = m["models"][m["best_model"]]["model"]
+                self.models[feat].get_variance_explained(
+                    data=convert_data_to_tensors(
+                        self.X.to_numpy(),
+                        self.Y[feat].to_numpy().reshape(-1, 1)
+                    )
                 )
+
+            ray.shutdown()
+
+            # Add number of finished models
+            c += len(i)
+
+            # Print output
+            # if c % 10 == 0 and c > 0:
+            prop_done = int(np.round(100*c/num_feats))
+            elapsed_time = np.round((time.time() - start_time)/60, 1)
+            print(
+                f"Finished {c} models ({prop_done}%),",
+                f"elapsed time: {elapsed_time} minutes"
             )
 
         return None
@@ -879,6 +1165,7 @@ def kernel_test(
     random_seed=None,
     verbose=False,
     likelihood="gaussian",
+    scale_value=None,
     use_priors=True,
     keep_data=False,
     X_holdout=None,
@@ -908,6 +1195,7 @@ def kernel_test(
         sparse_options={},
         variational_options={
             "likelihood": likelihood,
+            "scale_value": scale_value
             # "variational_priors": use_priors
         }
     )
@@ -994,6 +1282,7 @@ def loc_kernel_search(
     prod_index=None,
     prev_models=None,
     lik="gaussian",
+    scale_value=None,
     verbose=False,
     num_restart=5,
     random_seed=None,
@@ -1070,6 +1359,7 @@ def loc_kernel_search(
                             Y,
                             k,
                             likelihood=lik,
+                            scale_value=scale_value,
                             verbose=verbose,
                             num_restart=num_restart,
                             random_seed=random_seed,
@@ -1125,6 +1415,7 @@ def loc_kernel_search(
                             Y,
                             k,
                             likelihood=lik,
+                            scale_value=scale_value,
                             verbose=verbose,
                             num_restart=num_restart,
                             random_seed=random_seed,
@@ -1162,6 +1453,7 @@ def loc_kernel_search(
                         prev_models=prev_models,
                         depth=depth,
                         lik=lik,
+                        scale_value=scale_value,
                         num_restart=num_restart,
                         random_seed=random_seed,
                         X_holdout=X_holdout,
@@ -1175,6 +1467,7 @@ def loc_kernel_search(
                     Y,
                     k,
                     likelihood=lik,
+                    scale_value=scale_value,
                     verbose=verbose,
                     num_restart=num_restart,
                     random_seed=random_seed,
@@ -1203,6 +1496,7 @@ def prod_kernel_creation(
     new_kernel,
     depth,
     lik,
+    scale_value=None,
     verbose=False,
     num_restart=5,
     random_seed=None,
@@ -1275,6 +1569,7 @@ def prod_kernel_creation(
                     Y,
                     temp_kernel,
                     likelihood=lik,
+                    scale_value=scale_value,
                     verbose=verbose,
                     num_restart=num_restart,
                     random_seed=random_seed,
@@ -1355,6 +1650,7 @@ def prune_best_model(
     res_dict,
     depth,
     lik,
+    scale_value=None,
     verbose=False,
     num_restart=5,
     random_seed=None
@@ -1399,6 +1695,7 @@ def prune_best_model(
             best_model.data[1],
             k,
             likelihood=lik,
+            scale_value=scale_value,
             verbose=verbose,
             num_restart=num_restart,
             random_seed=random_seed
@@ -1422,6 +1719,7 @@ def prune_best_model2(
         res_dict,
         depth,
         lik,
+        scale_value=None,
         verbose=False,
         num_restart=5,
         random_seed=None
@@ -1488,6 +1786,7 @@ def prune_best_model2(
                 other_kernel=other_kernel,
                 other_name=other_name,
                 lik=lik,
+                scale_value=scale_value,
                 verbose=verbose,
                 num_restart=num_restart,
                 random_seed=random_seed
@@ -1513,6 +1812,7 @@ def prune_best_model2(
                 best_model.data[1],
                 k,
                 likelihood=lik,
+                scale_value=scale_value,
                 verbose=verbose,
                 num_restart=num_restart,
                 random_seed=random_seed
@@ -1544,6 +1844,7 @@ def prune_prod_kernel(
     other_kernel=None,
     other_name="",
     lik="gaussian",
+    scale_value=None,
     verbose=False,
     num_restart=5,
     random_seed=None,
@@ -1608,6 +1909,7 @@ def prune_prod_kernel(
                 Y=best_model.data[1],
                 k=k,
                 likelihood=lik,
+                scale_value=scale_value,
                 verbose=verbose,
                 num_restart=num_restart,
                 random_seed=random_seed
@@ -1644,11 +1946,13 @@ def full_kernel_search(
     prune=True,
     num_restart=5,
     lik="gaussian",
+    scale_value=None,
     verbose=False,
     debug=False,
     keep_only_best=True,
     softmax_select=False,
     random_seed=None,
+    feature_name=None
 ):
     """
     This function runs the entire kernel search, calling helpers along the way.
@@ -1667,7 +1971,19 @@ def full_kernel_search(
     if len(X.shape) == 2:
         x_dim = X.shape[1]
     X = X.to_numpy().reshape(-1, x_dim)
-    Y = Y.to_numpy().reshape(-1, 1)
+
+    if feature_name is None:
+        Y = Y.to_numpy().reshape(-1, 1)
+        scale_value = (
+            None if scale_value is None
+            else scale_value.to_numpy().reshape(1, 1)
+        )
+    else:
+        Y = Y[feature_name].to_numpy().reshape(-1, 1)
+        scale_value = (
+            None if scale_value is None
+            else scale_value[feature_name]
+        )
 
     # Flag for missing values
     x_idx = ~np.isnan(X).any(axis=1)
@@ -1693,6 +2009,7 @@ def full_kernel_search(
                 cat_vars=cat_vars,
                 depth=d,
                 lik=lik,
+                scale_value=scale_value,
                 verbose=debug,
                 num_restart=num_restart,
             )
@@ -1725,6 +2042,7 @@ def full_kernel_search(
                     cat_vars=cat_vars,
                     depth=d,
                     lik=lik,
+                    scale_value=scale_value,
                     operation="sum",
                     prev_models=temp_dict.keys(),
                     verbose=debug,
@@ -1748,6 +2066,7 @@ def full_kernel_search(
                     cat_vars=cat_vars,
                     depth=d,
                     lik=lik,
+                    scale_value=scale_value,
                     operation=op,
                     prev_models=temp_dict.keys(),
                     verbose=debug,
@@ -1807,6 +2126,7 @@ def full_kernel_search(
                         search_dict,
                         depth=d,
                         lik=lik,
+                        scale_value=scale_value,
                         verbose=verbose,
                         num_restart=num_restart,
                     )
@@ -1863,6 +2183,7 @@ def full_kernel_search(
                 search_dict,
                 depth=d,
                 lik=lik,
+                scale_value=scale_value,
                 verbose=verbose,
                 num_restart=num_restart,
             )
@@ -1925,6 +2246,7 @@ def split_kernel_search(
     prune=True,
     num_restart=5,
     lik="gaussian",
+    scale_value=None,
     verbose=False,
     debug=False,
     keep_only_best=True,
@@ -1985,6 +2307,7 @@ def split_kernel_search(
                 cat_vars=cat_vars,
                 depth=d,
                 lik=lik,
+                scale_value=scale_value,
                 verbose=debug,
                 num_restart=num_restart,
                 X_holdout=X_holdout,
@@ -2020,6 +2343,7 @@ def split_kernel_search(
                     cat_vars=cat_vars,
                     depth=d,
                     lik=lik,
+                    scale_value=scale_value,
                     operation="sum",
                     prev_models=temp_dict.keys(),
                     verbose=debug,
@@ -2046,6 +2370,7 @@ def split_kernel_search(
                     cat_vars=cat_vars,
                     depth=d,
                     lik=lik,
+                    scale_value=scale_value,
                     operation=op,
                     prev_models=temp_dict.keys(),
                     verbose=debug,
@@ -2083,6 +2408,7 @@ def split_kernel_search(
                         search_dict,
                         depth=d,
                         lik=lik,
+                        scale_value=scale_value,
                         verbose=verbose,
                         num_restart=num_restart,
                     )
@@ -2127,6 +2453,7 @@ def split_kernel_search(
                     search_dict,
                     depth=d,
                     lik=lik,
+                    scale_value=scale_value,
                     verbose=verbose,
                     num_restart=num_restart,
                 )
