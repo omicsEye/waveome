@@ -224,11 +224,12 @@ class BaseGP(gpflow.models.SVGP):
 
     def optimize_params(
         self,
-        adam_learning_rate=0.1,
+        adam_learning_rate=1.0,
+        adam_decay_rate=0.96,
         nat_gradient_gamma=0.001,
         num_opt_iter=50000,
-        convergence_threshold=1e-4,
-        optimizer=None,
+        convergence_threshold=1e-6,
+        optimizer="scipy",
         data=None,
     ):
         """Optimize hyperparameters of model.
@@ -297,7 +298,9 @@ class BaseGP(gpflow.models.SVGP):
             optimizer = gpflow.optimizers.Scipy()
             opt_options = {
                 "maxiter": num_opt_iter,
-                "ftol": convergence_threshold
+                "maxfun": num_opt_iter,
+                "ftol": convergence_threshold,
+                "maxcor": 100
             }
 
             # Make sure we freeze inducing points if the kernel is Constant()
@@ -396,7 +399,8 @@ class BaseGP(gpflow.models.SVGP):
                 break
 
             # Checkpoint!
-            if i % 50 == 0:
+            # if i % 100 == 0:
+            if i % 500 == 0:
                 # Save previous values
                 previous_values = gpflow.utilities.deepcopy(
                     gpflow.utilities.parameter_dict(self)
@@ -412,25 +416,32 @@ class BaseGP(gpflow.models.SVGP):
                     loss_list.append(cur_loss)
 
                 # Update adam learning rate (decay)
-                adam_opt.learning_rate = (
-                    (0.99 ** i) *
-                    adam_learning_rate
-                )
-
-                # Print output if requested
-                if i % 500 == 0 and self.verbose:
-                    print(f"Round {i} training loss: {cur_loss}")
-
-            if (
-                len(loss_list) > 1
-                and loss_list[-2] - loss_list[-1] < convergence_threshold
-            ):
-                if self.verbose:
-                    print(
-                        f"Optimization converged - stopping early (round {i})"
+                # Similar to (
+                #   www.tensorflow.org/api_docs/python/tf/keras/optimizers/schedules/ExponentialDecay
+                # )
+                if i % 500 == 0:
+                    adam_opt.learning_rate = (
+                        adam_learning_rate *
+                        adam_decay_rate ** (i / 500)
                     )
-                break
 
+                    # Print output if requested
+                    if self.verbose:
+                        print(f"Round {i} training loss: {cur_loss}")
+
+                # Check to see if we have reached convergence
+                if (
+                    len(loss_list) > 1
+                    and loss_list[-2] - loss_list[-1] < convergence_threshold
+                ):
+                    if self.verbose:
+                        print(
+                            f"Optimization converged - stopping early (round {i})"
+                        )
+                    break
+        
+        # If we have reached the end of iterations and still
+        # not converged then...
         if i == (num_opt_iter - 1):
             if self.verbose:
                 print(f"Optimization not converged after {i+1} rounds")
@@ -466,6 +477,14 @@ class BaseGP(gpflow.models.SVGP):
         for i in range(num_restart):
             if self.verbose:
                 print(f"Random restart {i+1}")
+
+            # Increment random seed if one is given
+            if "random_seed" in randomize_kwargs:
+                if randomize_kwargs["random_seed"] is None:
+                    randomize_kwargs["random_seed"] = i
+                else:
+                    randomize_kwargs["random_seed"] += 1
+
             # Randomize parameters
             self.randomize_params(**randomize_kwargs)
 
@@ -781,7 +800,7 @@ class PenalizedGP(BaseGP):
         self,
         data=None,
         # penalization_factor_list=np.exp(np.linspace(0, 10, 5)),
-        penalization_factor_list=[0.0, 1.0, 100.0],
+        penalization_factor_list=[0.0, 1.0, 10.0, 100.0],
         k_fold=3,
         fit_best=True,
         max_jobs=-1,
@@ -820,22 +839,6 @@ class PenalizedGP(BaseGP):
         # Fit combinations in parallel if possible
         def parallel_fit(pf, data, holdout_fold, holdout_index):
             temp_model = copy.deepcopy(self)
-            # temp_model.data = (
-            #     tf.convert_to_tensor(
-            #         np.delete(
-            #             self.data[0].numpy(),
-            #             holdout_fold,
-            #             axis=0
-            #         )
-            #     ),
-            #     tf.convert_to_tensor(
-            #         np.delete(
-            #             self.data[1].numpy(),
-            #             holdout_fold,
-            #             axis=0
-            #         )
-            #     )
-            # )
             training_data = convert_data_to_tensors(
                 X=np.delete(
                     X,

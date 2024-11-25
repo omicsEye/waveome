@@ -1,14 +1,19 @@
 import contextlib
+import time
+from xml.etree.ElementInclude import include
 
 import gpflow
 import joblib
 import numpy as np
+import psutil
+import ray
 import scipy
 import tensorflow as tf
 import tensorflow_probability as tfp
 import tqdm
 from gpflow.utilities import set_trainable
 from joblib import Parallel
+from ray.experimental import tqdm_ray
 from tensorflow_probability import distributions as tfd
 
 from .kernels import Empty
@@ -458,7 +463,14 @@ def variance_contributions_diag(m, lik="gaussian"):
     return variance_list
 
 
-def calc_deviance_explained(model, data=None, model_mu=None, model_var=None):
+def calc_deviance_explained(
+        model,
+        data=None,
+        model_mu=None,
+        model_var=None,
+        base_mu=None,
+        base_var=None,
+        ):
     """ Calculates explained deviance for model components compared to null
     model.
     """
@@ -483,9 +495,9 @@ def calc_deviance_explained(model, data=None, model_mu=None, model_var=None):
             mu=data[1],
             var=y_var
         )
-        int_ll = log_dens_fn(
+        base_ll = log_dens_fn(
             x=data[1],
-            mu=np.mean(data[1]),
+            mu=np.mean(data[1]) if base_mu is None else base_mu,
             var=y_var
         )
         mod_ll = log_dens_fn(
@@ -497,8 +509,9 @@ def calc_deviance_explained(model, data=None, model_mu=None, model_var=None):
         sat_ll = log_dens_fn(
             data[1], data[1]
         )
-        int_ll = log_dens_fn(
-            data[1], np.mean(data[1])
+        base_ll = log_dens_fn(
+            data[1],
+            np.mean(data[1]) if base_mu is None else base_mu
         )
         mod_ll = log_dens_fn(
             data[1], model_mu
@@ -513,15 +526,15 @@ def calc_deviance_explained(model, data=None, model_mu=None, model_var=None):
         sat_p = sat_mu_ / sat_var_
         sat_ll = log_dens_fn(k=data[1], n=sat_n, p=sat_p)
 
-        int_mu_ = max(1e-6, np.mean(data[1]))
+        base_mu_ = max(1e-6, np.mean(data[1])) if base_mu is None else base_mu
         # int_var_ = max(2e-6, np.var(data[1]))
-        int_var_ = int_mu_ + model.likelihood.alpha.numpy() * (int_mu_ ** 2)
-        int_n = (int_mu_)**2 / (int_var_ - int_mu_)
-        int_p = int_mu_ / int_var_
-        int_ll = log_dens_fn(
+        base_var_ = base_mu_ + model.likelihood.alpha.numpy() * (base_mu_ ** 2)
+        base_n = (base_mu_)**2 / (base_var_ - base_mu_)
+        base_p = base_mu_ / base_var_
+        base_ll = log_dens_fn(
             k=data[1],
-            n=int_n,
-            p=int_p
+            n=base_n,
+            p=base_p
         )
 
         model_n = (model_mu)**2 / (model_var - model_mu)
@@ -532,11 +545,19 @@ def calc_deviance_explained(model, data=None, model_mu=None, model_var=None):
 
     # Now calculate the deviances
     # Null deviance should always be greater than model deviance!
-    null_deviance = 2 * np.sum(sat_ll - int_ll)
-    model_deviance = 2 * np.sum(sat_ll - mod_ll)
+    null_deviance = max(0, 2 * np.sum(sat_ll - base_ll))
+    # Clip to zero to avoid negatives
+    model_deviance = max(0, 2 * np.sum(sat_ll - mod_ll))
 
     # And then the deviance explained
-    deviance_explained = 1 - (model_deviance / null_deviance)
+    if null_deviance > 0:
+        deviance_explained = 1 - (model_deviance / null_deviance)
+    else:
+        deviance_explained = 0
+
+    # Truncated deviance explained
+    deviance_explained = 0 if deviance_explained < 0 else deviance_explained
+
     return deviance_explained
 
 
@@ -551,25 +572,40 @@ def calc_deviance_explained_components(model, data=None):
     k = model.kernel
 
     # Get full model prediction and deviance
-    mu_hat, var_hat = model.predict_y(data[0])
+    full_mu_hat, full_var_hat = model.predict_y(data[0])
     full_de = np.round(
         calc_deviance_explained(
-            model=model, data=data, model_mu=mu_hat, model_var=var_hat
+            model=model,
+            data=data,
+            model_mu=full_mu_hat,
+            model_var=full_var_hat
         ), 3
     )
 
     if k.name == "sum":
         for k_idx in range(len(k.kernels)):
-            # Break off kernel component
-            mu_hat, var_hat, samps_, cov_hat = individual_kernel_predictions(
-                model=model,
-                kernel_idx=k_idx,
-                data=data,
-                X=data[0],
-                predict_type="mean"
-            )
+
+            # # Break off kernel component
+            # mu_hat, var_hat, samps_, cov_hat = individual_kernel_predictions(
+            #     model=model,
+            #     kernel_idx=k_idx,
+            #     data=data,
+            #     X=data[0],
+            #     predict_type="mean"
+            # )
+
+            # Now get other components predictions (ignoring this component)
+            model_copy = gpflow.utilities.deepcopy(model)
+            _ = model_copy.kernel.kernels.pop(k_idx)
+            base_mu_hat, base_var_hat = model_copy.predict_y(data[0])
+
             de_list += [np.round(calc_deviance_explained(
-                model=model, data=data, model_mu=mu_hat, model_var=var_hat
+                    model=model,
+                    data=data,
+                    model_mu=full_mu_hat,
+                    model_var=full_var_hat,
+                    base_mu=base_mu_hat,
+                    base_var=base_var_hat
                 ), 3
             )]
 
@@ -669,17 +705,19 @@ def individual_kernel_predictions(
     # return pred_mu, pred_var, sample_fns, pred_cov
 
 
+    # TODO: Double check to see if we need this product block for anything
+    # # Only pull of kernel of interest if there are multiple kernels
+    # # Also need to deal with product term
+    # if hasattr(sub_model.kernel, "kernels"):
+    #     if product_term:
+    #         sub_model.kernel = gpflow.kernels.Product([
+    #             sub_model.kernel.kernels[kernel_idx],
+    #             sub_model.kernel.kernels[kernel_idx+1]
+    #         ])
+    #     else:
+    #         print(f"{sub_model.kernel.kernels=}")
+    #         sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
 
-    # Only pull of kernel of interest if there are multiple kernels
-    # Also need to deal with product term
-    if hasattr(sub_model.kernel, "kernels"):
-        if product_term:
-            sub_model.kernel = gpflow.kernels.Product([
-                sub_model.kernel.kernels[kernel_idx],
-                sub_model.kernel.kernels[kernel_idx+1]
-            ])
-        else:
-            sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
 
     # pred_x = model_data[0] if X is None else X
 
@@ -1128,3 +1166,107 @@ class ParallelTqdm(Parallel):
             self.progress_bar.refresh()
         # update progressbar
         self.progress_bar.update(self.n_completed_tasks - self.progress_bar.n)
+
+
+def run_ray_process(
+    num_jobs=-1,
+    num_entities_per_round=5,
+    model_output_names=[],
+    func=None,
+    stored_func_args={},
+    include_ray_dashboard=False,
+):
+
+    # Set up output object
+    objs = {}
+
+    # Set up number of processes and partition work out
+    if num_jobs == -1:
+        num_processes = None
+        num_feats_per_round = num_entities_per_round * psutil.cpu_count()
+    else:
+        num_processes = num_jobs
+        num_feats_per_round = num_entities_per_round * num_processes
+
+    grouped_feat_list = [
+        model_output_names[x:x+num_feats_per_round]
+        for x in range(0, len(model_output_names), num_feats_per_round)
+    ]
+
+    # Set up tracker
+    remote_tqdm = ray.remote(tqdm_ray.tqdm)
+
+    # Start running through partitions of tasks
+    num_feats = len(model_output_names)
+    print(f"Building {num_feats} models...")
+    start_time = time.time()
+    c = 0
+
+    for i in grouped_feat_list:
+        # Initialize ray
+        try:
+            ray.init(
+                num_cpus=num_processes,
+                include_dashboard=include_ray_dashboard,
+                configure_logging=False
+            )
+        except RuntimeError:
+            ray.shutdown()
+            ray.init(
+                num_cpus=num_processes,
+                include_dashboard=include_ray_dashboard,
+                configure_logging=False
+            )
+
+        # Store data in shared data store
+        for k, v in stored_func_args.items():
+            k = ray.put(v)
+
+        # self_X = ray.put(self.X)
+        # self_Y = ray.put(self.Y)
+        # self_likelihood = ray.put(self.likelihood)
+        # if hasattr(self, "Y_stds"):
+        #     self_Y_stds = ray.put(self.Y_stds)
+        # else:
+        #     self_Y_stds = ray.put(None)
+
+        # Load function
+        func_remote = ray.remote(func)
+        
+        # Create progress bar
+        bar = remote_tqdm.remote(total=len(i))
+
+        # Retrieve output from processes
+        out = ray.get([
+            func_remote.remote(
+                # self_X,
+                # self_Y,
+                # self_likelihood,
+                # self_Y_stds,
+                **stored_func_args,
+                feat=feat,
+                bar=bar
+            )
+            for feat in i
+        ])
+
+        # Save output to returned object
+        for feat, mod in zip(i, out):
+            objs[feat] = mod
+
+        # Clean up ray
+        bar.close.remote()
+        ray.shutdown()
+
+        # Add number of finished models
+        c += len(i)
+
+        # Print output
+        prop_done = int(np.round(100*c/num_feats))
+        elapsed_time = np.round((time.time() - start_time)/60, 1)
+        print(
+            f"Finished {c} models ({prop_done}%),",
+            f"elapsed time: {elapsed_time} minutes"
+        )
+
+    return objs
