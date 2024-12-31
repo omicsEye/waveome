@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import psutil
 import ray
+import scipy
 import seaborn as sns
 import tensorflow as tf
 from gpflow.utilities import set_trainable
@@ -34,6 +35,7 @@ from .utilities import (
     calc_rsquare,
     check_if_model_exists,
     convert_data_to_tensors,
+    find_variance_components,
     print_kernel_names,
     replace_kernel_variables,
     run_ray_process,
@@ -209,11 +211,16 @@ class GPSearch:
                 gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential())
             ],
         },
-        penalization_factor=1.,
-        num_restart=1,
-        sparse_options={"num_inducing_points": 100},
+        penalization_factor=1.0,
+        num_factor_iter=5,
+        num_restart=0,
+        sparse_options={},
         variational_options={},
-        optimization_options={},
+        optimization_options={
+            # "optimizer": "adam/gradient",
+            # "minibatch_size": 64
+            "optimizer": "scipy"
+        },
         random_seed=None,
     ):
         # Set model selection type
@@ -243,6 +250,7 @@ class GPSearch:
                 self_Y,
                 self_likelihood,
                 self_Y_stds,
+                self_penalization_factor,
                 feat,
                 tqdm_bar
         ):
@@ -250,7 +258,37 @@ class GPSearch:
             # Add scale if negative binomial
             if (self_likelihood == "negativebinomial" and
                     self_Y_stds is not None):
-                variational_options["scale_value"] = self_Y_stds[feat] 
+                variational_options["scale_value"] = self_Y_stds[feat]
+
+            # Set penalization factor if None passed in
+            if self_penalization_factor is None:
+                num_params = len(
+                    find_variance_components(full_kernel, sum_reduce=False)
+                )
+
+                # If we don't want to iterate sigma we set to one
+                if num_factor_iter == 0:
+                    sigma_hat = 1
+                else:
+                    sigma_hat = np.std(self_Y[feat])
+
+                self_penalization_factor = (
+                    2
+                    * 1.1
+                    * sigma_hat
+                    * np.sqrt(self_X.shape[0])
+                    * scipy.stats.norm().ppf(1-(0.1 / (2 * num_params)))
+                )
+
+                self.iterating_penalization_factor = True
+
+                if verbose:
+                    print(
+                        "Setting penalization factor to",
+                        f" {self_penalization_factor}"
+                    )
+            else:
+                self.iterating_penalization_factor = False
 
             # Specify model
             mod = PSVGP(
@@ -260,22 +298,82 @@ class GPSearch:
                 kernel=gpflow.utilities.deepcopy(full_kernel),
                 verbose=verbose,
                 penalized_options={
-                    "penalization_factor": penalization_factor
+                    "penalization_factor": self_penalization_factor
                 },
                 sparse_options=sparse_options,
                 variational_options=variational_options,
             )
-
+            
             # Random restarts to find optimal parameters
-            mod.random_restart_optimize(
-                data=convert_data_to_tensors(
-                    self_X.to_numpy(),
-                    self_Y[feat].to_numpy().reshape(-1, 1)
-                ),
-                num_restart=num_restart,
-                randomize_kwargs={"random_seed": random_seed},
-                optimize_kwargs=optimization_options,
-            )
+            if num_restart > 0:
+                mod.random_restart_optimize(
+                    data=convert_data_to_tensors(
+                        self_X.to_numpy(),
+                        self_Y[feat].to_numpy().reshape(-1, 1)
+                    ),
+                    num_restart=num_restart,
+                    randomize_kwargs={"random_seed": random_seed},
+                    optimize_kwargs=optimization_options,
+                )
+            else:
+                mod.optimize_params(
+                    data=convert_data_to_tensors(
+                        self_X.to_numpy(),
+                        self_Y[feat].to_numpy().reshape(-1, 1)
+                    ),
+                    **optimization_options,
+                )
+
+            # If no penalization factor set then we iterater for number of steps
+            if self.iterating_penalization_factor is True:
+
+                for _ in np.arange(num_factor_iter):
+
+                    # Store previous parameter dictionary
+                    prev_params = gpflow.utilities.read_values(self)
+
+                    # Estimate residual standard deviation
+                    new_sd = np.sqrt(np.mean(mod.predict_y(self.X.values)[1]))
+
+                    new_penalization_factor = (
+                        2
+                        * 1.1
+                        * new_sd
+                        * np.sqrt(self_X.shape[0])
+                        * scipy.stats.norm().ppf(1-(0.1 / (2 * num_params)))
+                    )
+
+                    if verbose:
+                        print(
+                            "New penalization factor:"
+                            f" {new_penalization_factor}"
+                        )
+
+                    # Break out if the new factor is similar to current factor
+                    if (
+                        abs(new_penalization_factor - mod.penalization_factor)
+                        <= 1e-3
+                    ):
+                        break
+
+                    # Assign previous values and break out if new factor is larger
+                    if new_penalization_factor > mod.penalization_factor:
+                        if verbose:
+                            print("Larger penalization factor, assigning previous values and exiting")
+                        gpflow.utilities.multiple_assign(self, prev_params)
+                        break
+
+                    # Break out if the new factor is larger than the current factor
+                    mod.set_penalization_factor(new_penalization_factor)
+
+                    # Continue to optimize current parameters
+                    mod.optimize_params(
+                        **optimization_options,
+                        data=convert_data_to_tensors(
+                            self_X.to_numpy(),
+                            self_Y[feat].to_numpy().reshape(-1, 1)
+                        )
+                    )
 
             # Clean up final model
             mod.cut_kernel_components(
@@ -292,8 +390,9 @@ class GPSearch:
                 )
             )
 
-            # Increment progress bar
+            # Increment progress bar (add time for response)
             tqdm_bar.update.remote(1)
+            time.sleep(10)
 
             return mod
 
@@ -362,6 +461,7 @@ class GPSearch:
                 self_Y_stds = ray.put(self.Y_stds)
             else:
                 self_Y_stds = ray.put(None)
+            self_penalization_factor = ray.put(penalization_factor)
 
             # Load function
             model_build_steps_remote = ray.remote(model_build_steps)
@@ -376,6 +476,7 @@ class GPSearch:
                     self_Y,
                     self_likelihood,
                     self_Y_stds,
+                    self_penalization_factor,
                     feat,
                     bar
                 )
@@ -879,6 +980,7 @@ class GPSearch:
 
             # Copy model
             m_copy = gpflow.utilities.deepcopy(self.models[o])
+            var_explained = m_copy.variance_explained
 
             # First see if a feature is in each model
             if feature_name is not None:
@@ -892,9 +994,12 @@ class GPSearch:
                         for x in m_copy.kernel_name.split("+")
                         ]
                     ]
+                
                 # If this feature is in the selected model then subset model
                 if sum(feature_kernel_flags) > 0 and m_copy.kernel.name == "sum":
-                    feature_kernel_index = np.where(feature_kernel_flags)[0]
+                    feature_kernel_index = list(
+                        np.where(feature_kernel_flags)[0]
+                    )
 
                     if len(feature_kernel_index) > 1:
                         new_k = gpflow.kernels.Sum([
@@ -903,11 +1008,19 @@ class GPSearch:
                         ])
                     else:
                         new_k = m_copy.kernel.kernels[feature_kernel_index[0]]
+                    
+                    # Grab the specific explained component + leftovers
+                    var_explained = [
+                        m_copy.variance_explained[x]
+                        for x in (
+                            feature_kernel_index
+                            + [-1]
+                        )
+                    ]
+
                     m_copy.kernel = new_k
                     m_copy.update_kernel_name()
-                # If this feature is the only feature in the model
-                # elif sum(feature_kernel_flags) == 1:
-                    
+
                 # If this feature doesn't exist in the model then pass
                 elif sum(feature_kernel_flags) == 0:
                     n_feature_drops += 1
@@ -916,14 +1029,21 @@ class GPSearch:
             else:
                 feature_index = None
 
-            # Now calculate the variance explained for each component and overall
-            var_explained = calc_deviance_explained_components(
-                model=m_copy,
-                data=(
-                    self.X.to_numpy(),
-                    self.Y[o].to_numpy().reshape(-1, 1)
-                )
-            )
+            # # Calculate the variance explained for each component and overall
+            # if (
+            #     feature_index is None
+            #     and self.models[o].variance_explained is not None
+            # ):
+            #     print("Loading previous variance explained")
+            #     var_explained = self.models[o].variance_explained
+            # else:
+            #     var_explained = calc_deviance_explained_components(
+            #         model=m_copy,
+            #         data=(
+            #             self.X.to_numpy(),
+            #             self.Y[o].to_numpy().reshape(-1, 1)
+            #         )
+            #     )
 
             # Now check to make sure we have explained "enough" variance
             if (1 - var_explained[-1]) < var_cutoff:
@@ -1253,7 +1373,9 @@ def kernel_test(
             }
         )
     else:
-        best_model.optimize_params(data=convert_data_to_tensors(X, Y))
+        best_model.optimize_params(
+            data=convert_data_to_tensors(X, Y)
+        )
 
     # Calculate information criteria
     if split:
