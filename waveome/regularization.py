@@ -46,48 +46,57 @@ def full_kernel_build(
             if var_names is not None:
                 var_list += [k_copy.name + "[" + var_names[n] + "]"]
 
-    # Now do interactions
-    kern_len = len(kernel_list)
+    # Now build out interactions with categorical and continuous
+    for c in cat_vars:
+        for n in num_vars:
+            for k in kerns:
+                # Specify categorical component and freeze variance
+                k1 = Categorical(active_dims=[c])
+                gpflow.utilities.set_trainable(k1.variance, False)
 
-    # Do we want to interact all variables?
-    if second_order_numeric is True:
-        for k1 in range(kern_len):
-            for k2 in range(k1, kern_len):
-                # Skip categorical polys if same variable
-                if k1 == k2 and k1 < len(cat_vars):
-                    continue
-                else:
-                    kernel1 = gpflow.utilities.deepcopy(kernel_list[k1])
-                    kernel2 = gpflow.utilities.deepcopy(kernel_list[k2])
-                    kernel_list += [kernel1 * kernel2]
+                # Specify numeric component
+                k2 = gpflow.utilities.deepcopy(k)
+                k2.active_dims = [n]
 
-                    if var_names is not None:
-                        var_list += [var_list[k1] + "*" + var_list[k2]]
+                # Combine both
+                k_out = gpflow.kernels.Product([k1, k2])
+                kernel_list += [k_out]
 
-    # We just want to interact categorical with numeric
-    else:
-        for c in range(len(cat_vars)):
-            for n in range(len(num_vars)):
-                kernel1 = gpflow.utilities.deepcopy(kernel_list[c])
-                kernel2 = gpflow.utilities.deepcopy(
-                    kernel_list[len(cat_vars) + n]
-                )
-                kernel_list += [kernel1 * kernel2]
-
+                # Store kernel name if requested
                 if var_names is not None:
                     var_list += [
-                        kernel1.name
-                        + "["
-                        + var_names[c]
-                        + "]*"
-                        + kernel2.name
-                        + "["
-                        + var_names[len(cat_vars) + n]
-                        + "]"
+                        f"{k1.name}[{var_names[c]}]"
+                        f"*{k2.name}[{var_names[n]}]"
                     ]
+
+    # If requested also build out two-way numeric interactions
+    if second_order_numeric is True:
+        n_count = 0
+        for n_first in num_vars:
+            for k_first in kerns:
+                # Only look at terms that haven't been interacted with yet
+                # else double count
+                for n_second in num_vars[n_count:]:
+                    for k_second in kerns:
+                        k1 = gpflow.utilities.deepcopy(k_first)
+                        k1.active_dims = [n_first]
+                        k2 = gpflow.utilities.deepcopy(k_second)
+                        k2.active_dims = [n_second]
+                        k_out = gpflow.kernels.Product([k1, k2])
+                        kernel_list += [k_out]
+
+                        if var_names is not None:
+                            var_list += [
+                                f"{k1.name}[{var_names[n_first]}]"
+                                f"*{k2.name}[{var_names[n_second]}]"
+                            ]
+
+                # Increment base numeric kernel count
+                n_count += 1
 
     if return_sum is True:
         out_kernel = gpflow.kernels.Sum(kernel_list)
+
     else:
         out_kernel = kernel_list
 

@@ -224,11 +224,12 @@ class BaseGP(gpflow.models.SVGP):
 
     def optimize_params(
         self,
-        adam_learning_rate=1.0,
+        adam_learning_rate=0.1,
         adam_decay_rate=0.96,
-        nat_gradient_gamma=0.001,
+        nat_gradient_gamma=0.1,
         num_opt_iter=50000,
-        convergence_threshold=1e-6,
+        minibatch_size=None,
+        convergence_threshold=1e-9,
         optimizer="scipy",
         data=None,
     ):
@@ -263,6 +264,7 @@ class BaseGP(gpflow.models.SVGP):
         # Reset graph
         tf.compat.v1.reset_default_graph()
         tf.keras.backend.clear_session()
+        gpflow.utilities.reset_cache_bijectors(self)
 
         # Can we just use BFGS for "smaller" models? Exclude variational params
         # tot_params = 0
@@ -299,8 +301,8 @@ class BaseGP(gpflow.models.SVGP):
             opt_options = {
                 "maxiter": num_opt_iter,
                 "maxfun": num_opt_iter,
-                "ftol": convergence_threshold,
-                "maxcor": 100
+            #     "ftol": convergence_threshold,
+            #     "maxcor": 100
             }
 
             # Make sure we freeze inducing points if the kernel is Constant()
@@ -372,11 +374,25 @@ class BaseGP(gpflow.models.SVGP):
                 " Current options: ['scipy', 'adam', 'adam/gradient', None]"
             )
         
-        # Compile loss closure based on training data
-        compiled_loss = self.training_loss_closure(
-            data=data,
-            compile=True
-        )
+        # Set up loss based on minibatching or not
+        if minibatch_size is not None:
+            data_minibatch = (
+                tf.data.Dataset.from_tensor_slices(data)
+                .prefetch(tf.data.AUTOTUNE)
+                .repeat()
+                .shuffle(100)
+                .batch(minibatch_size)
+            )
+            # data_minibatch_it = iter(data_minibatch)
+            compiled_loss = self.training_loss_closure(
+                iter(data_minibatch)
+            )
+        else:
+            # Compile loss closure based on training data
+            compiled_loss = self.training_loss_closure(
+                data=data,
+                compile=True
+            )
 
         loss_list = []
 
@@ -399,8 +415,8 @@ class BaseGP(gpflow.models.SVGP):
                 break
 
             # Checkpoint!
-            # if i % 100 == 0:
-            if i % 500 == 0:
+            if i % 100 == 0:
+            # if i % 500 == 0:
                 # Save previous values
                 previous_values = gpflow.utilities.deepcopy(
                     gpflow.utilities.parameter_dict(self)
@@ -425,9 +441,18 @@ class BaseGP(gpflow.models.SVGP):
                         adam_decay_rate ** (i / 500)
                     )
 
+                    # if self.optimizer == "adam/gradient":
+                    #     natgrad_opt.gamma = (
+                    #         nat_gradient_gamma *
+                    #         adam_decay_rate ** (i / 500)
+                    #     )
+
                     # Print output if requested
                     if self.verbose:
                         print(f"Round {i} training loss: {cur_loss}")
+                        print(f"New learning rate: {adam_opt.learning_rate}")
+                        if self.optimizer == "adam/gradient":
+                            print(f"New gamma rate: {natgrad_opt.gamma}")
 
                 # Check to see if we have reached convergence
                 if (
@@ -565,6 +590,7 @@ class BaseGP(gpflow.models.SVGP):
             x_idx=x_idx,
             # unit_idx=unit_idx,
             col_names=col_names,
+            var_explained=self.variance_explained,
             lik=lik,
             data=data,
             **kwargs,
@@ -761,14 +787,14 @@ class PenalizedGP(BaseGP):
         # I cannot seem to get the penalization factor to work
         # so instead I will use Exponential priors on variance terms
         if use_factor:
-            model_var = tf.math.log(
+            model_var = (  # tf.math.log(
                 # data[0].shape[0] *
                 self.penalization_factor *
                 find_variance_components_tf(self.kernel)
             )
-            model_var *= data[0].shape[0]
+            # model_var *= data[0].shape[0]
             # out_fit = tf.math.log(tf.math.exp(model_fit) - model_var)
-            print(f"{model_fit=}, {model_var=}")
+            # print(f"{model_fit=}, {model_var=}")
             out_fit = model_fit - model_var
         else:
             out_fit = model_fit
@@ -786,9 +812,18 @@ class PenalizedGP(BaseGP):
                 #     rate=gpflow.utilities.to_default_float(penalization_factor),
                 #     name="hyperprior"
                 # )
-                prior = tfd.Exponential(
-                    # rate=hyperprior.sample()
-                    rate=gpflow.utilities.to_default_float(penalization_factor)
+
+                # Exponential prior
+                # prior = tfd.Exponential(
+                #     # rate=hyperprior.sample()
+                #     rate=gpflow.utilities.to_default_float(penalization_factor)
+                # )
+
+                # Horseshoe prior
+                prior = tfd.Horseshoe(
+                    scale=gpflow.utilities.to_default_float(
+                        1. / penalization_factor
+                    )
                 )
             else:
                 prior = None
