@@ -26,13 +26,14 @@ def pred_kernel_parts(
     x_idx,
     col_names,
     data=None,
+    var_explained=None,
     categorical_dict={},
     lik="gaussian",
     x_idx_min=None,
     x_idx_max=None,
     num_cols_in_fig=4,
     figsize=None,
-    sharey=True,
+    sharey=False,
     conf_level_val=1.96,
 ):
     """
@@ -58,8 +59,12 @@ def pred_kernel_parts(
 
     # Get variance pieces
     # var_contribs = calc_rsquare(m=m_copy)
-    var_contribs = calc_deviance_explained_components(model=m_copy, data=data)
-    var_percent = [100 * round(x / sum(var_contribs), 3) for x in var_contribs]
+    if var_explained is None:
+        var_contribs = calc_deviance_explained_components(model=m_copy, data=data)
+    else:
+        var_contribs = var_explained
+    # var_percent = [100 * round(x / sum(var_contribs), 3) for x in var_contribs]
+    var_percent = [100 * x for x in var_contribs]
 
     # Get kernel names
     # TODO: Fix this issue up, empty kernel does not produce the correct
@@ -430,6 +435,7 @@ def pred_kernel_parts(
         var_percent=var_percent[plot_idx],
         col_names=col_names,
         conf_level_val=conf_level_val,
+        resid_type="pearson"
     )
 
     # Remove empty plots in last row
@@ -458,10 +464,11 @@ def plot_residuals(
     var_percent,
     col_names,
     conf_level_val=1.96,
+    resid_type="raw"
 ):
     # Compute residuals
     # mean_pred, var_pred = m.predict_y(m.data[0])
-    resids = calc_residuals(m, X=data[0], Y=data[1])  # tf.cast(m.data[1], tf.float64) - mean_pred
+    resids = calc_residuals(m, X=data[0], Y=data[1], resid_type=resid_type)
     ax.scatter(data[0][:, x_idx], resids, color="black", alpha=0.5, s=20)
     # TODO: Think about line of best fit here maybe?
 

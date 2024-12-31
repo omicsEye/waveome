@@ -1,5 +1,6 @@
 import contextlib
 import time
+from ctypes import ArgumentError
 from xml.etree.ElementInclude import include
 
 import gpflow
@@ -17,7 +18,11 @@ from ray.experimental import tqdm_ray
 from tensorflow_probability import distributions as tfd
 
 from .kernels import Empty
-from .likelihoods import NegativeBinomial, ZeroInflatedNegativeBinomial
+from .likelihoods import (
+    NegativeBinomial,
+    ZeroInflatedNegativeBinomial,
+    negative_binomial,
+)
 
 # from multiprocessing import Value
 
@@ -149,7 +154,7 @@ def calc_rsquare(m, data=None):
     return rsq
 
 
-def calc_residuals(m, X=None, Y=None):
+def calc_residuals(m, X=None, Y=None, resid_type="raw"):
     """
     Calculate pearson residuals from model
     """
@@ -165,13 +170,27 @@ def calc_residuals(m, X=None, Y=None):
     mean_resp = m.likelihood._conditional_mean(X=X, F=mean)
     var_resp = m.likelihood._conditional_variance(X=X, F=mean)
 
-    # Calculate standardized residuals
-    resids = (
-        (
-            (tf.cast(Y, gpflow.default_float()) - mean_resp) /
-            np.sqrt(var_resp)
-        ).numpy()
-    )
+    if resid_type == "raw":
+        resids = (tf.cast(Y, gpflow.default_float()) - mean_resp).numpy()
+    elif resid_type == "deviance":
+        null_resids, resids = calc_deviance_explained(
+            model=m,
+            data=(X, Y),
+            model_mu=mean_resp,
+            model_var=var_resp,
+            aggregate=False,
+            return_deviance_explained=False
+        )
+    elif resid_type == "pearson":
+        # Calculate standardized residuals
+        resids = (
+            (
+                (tf.cast(Y, gpflow.default_float()) - mean_resp) /
+                np.sqrt(var_resp)
+            ).numpy()
+        )
+    else:
+        raise ArgumentError("resid_type can only be 'raw' or pearson'")
 
     return resids
 
@@ -470,6 +489,8 @@ def calc_deviance_explained(
         model_var=None,
         base_mu=None,
         base_var=None,
+        aggregate=True,
+        return_deviance_explained=True
         ):
     """ Calculates explained deviance for model components compared to null
     model.
@@ -518,47 +539,64 @@ def calc_deviance_explained(
         )
     elif lk_fn == "negative_binomial":
 
-        sat_mu_ = np.array(data[1]) + 1e-6
-        # mu_[mu_ == 0] = 0.1
-        # sat_var_ = sat_mu_ + 1
-        sat_var_ = sat_mu_ + model.likelihood.alpha.numpy() * (sat_mu_ ** 2)
-        sat_n = (sat_mu_)**2 / (sat_var_ - sat_mu_)
-        sat_p = sat_mu_ / sat_var_
-        sat_ll = log_dens_fn(k=data[1], n=sat_n, p=sat_p)
+        # sigma^2 = mu + mu^2 * alpha
 
-        base_mu_ = max(1e-6, np.mean(data[1])) if base_mu is None else base_mu
-        # int_var_ = max(2e-6, np.var(data[1]))
-        base_var_ = base_mu_ + model.likelihood.alpha.numpy() * (base_mu_ ** 2)
-        base_n = (base_mu_)**2 / (base_var_ - base_mu_)
-        base_p = base_mu_ / base_var_
-        base_ll = log_dens_fn(
-            k=data[1],
-            n=base_n,
-            p=base_p
+        sat_mu_ = np.array(data[1]) + 1e-6
+        sat_ll = negative_binomial(
+            m=tf.convert_to_tensor(sat_mu_),
+            Y=tf.convert_to_tensor(np.array(data[1])),
+            alpha=tf.ones(shape=np.array(data[1]).shape, dtype="float64")
         )
 
-        model_n = (model_mu)**2 / (model_var - model_mu)
-        model_p = model_mu / model_var
-        mod_ll = log_dens_fn(k=data[1], n=model_n, p=model_p)
+        base_mu_ = max(1e-6, np.mean(data[1])) if base_mu is None else base_mu
+        if base_var is None:
+            base_alpha_ = model.likelihood.alpha.numpy()
+        else:
+            base_alpha_ = (base_var - base_mu_) / base_mu_**2
+        base_ll = negative_binomial(
+            m=tf.convert_to_tensor(base_mu_),
+            Y=tf.convert_to_tensor(np.array(data[1])),
+            alpha=tf.convert_to_tensor(base_alpha_)
+        )
+
+        model_alpha_ = (model_var - model_mu) / model_mu**2
+        mod_ll = negative_binomial(
+            m=tf.convert_to_tensor(model_mu),
+            Y=tf.convert_to_tensor(np.array(data[1])),
+            alpha=tf.convert_to_tensor(model_alpha_)
+        )
+
     else:
         raise ValueError("Unknown likelihood to calculate deviance")
 
     # Now calculate the deviances
-    # Null deviance should always be greater than model deviance!
-    null_deviance = max(0, 2 * np.sum(sat_ll - base_ll))
-    # Clip to zero to avoid negatives
-    model_deviance = max(0, 2 * np.sum(sat_ll - mod_ll))
-
-    # And then the deviance explained
-    if null_deviance > 0:
-        deviance_explained = 1 - (model_deviance / null_deviance)
+    if aggregate:
+        # Null deviance should always be greater than model deviance!
+        null_deviance = max(0, 2 * np.sum(sat_ll - base_ll))
+        # Clip to zero to avoid negatives
+        model_deviance = max(0, 2 * np.sum(sat_ll - mod_ll))
+        # Then calculate deviance explained
+        deviance_explained = (
+            1 - (model_deviance / null_deviance)
+            if null_deviance > 0
+            else 0
+        )
     else:
-        deviance_explained = 0
+        null_deviance = np.clip(2 * (sat_ll - base_ll), a_min=0, a_max=np.inf)
+        model_deviance = np.clip(2 * (sat_ll - mod_ll), a_min=0, a_max=np.inf)
+        deviance_explained = (
+            1 - np.divide(
+                model_deviance,
+                null_deviance,
+                out=np.ones_like(model_deviance, dtype="float"),
+                where=(null_deviance != 0)
+            )
+        )
 
-    # Truncated deviance explained
-    deviance_explained = 0 if deviance_explained < 0 else deviance_explained
-
-    return deviance_explained
+    if return_deviance_explained:
+        return deviance_explained
+    else:
+        return null_deviance, model_deviance
 
 
 def calc_deviance_explained_components(model, data=None):
@@ -573,46 +611,58 @@ def calc_deviance_explained_components(model, data=None):
 
     # Get full model prediction and deviance
     full_mu_hat, full_var_hat = model.predict_y(data[0])
-    full_de = np.round(
-        calc_deviance_explained(
-            model=model,
-            data=data,
-            model_mu=full_mu_hat,
-            model_var=full_var_hat
-        ), 3
+    null_dev, full_dev = calc_deviance_explained(
+        model=model,
+        data=data,
+        model_mu=full_mu_hat,
+        model_var=full_var_hat,
+        return_deviance_explained=False
     )
+    full_de = (null_dev - full_dev) / null_dev
 
     if k.name == "sum":
         for k_idx in range(len(k.kernels)):
 
-            # # Break off kernel component
-            # mu_hat, var_hat, samps_, cov_hat = individual_kernel_predictions(
-            #     model=model,
-            #     kernel_idx=k_idx,
-            #     data=data,
-            #     X=data[0],
-            #     predict_type="mean"
-            # )
-
             # Now get other components predictions (ignoring this component)
             model_copy = gpflow.utilities.deepcopy(model)
-            _ = model_copy.kernel.kernels.pop(k_idx)
-            base_mu_hat, base_var_hat = model_copy.predict_y(data[0])
+            sub_kern = model_copy.kernel.kernels.pop(k_idx)
+            model_copy.kernel = sub_kern
+            mod_mu_hat, mod_var_hat = model_copy.predict_y(data[0])
 
-            de_list += [np.round(calc_deviance_explained(
-                    model=model,
-                    data=data,
-                    model_mu=full_mu_hat,
-                    model_var=full_var_hat,
-                    base_mu=base_mu_hat,
-                    base_var=base_var_hat
-                ), 3
-            )]
+            # Get deviance estimate (w/o component)
+            null_dev, sub_dev = calc_deviance_explained(
+                model=model_copy,
+                data=data,
+                model_mu=mod_mu_hat,
+                model_var=mod_var_hat,
+                return_deviance_explained=False
+            )
+
+            # Calc raw deviance explained for component
+            scaled_de = (sub_dev - full_dev) / null_dev
+
+            # Scale by full model deviance
+            # scaled_de = full_de * raw_de
+
+            # Append to list
+            de_list += [np.round(scaled_de, 3)]
+
+            # de_list += [np.round(calc_deviance_explained(
+            #         model=model_copy,
+            #         data=data,
+            #         model_mu=mod_mu_hat,
+            #         model_var=mod_var_hat
+            #         # model_mu=full_mu_hat,
+            #         # model_var=full_var_hat,
+            #         # base_mu=base_mu_hat,
+            #         # base_var=base_var_hat
+            #     ), 3
+            # )]
 
     else:
-        de_list += [full_de]
+        de_list += [np.round(full_de, 3)]
 
-    # Gather the final bit for noise
+    # Gather the final bit for leftover noise
     de_list += [np.round(1 - full_de, 3)]
 
     return de_list
