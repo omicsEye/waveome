@@ -16,8 +16,11 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 def full_kernel_build(
     cat_vars=[],
     num_vars=[],
+    unit_idx=None,
     var_names=None,
     second_order_numeric=False,
+    categorical_numeric_interactions=True,
+    unit_numeric_interactions=False,
     return_sum=False,
     kerns=[gpflow.kernels.SquaredExponential()],
 ):
@@ -26,6 +29,17 @@ def full_kernel_build(
 
     if var_names is not None:
         var_list = []
+
+    # Add unit ID kernel if there is a feature present
+    if unit_idx is not None:
+
+        # Make sure that we aren't double-counting unit id as categorical
+        cat_vars = [x for x in cat_vars if x != unit_idx]
+
+        # Only add unit intercept
+        kernel_list += [Categorical(active_dims=[unit_idx])]
+        if var_names is not None:
+            var_list += ["categorical[" + var_names[unit_idx] + "]"]
 
     # Specify all the categorical options
     for c in cat_vars:
@@ -46,28 +60,46 @@ def full_kernel_build(
             if var_names is not None:
                 var_list += [k_copy.name + "[" + var_names[n] + "]"]
 
-    # Now build out interactions with categorical and continuous
-    for c in cat_vars:
+    # See if we want to include ID and continuous interactions
+    if unit_numeric_interactions is True and unit_idx is not None:
         for n in num_vars:
             for k in kerns:
-                # Specify categorical component and freeze variance
-                k1 = Categorical(active_dims=[c])
+                k1 = Categorical(active_dims=[unit_idx])
                 gpflow.utilities.set_trainable(k1.variance, False)
-
-                # Specify numeric component
                 k2 = gpflow.utilities.deepcopy(k)
                 k2.active_dims = [n]
-
-                # Combine both
                 k_out = gpflow.kernels.Product([k1, k2])
                 kernel_list += [k_out]
 
-                # Store kernel name if requested
                 if var_names is not None:
                     var_list += [
-                        f"{k1.name}[{var_names[c]}]"
+                        f"{k1.name}[{var_names[unit_idx]}]"
                         f"*{k2.name}[{var_names[n]}]"
                     ]
+
+    # Now build out interactions with categorical and continuous
+    if categorical_numeric_interactions is True:
+        for c in cat_vars:
+            for n in num_vars:
+                for k in kerns:
+                    # Specify categorical component and freeze variance
+                    k1 = Categorical(active_dims=[c])
+                    gpflow.utilities.set_trainable(k1.variance, False)
+
+                    # Specify numeric component
+                    k2 = gpflow.utilities.deepcopy(k)
+                    k2.active_dims = [n]
+
+                    # Combine both
+                    k_out = gpflow.kernels.Product([k1, k2])
+                    kernel_list += [k_out]
+
+                    # Store kernel name if requested
+                    if var_names is not None:
+                        var_list += [
+                            f"{k1.name}[{var_names[c]}]"
+                            f"*{k2.name}[{var_names[n]}]"
+                        ]
 
     # If requested also build out two-way numeric interactions
     if second_order_numeric is True:

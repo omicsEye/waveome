@@ -38,6 +38,12 @@ class NegativeBinomial(ScalarLikelihood):
         m = self.invlink(F) * self.scale
         return m + m**2 * self.alpha
 
+    def _predict_mean_and_var(self, X, Fmu, Fvar):
+        return (
+            self._conditional_mean(X, Fmu),
+            self._conditional_variance(X, Fvar)
+        )
+    
     def return_p(self, F: TensorType) -> tf.Tensor:
         m = self.invlink(F) * self.scale
         r = 1 / self.alpha
