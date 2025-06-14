@@ -30,10 +30,10 @@ setuptools.setup(
         # "tensorflow-metal==1.0.1",
         # "tensorflow_probability==0.21.0",
 
-        "pandas",
-        "numpy",
+        "pandas==2.1.4",  # Need to pin this for numpy errors
+        "numpy==1.26.1",  # Need to pin this for TF import errors
         "ray[default]",
-        "scipy",
+        "scipy==1.11.2",  # Need to pin this for TF import errors
         "joblib",  # Switch out for ray
         "seaborn",
         "matplotlib",
