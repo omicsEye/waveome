@@ -1,3 +1,4 @@
+import copy
 import re
 
 import gpflow
@@ -26,13 +27,15 @@ def pred_kernel_parts(
     x_idx,
     col_names,
     data=None,
+    var_explained=None,
     categorical_dict={},
     lik="gaussian",
+    marginal=True,
     x_idx_min=None,
     x_idx_max=None,
     num_cols_in_fig=4,
     figsize=None,
-    sharey=True,
+    sharey=False,
     conf_level_val=1.96,
 ):
     """
@@ -58,8 +61,14 @@ def pred_kernel_parts(
 
     # Get variance pieces
     # var_contribs = calc_rsquare(m=m_copy)
-    var_contribs = calc_deviance_explained_components(model=m_copy, data=data)
-    var_percent = [100 * round(x / sum(var_contribs), 3) for x in var_contribs]
+    if var_explained is None:
+        var_contribs = calc_deviance_explained_components(model=m_copy, data=data)
+    else:
+        var_contribs = copy.deepcopy(var_explained)
+    # var_percent = [100 * round(x / sum(var_contribs), 3) for x in var_contribs]
+    # var_percent = [100 * x for x in var_contribs]
+    var_percent = var_contribs
+    var_percent[-1] *= 100
 
     # Get kernel names
     # TODO: Fix this issue up, empty kernel does not produce the correct
@@ -125,13 +134,30 @@ def pred_kernel_parts(
 
         # Plot all possible category means if categorical
         if "categorical" in k_name:  # kernel_names[c]:
+
+            # Check to see if categorical is crossed with a continuous feature
+            if "*" in k_name:
+                # Grab all of the variable indexes
+                x_idxs = [int(x) for x in re.findall(r"\[(\d+)\]", k_name)]
+                x_new = np.zeros((1000, X.shape[1]))
+                # Choose the second one as the main support
+                x_new[:, x_idxs[1]] = np.linspace(
+                    X[:, x_idxs[1]].min(), X[:, x_idxs[1]].max(), 1000
+                )
+                plot_x_idx = x_idxs[1]
+            else:
+                # Set up empyty dataset with domain support
+                x_new = np.zeros((1000, X.shape[1]))
+                x_new[:, x_idx] = np.linspace(x_idx_min, x_idx_max, 1000)
+                plot_x_idx = x_idx
+
             for cat_idx in re.findall(
                 r"categorical\[(\d+)\]", k_name
             ):  # kernel_names[c]):
                 cat_idx = int(cat_idx)
-                # Set up empyty dataset with domain support
-                x_new = np.zeros((1000, X.shape[1]))
-                x_new[:, x_idx] = np.linspace(x_idx_min, x_idx_max, 1000)
+                # # Set up empyty dataset with domain support
+                # x_new = np.zeros((1000, X.shape[1]))
+                # x_new[:, x_idx] = np.linspace(x_idx_min, x_idx_max, 1000)
 
                 # For each unique level of category replace and predict values
                 num_unique_cat = len(np.unique(X[:, cat_idx]))
@@ -146,6 +172,7 @@ def pred_kernel_parts(
                         data=data,
                         product_term=product_term,
                         X=x_new,
+                        marginal=marginal,
                         white_noise_amt=1e-2,
                     )
                     mean = mean.numpy().flatten()
@@ -178,9 +205,9 @@ def pred_kernel_parts(
                     )
 
                     # Decide if we should annotate each category or not
-                    if num_unique_cat < 5:
+                    if num_unique_cat <= 5:
                         ax[plot_row_idx, plot_col_idx].plot(
-                            x_new[:, x_idx],
+                            x_new[:, plot_x_idx],
                             mean_resp,
                             alpha=0.5,
                             label=(
@@ -193,7 +220,7 @@ def pred_kernel_parts(
                             ),
                         )
                         ax[plot_row_idx, plot_col_idx].fill_between(
-                            x_new[:, x_idx],
+                            x_new[:, plot_x_idx],
                             lower_ci,  # mean - conf_level_val * np.sqrt(var),
                             upper_ci,  # mean + conf_level_val * np.sqrt(var),
                             color="lightgreen",
@@ -208,14 +235,14 @@ def pred_kernel_parts(
 
                     else:
                         ax[plot_row_idx, plot_col_idx].plot(
-                            x_new[:, x_idx], mean_resp, alpha=0.5
+                            x_new[:, plot_x_idx], mean_resp, alpha=0.5
                         )
 
                 # Set the subplot title to match the true variable name
                 ax[plot_row_idx, plot_col_idx].set(
                     xlabel=(
                         f"""{replace_kernel_variables(
-                            '['+str(x_idx)+']',
+                            '['+str(plot_x_idx)+']',
                             col_names
                         ).strip('[]')}"""
                     )
@@ -246,6 +273,7 @@ def pred_kernel_parts(
                     data=data,
                     product_term=product_term,
                     X=x_new,
+                    marginal=marginal
                 )
                 mean = mean.numpy().flatten()
                 var = var.numpy().flatten()
@@ -326,6 +354,7 @@ def pred_kernel_parts(
                 data=data,
                 product_term=product_term,
                 X=x_new,
+                marginal=marginal
             )
             mean = mean.numpy().flatten()
             var = var.numpy().flatten()
@@ -406,7 +435,7 @@ def pred_kernel_parts(
                     k_name,
                     col_names
                 ).replace('*', '*'+chr(10))}"""
-                f"""({round(var_percent[plot_idx], 1)}%)"""
+                f"""({round(var_percent[plot_idx], 1)})"""
             )
         )
         # Reset col index if at end and increment row index
@@ -430,6 +459,7 @@ def pred_kernel_parts(
         var_percent=var_percent[plot_idx],
         col_names=col_names,
         conf_level_val=conf_level_val,
+        resid_type="pearson"
     )
 
     # Remove empty plots in last row
@@ -458,11 +488,19 @@ def plot_residuals(
     var_percent,
     col_names,
     conf_level_val=1.96,
+    resid_type="raw"
 ):
     # Compute residuals
-    # mean_pred, var_pred = m.predict_y(m.data[0])
-    resids = calc_residuals(m, X=data[0], Y=data[1])  # tf.cast(m.data[1], tf.float64) - mean_pred
-    ax.scatter(data[0][:, x_idx], resids, color="black", alpha=0.5, s=20)
+    mean_pred, var_pred = m.predict_y(data[0])
+    resids = calc_residuals(m, X=data[0], Y=data[1], resid_type=resid_type)
+    ax.scatter(
+        mean_pred,
+        resids,
+        color="black",
+        alpha=0.5,
+        s=20
+    )
+    # ax.scatter(data[0][:, x_idx], resids, color="black", alpha=0.5, s=20)
     # TODO: Think about line of best fit here maybe?
 
     # if lik == 'gaussian':
@@ -521,12 +559,14 @@ def plot_residuals(
     #                   s=20)
     ax.set(
         title=f"residuals ({round(var_percent, 1)}%)",
-        xlabel=(
-            f"""{replace_kernel_variables(
-                '['+str(x_idx)+']',
-                col_names
-            ).strip('[]')}"""
-        ),
+        # xlabel=(
+        #     f"""{replace_kernel_variables(
+        #         '['+str(x_idx)+']',
+        #         col_names
+        #     ).strip('[]')}"""
+        # ),
+        xlabel="fitted value",
+        ylabel=f"{resid_type} residual"
     )
 
 

@@ -1,5 +1,6 @@
 import contextlib
 import time
+from ctypes import ArgumentError
 from xml.etree.ElementInclude import include
 
 import gpflow
@@ -17,7 +18,11 @@ from ray.experimental import tqdm_ray
 from tensorflow_probability import distributions as tfd
 
 from .kernels import Empty
-from .likelihoods import NegativeBinomial, ZeroInflatedNegativeBinomial
+from .likelihoods import (
+    NegativeBinomial,
+    ZeroInflatedNegativeBinomial,
+    negative_binomial,
+)
 
 # from multiprocessing import Value
 
@@ -149,7 +154,7 @@ def calc_rsquare(m, data=None):
     return rsq
 
 
-def calc_residuals(m, X=None, Y=None):
+def calc_residuals(m, X=None, Y=None, resid_type="raw"):
     """
     Calculate pearson residuals from model
     """
@@ -165,13 +170,27 @@ def calc_residuals(m, X=None, Y=None):
     mean_resp = m.likelihood._conditional_mean(X=X, F=mean)
     var_resp = m.likelihood._conditional_variance(X=X, F=mean)
 
-    # Calculate standardized residuals
-    resids = (
-        (
-            (tf.cast(Y, gpflow.default_float()) - mean_resp) /
-            np.sqrt(var_resp)
-        ).numpy()
-    )
+    if resid_type == "raw":
+        resids = (tf.cast(Y, gpflow.default_float()) - mean_resp).numpy()
+    elif resid_type == "deviance":
+        null_resids, resids = calc_deviance_explained(
+            model=m,
+            data=(X, Y),
+            model_mu=mean_resp,
+            model_var=var_resp,
+            aggregate=False,
+            return_deviance_explained=False
+        )
+    elif resid_type == "pearson":
+        # Calculate standardized residuals
+        resids = (
+            (
+                (tf.cast(Y, gpflow.default_float()) - mean_resp) /
+                np.sqrt(var_resp)
+            ).numpy()
+        )
+    else:
+        raise ArgumentError("resid_type can only be 'raw' or pearson'")
 
     return resids
 
@@ -470,6 +489,9 @@ def calc_deviance_explained(
         model_var=None,
         base_mu=None,
         base_var=None,
+        aggregate=True,
+        return_deviance_explained=True,
+        return_loglik=False
         ):
     """ Calculates explained deviance for model components compared to null
     model.
@@ -518,50 +540,74 @@ def calc_deviance_explained(
         )
     elif lk_fn == "negative_binomial":
 
-        sat_mu_ = np.array(data[1]) + 1e-6
-        # mu_[mu_ == 0] = 0.1
-        # sat_var_ = sat_mu_ + 1
-        sat_var_ = sat_mu_ + model.likelihood.alpha.numpy() * (sat_mu_ ** 2)
-        sat_n = (sat_mu_)**2 / (sat_var_ - sat_mu_)
-        sat_p = sat_mu_ / sat_var_
-        sat_ll = log_dens_fn(k=data[1], n=sat_n, p=sat_p)
+        # sigma^2 = mu + mu^2 * alpha
+        # alpha = mu^2 / (sigma^2 - mu)
+        try:
+            alpha_val = model.likelihood.alpha.numpy()
+        except AttributeError:
+            alpha_val = 1.0
 
-        base_mu_ = max(1e-6, np.mean(data[1])) if base_mu is None else base_mu
-        # int_var_ = max(2e-6, np.var(data[1]))
-        base_var_ = base_mu_ + model.likelihood.alpha.numpy() * (base_mu_ ** 2)
-        base_n = (base_mu_)**2 / (base_var_ - base_mu_)
-        base_p = base_mu_ / base_var_
-        base_ll = log_dens_fn(
-            k=data[1],
-            n=base_n,
-            p=base_p
+        sat_mu_ = np.array(data[1]) + 1e-6
+        sat_ll = negative_binomial(
+            m=sat_mu_,
+            Y=np.array(data[1]),
+            alpha=alpha_val
         )
 
-        model_n = (model_mu)**2 / (model_var - model_mu)
-        model_p = model_mu / model_var
-        mod_ll = log_dens_fn(k=data[1], n=model_n, p=model_p)
+        base_mu_ = max(1e-6, np.mean(data[1])) if base_mu is None else base_mu
+        base_ll = negative_binomial(
+            m=base_mu_,
+            Y=np.array(data[1]),
+            alpha=alpha_val
+        )
+
+        mod_ll = negative_binomial(
+            m=model_mu,
+            Y=np.array(data[1]),
+            alpha=alpha_val
+        )
+
     else:
         raise ValueError("Unknown likelihood to calculate deviance")
+    
+    if return_loglik:
+        return base_ll, mod_ll, sat_ll
 
     # Now calculate the deviances
-    # Null deviance should always be greater than model deviance!
-    null_deviance = max(0, 2 * np.sum(sat_ll - base_ll))
-    # Clip to zero to avoid negatives
-    model_deviance = max(0, 2 * np.sum(sat_ll - mod_ll))
-
-    # And then the deviance explained
-    if null_deviance > 0:
-        deviance_explained = 1 - (model_deviance / null_deviance)
+    if aggregate:
+        # Null deviance should always be greater than model deviance!
+        null_deviance = max(0, 2 * np.sum(sat_ll - base_ll))
+        # Clip to zero to avoid negatives
+        model_deviance = max(0, 2 * np.sum(sat_ll - mod_ll))
+        # Then calculate deviance explained
+        deviance_explained = (
+            1 - (model_deviance / null_deviance)
+            if null_deviance > 0
+            else 0
+        )
     else:
-        deviance_explained = 0
+        null_deviance = np.clip(2 * (sat_ll - base_ll), a_min=0, a_max=np.inf)
+        model_deviance = np.clip(2 * (sat_ll - mod_ll), a_min=0, a_max=np.inf)
+        deviance_explained = (
+            1 - np.divide(
+                model_deviance,
+                null_deviance,
+                out=np.ones_like(model_deviance, dtype="float"),
+                where=(null_deviance != 0)
+            )
+        )
 
-    # Truncated deviance explained
-    deviance_explained = 0 if deviance_explained < 0 else deviance_explained
+    if return_deviance_explained:
+        return deviance_explained
+    else:
+        return null_deviance, model_deviance
 
-    return deviance_explained
 
-
-def calc_deviance_explained_components(model, data=None):
+def calc_deviance_explained_components(
+        model,
+        data=None,
+        return_value="log_bf"
+    ):
     """ Calculate deviance explained for each additive component.
     """
 
@@ -573,46 +619,76 @@ def calc_deviance_explained_components(model, data=None):
 
     # Get full model prediction and deviance
     full_mu_hat, full_var_hat = model.predict_y(data[0])
-    full_de = np.round(
-        calc_deviance_explained(
-            model=model,
-            data=data,
-            model_mu=full_mu_hat,
-            model_var=full_var_hat
-        ), 3
+    null_lls, mod_lls, sat_lls = calc_deviance_explained(
+        model=model,
+        data=data,
+        model_mu=full_mu_hat,
+        model_var=full_var_hat,
+        return_deviance_explained=False,
+        aggregate=False,
+        return_loglik=True
     )
+
+    # calculate model deviance: 1 - (full_dev / null_dev)
+    if np.sum(sat_lls) >= np.sum(mod_lls) and np.sum(mod_lls) >= np.sum(null_lls):
+        full_de = 1 - (-2 * np.sum(mod_lls - sat_lls) / (-2 * np.sum(null_lls - sat_lls)))
+        full_de = max(min(1, full_de), 0)
+    else:
+        full_de = 0
 
     if k.name == "sum":
         for k_idx in range(len(k.kernels)):
 
-            # # Break off kernel component
-            # mu_hat, var_hat, samps_, cov_hat = individual_kernel_predictions(
-            #     model=model,
-            #     kernel_idx=k_idx,
-            #     data=data,
-            #     X=data[0],
-            #     predict_type="mean"
-            # )
-
             # Now get other components predictions (ignoring this component)
             model_copy = gpflow.utilities.deepcopy(model)
             _ = model_copy.kernel.kernels.pop(k_idx)
-            base_mu_hat, base_var_hat = model_copy.predict_y(data[0])
+            mod_mu_hat, mod_var_hat = model_copy.predict_y(data[0])
 
-            de_list += [np.round(calc_deviance_explained(
-                    model=model,
-                    data=data,
-                    model_mu=full_mu_hat,
-                    model_var=full_var_hat,
-                    base_mu=base_mu_hat,
-                    base_var=base_var_hat
-                ), 3
-            )]
+            # Get likelihood estimate (w/o component)
+            null_lls, sub_mod_lls, sat_lls = calc_deviance_explained(
+                model=model_copy,
+                data=data,
+                model_mu=mod_mu_hat,
+                model_var=mod_var_hat,
+                return_deviance_explained=False,
+                aggregate=False,
+                return_loglik=True
+            )
+
+            # Calc deviance explained by looking at deviance without feature
+            # included ("best" is fit model not saturated)
+            if return_value == "statistic":
+                scaled_de = np.round(-2 * (np.sum(sub_mod_lls) - np.sum(mod_lls)), 1)
+                scaled_de = max(scaled_de, 0)
+            elif return_value == "log_bf":
+                scaled_de = np.round(np.sum(mod_lls) - np.sum(sub_mod_lls), 1)
+            else:
+                scaled_de = (
+                    1
+                    - (
+                        -2 * np.sum(sub_mod_lls - mod_lls)
+                        /
+                        (-2 * np.sum(null_lls - mod_lls))
+                    )
+                )
+                scaled_de = np.round(max(min(1, scaled_de), 0), 3)
+
+            # Append to list
+            de_list += [scaled_de]
 
     else:
-        de_list += [full_de]
+        # If there is just a single term
+        if k.name == "constant":
+            de_list += [0.]
+        else:
+            if return_value == "statistic":
+                de_list += [np.round(-2 * (np.sum(null_lls) - np.sum(mod_lls)), 1)]
+            elif return_value == "log_bf":
+                de_list += [np.round((np.sum(mod_lls) - np.sum(null_lls)), 1)]
+            else:
+                de_list += [np.round(full_de, 3)]
 
-    # Gather the final bit for noise
+    # Gather the final bit for leftover noise
     de_list += [np.round(1 - full_de, 3)]
 
     return de_list
@@ -626,6 +702,7 @@ def individual_kernel_predictions(
     X=None,
     white_noise_amt=1e-6,
     predict_type="func",
+    marginal=True,
     num_samples=100,
     model_data=None,
     latent=False,
@@ -641,7 +718,7 @@ def individual_kernel_predictions(
     X : Numpy array for prediction points
 
     white_noise_amt : Float
-                      Amount of diagonal noise to add to covariance matricies
+        Amount of diagonal noise to add to covariance matricies
 
     predict_type : String
         Add Gaussian noise from likelihood function?
@@ -665,13 +742,18 @@ def individual_kernel_predictions(
                 model.q_mu.numpy()[:, kernel_idx].reshape(-1, 1),
             )
         else:
-            assert (
-                model_data is not None
-            ), "Need to supply model_data argument for this model type."
+            if model.inducing_variable is None:
+                assert (
+                    model_data is not None
+                ), "Need to supply model_data argument for this model type."
     elif data is not None:
         model_data = data
     else:
         model_data = model.data
+
+    # Overwrite model data with inducing variables if they exist
+    if model.inducing_variable is not None:
+        model_data = (model.inducing_variable.Z, model.q_mu)
 
     # Copy model component of interest
     sub_model = gpflow.utilities.deepcopy(model)
@@ -685,8 +767,9 @@ def individual_kernel_predictions(
                 "Not enough kernel components for index requested!"
             )
 
-        # Now subset the copied model to the specific kernel component
-        sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
+        # TODO: Show that using the independent kernel is bad!
+        # # Now subset the copied model to the specific kernel component
+        # sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
 
     # # Then generate predictions
     # pred_mu, pred_var = sub_model.predict_f(X)
@@ -704,7 +787,6 @@ def individual_kernel_predictions(
 
     # return pred_mu, pred_var, sample_fns, pred_cov
 
-
     # TODO: Double check to see if we need this product block for anything
     # # Only pull of kernel of interest if there are multiple kernels
     # # Also need to deal with product term
@@ -717,8 +799,6 @@ def individual_kernel_predictions(
     #     else:
     #         print(f"{sub_model.kernel.kernels=}")
     #         sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
-
-
     # pred_x = model_data[0] if X is None else X
 
     # If there is only one kernel component then return
@@ -730,117 +810,144 @@ def individual_kernel_predictions(
             sub_model.predict_f_samples(X, num_samples=num_samples)[:, :, 0]
         )
     else:
-        # Build each part of the covariance matrix
-        if latent is True:
-            sigma_21 = tf.cast(
-                model.kernel.latent_kernels[kernel_idx].K(
-                    X=model_data[0], X2=X
-                ),
-                tf.float64,
-            )
-            sigma_11 = tf.cast(
-                model.kernel.latent_kernels[kernel_idx].K(X=X), tf.float64
-            )
-        elif model.kernel.name == "sum":
-            sigma_21 = tf.cast(
-                model.kernel.kernels[kernel_idx].K(X=model.data[0], X2=X),
-                tf.float64,
-            )
-            sigma_11 = tf.cast(
-                model.kernel.kernels[kernel_idx].K(X=X), tf.float64
+
+        if marginal is True:
+            pred_mu, pred_var = sub_model.predict_f(X)
+            _, pred_cov = sub_model.predict_f(X, full_cov=True)
+            sample_fns = tf.transpose(
+                sub_model.predict_f_samples(X, num_samples=num_samples)[:, :, 0]
             )
         else:
-            sigma_21 = tf.cast(
-                model.kernel.K(X=model.data[0], X2=X), tf.float64
-            )
-            sigma_11 = tf.cast(model.kernel.K(X=X), tf.float64)
-
-        if latent is True:
-            sigma_22 = tf.cast(
-                model.kernel.latent_kernels[kernel_idx](X=model_data[0]),
-                tf.float64,
-            )
-        else:
-            sigma_22 = tf.cast(model.kernel.K(X=model_data[0]), tf.float64)
-        sigma_12 = tf.transpose(sigma_21)
-
-        # Figure out white noise amount to add to diag if none given
-        if white_noise_amt is None:
-            # Get min eigenvalue to make sure we can invert the matrix
-            min_ev = np.min(np.linalg.eigvalsh(sigma_22))
-            if min_ev < 0:
-                white_noise_amt = abs(min_ev)
+            # Build each part of the covariance matrix
+            if latent is True:
+                sigma_21 = tf.cast(
+                    model.kernel.latent_kernels[kernel_idx].K(
+                        X=model_data[0], X2=X
+                    ),
+                    tf.float64,
+                )
+                sigma_11 = tf.cast(
+                    model.kernel.latent_kernels[kernel_idx].K(X=X), tf.float64
+                )
+            elif model.kernel.name == "sum":
+                sigma_21 = tf.cast(
+                    model.kernel.kernels[kernel_idx].K(X=model_data[0], X2=X),
+                    tf.float64,
+                )
+                sigma_11 = tf.cast(
+                    model.kernel.kernels[kernel_idx].K(X=X), tf.float64
+                )
             else:
-                white_noise_amt = 0
-            # white_noise_amt = np.tril(sigma_11, k=-1).max()
-        sigma_22 += tf.linalg.diag(
-            tf.repeat(f64(white_noise_amt), model.data[0].shape[0])
-        )
+                sigma_21 = tf.cast(
+                    model.kernel.K(X=model_data[0], X2=X), tf.float64
+                )
+                sigma_11 = tf.cast(model.kernel.K(X=X), tf.float64)
 
-        # Invert sigma_22
-        # Try LU decomposition first
-        try:
-            inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
-        except ValueError:
-            print("Warning - Approximating the covariance inverse")
-            inv_sigma_22 = tf.linalg.pinv(sigma_22)
-
-        # Now calculate mean and variance
-        if latent is True:
-            pred_mu = np.zeros((X.shape[0], 1)) + tf.matmul(
-                a=tf.matmul(
-                    a=sigma_12, b=inv_sigma_22  # b=tf.linalg.inv(sigma_22)),
-                ),
-                b=(
-                    model.q_mu.numpy()[:, kernel_idx].reshape(-1, 1)
-                    - np.zeros((model_data[0].shape[0], 1))
-                ),
-            )
-        else:
-            if model.mean_function.name == "zero":
-                mu1 = np.zeros(shape=(X.shape[0], 1))
-                mu2 = np.zeros(shape=(model_data[0].shape[0], 1))
-            elif model.mean_function.name == "constant":
-                mu1 = np.repeat(
-                    model.mean_function.c.numpy(), X.shape[0]
-                ).reshape(-1, 1)
-                mu2 = np.repeat(
-                    model.mean_function.c.numpy(), model_data[0].shape[0]
-                ).reshape(-1, 1)
+            if latent is True:
+                sigma_22 = tf.cast(
+                    model.kernel.latent_kernels[kernel_idx](X=model_data[0]),
+                    tf.float64,
+                )
             else:
-                raise NotImplementedError(
-                    "Cannot handle mean_function beyond (none, constant)"
+                sigma_22 = tf.cast(model.kernel.K(X=model_data[0]), tf.float64)
+            sigma_12 = tf.transpose(sigma_21)
+
+            # Figure out white noise amount to add to diag if none given
+            if white_noise_amt is None:
+                # Get min eigenvalue to make sure we can invert the matrix
+                min_ev = np.min(np.linalg.eigvalsh(sigma_22))
+                if min_ev < 0:
+                    white_noise_amt = abs(min_ev)
+                else:
+                    white_noise_amt = 0
+                # white_noise_amt = np.tril(sigma_11, k=-1).max()
+            sigma_22 += tf.linalg.diag(
+                tf.repeat(f64(white_noise_amt), model_data[0].shape[0])
+            )
+
+            # Invert sigma_22
+            # Try LU decomposition first
+            try:
+                inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
+            except ValueError:
+                print("Warning - Approximating the covariance inverse")
+                inv_sigma_22 = tf.linalg.pinv(sigma_22)
+
+            # Now calculate mean and variance
+            if latent is True:
+                pred_mu = np.zeros((X.shape[0], 1)) + tf.matmul(
+                    a=tf.matmul(
+                        a=sigma_12, b=inv_sigma_22  # b=tf.linalg.inv(sigma_22)),
+                    ),
+                    b=(
+                        model.q_mu.numpy()[:, kernel_idx].reshape(-1, 1)
+                        - np.zeros((model_data[0].shape[0], 1))
+                    ),
+                )
+            else:
+                if model.mean_function.name == "zero":
+                    mu1 = np.zeros(shape=(X.shape[0], 1))
+                    mu2 = np.zeros(shape=(model_data[0].shape[0], 1))
+                elif model.mean_function.name == "constant":
+                    mu1 = np.repeat(
+                        model.mean_function.c.numpy(), X.shape[0]
+                    ).reshape(-1, 1)
+                    mu2 = np.repeat(
+                        model.mean_function.c.numpy(), model_data[0].shape[0]
+                    ).reshape(-1, 1)
+                else:
+                    raise NotImplementedError(
+                        "Cannot handle mean_function beyond (none, constant)"
+                    )
+
+                # Calculate posterior mean
+                pred_mu = mu1 + tf.matmul(
+                    a=tf.matmul(a=sigma_12, b=inv_sigma_22),
+                    b=(model_data[1] - mu2),
                 )
 
-            # Calculate posterior mean
-            pred_mu = mu1 + tf.matmul(
-                a=tf.matmul(a=sigma_12, b=inv_sigma_22),
-                b=(model_data[1] - mu2),
+            # Covariance function
+            pred_cov = sigma_11 - tf.matmul(
+                a=sigma_12,
+                b=tf.matmul(
+                    a=inv_sigma_22,
+                    # a=tf.linalg.inv(sigma_22),
+                    b=sigma_21,
+                ),
             )
 
-        # Covariance function
-        pred_cov = sigma_11 - tf.matmul(
-            a=sigma_12,
-            b=tf.matmul(
-                a=inv_sigma_22,
-                # a=tf.linalg.inv(sigma_22),
-                b=sigma_21,
-            ),
-        )
-        # Variance component
-        pred_var = tf.linalg.diag_part(pred_cov)
+            # Add uncertainty from inducing variables if present
+            if model.inducing_variable is not None:
+                pred_cov += (
+                    tf.matmul(
+                        a=sigma_12,
+                        b=tf.matmul(
+                            a=inv_sigma_22,
+                            b=tf.matmul(
+                                a=model.q_sqrt,
+                                b=tf.matmul(
+                                    a=inv_sigma_22,
+                                    b=sigma_21
+                                )
+                            )
+                        )
+                    )
+                )
 
-        # Also pull some function samples
-        # posterior_dist = tfp.distributions.MultivariateNormalFullCovariance(
-        #     loc=tf.transpose(pred_mu),
-        #     covariance_matrix=pred_cov,
-        #     )
-        # Need to update this to silence tensorflow warning
-        posterior_dist = tfp.distributions.MultivariateNormalTriL(
-            loc=tf.transpose(pred_mu), scale_tril=tf.linalg.cholesky(pred_cov)
-        )
-        sample_fns = posterior_dist.sample(sample_shape=num_samples)
-        sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
+            # Variance component
+            pred_var = tf.linalg.diag_part(pred_cov)
+
+            # Also pull some function samples (if covariance is stable!)
+            try:
+                posterior_dist = tfp.distributions.MultivariateNormalTriL(
+                    loc=tf.transpose(pred_mu),
+                    scale_tril=tf.linalg.cholesky(pred_cov),
+                    validate_args=True
+                )
+                sample_fns = posterior_dist.sample(sample_shape=num_samples)
+                sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
+            except tf.errors.InvalidArgumentError:
+                sample_fns = tf.repeat(pred_mu, num_samples, axis=1)
 
     # Transform output as needed
     if predict_type == "mean":
@@ -1029,7 +1136,7 @@ def keep_kernel_lengthscale_(kernel_component, X):
     active_index = kernel_component.active_dims[0]
 
     # Check to see range of relevant input dimension
-    var_range = X[:, active_index].ptp()
+    var_range = 3 * np.ptp(X[:, active_index])
 
     # See if lengthscale is larger than range of input
     return (kernel_component.lengthscales.numpy() < var_range)

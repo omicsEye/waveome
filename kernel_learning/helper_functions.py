@@ -1,20 +1,22 @@
 # Libraries
+import contextlib
+import os
+
+# from gpflow.ci_utils import ci_niter
+import re
+
+import gpflow
+import joblib
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import tensorflow as tf
 import tensorflow_probability as tfp
-from tensorflow_probability import distributions as tfd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import gpflow
-from gpflow.utilities import set_trainable, positive
-from gpflow.ci_utils import ci_niter
-import re
-import contextlib
-import joblib
-from tqdm import tqdm
+from gpflow.utilities import positive, set_trainable
 from joblib import Parallel, delayed
-import pandas as pd
-import os
+from tensorflow_probability import distributions as tfd
+from tqdm import tqdm
 
 f64 = gpflow.utilities.to_default_float
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
