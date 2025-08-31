@@ -666,6 +666,11 @@ class GPSearch:
         random_seed=None,
         include_dashboard=False
     ):
+
+        raise NotImplementedError(
+            "run_penalized_search is deprecated, use penalized_optimization instead."
+        )
+
         # Set model selection type
         self.model_selection_type = "penalized"
 
@@ -983,6 +988,7 @@ class GPSearch:
     def plot_heatmap(
         self,
         var_cutoff=0.8,
+        metric_cutoff=None,
         feature_name=None,
         show_vals=True,
         figsize=None,
@@ -1072,6 +1078,12 @@ class GPSearch:
             if (1 - var_explained[-1]) < var_cutoff:
                 n_explained_drops += 1
                 continue
+
+            # Check if metric cutoff is specified and met
+            if metric_cutoff is not None:
+                if max(var_explained[:-1]) < metric_cutoff:
+                    n_explained_drops += 1
+                    continue
 
             # If we are still investigating this feature then save output for ploting
             kname = replace_kernel_variables(

@@ -230,7 +230,7 @@ class BaseGP(gpflow.models.SVGP):
         num_opt_iter=50000,
         minibatch_size=None,
         convergence_threshold=1e-9,
-        optimizer="scipy",
+        optimizer="adam/gradient",
         data=None,
     ):
         """Optimize hyperparameters of model.
