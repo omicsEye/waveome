@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name="waveome",
-    version="0.0.3",
+    version="0.1.0",
     author="Allen Ross",
     author_email="allenross@gwu.edu",
     description="""
