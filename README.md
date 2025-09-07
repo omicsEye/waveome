@@ -1,20 +1,16 @@
-# waveome
+# Overview
+<img align="right" width="250" height="250" src="./figures/hex-waveome.png">
 
-## Overview
+This repository houses code for the `waveome` package - an easy to use and powerful Python library that analyzes longitudinal data using Gaussian processes. It is particularly well-suited to characterize the temporal dynamics of omics measurements and associated variables of interest. This is done by using the Gaussian process as a prior to allow for flexible, nonparametric estimation of the potential relationships between varibles of interest. Futhermore, we allow for automated variable selection through a variety of methods. The software is open source and is built on top of GPflow (and TensorFlow).
 
-<img style="float: right;" width="200" height="200" src="./figures/hex-waveome.png">
-
-This repository houses code for the _waveome_ package - an easy to use and powerful Python library that analyzes longitudinal data using Gaussian processes. It is particularly well-suited to characterize the temporal dynamics of omics measurements and associated variables of interest. This is done by using the Gaussian process as a prior to allow for flexible, nonparametric estimation of the potential relationships between varibles of interest. Futhermore, we allow for automated variable selection through a variety of methods. The software is open source and is built on top of GPflow (and TensorFlow).
-
-### Key features
+## Key features
 * **General Purpose**: Focus for longitudinal data analysis, but also useful for cross-sectional hypotheses
 * **Flexible Modeling**: Variety of kernels (including for categorical variables) and non-Gaussian likelihoods available
 * **Variable Selection**: Search-based as well as global penalization with Horshoe priors to automatically identify relevant covariates and kernel structure
 * **Metrics & Visualizations**: Generalized deviance explained and Bayes factors available as well as a variety of plotting features
 * **Parallelization**: Independent model hyperparameter optimization occurs in parallel through [Ray](https://docs.ray.io) allowing scalability from local machine to clusters
-<!-- * **Documentation**: Open-source GitHub repository of code complete with tutorials and a wide range of real-world applications. -->
 
-## Installation
+# Installation
 
 We recommend a fresh conda environment (Python 3.9–3.11):
 
@@ -31,7 +27,7 @@ python -m ipykernel install --user --name=waveome_env
 ```
 For platform-specific tips, see `docs/INSTALL.md` (optional).
 
-## Quick Start
+# Quick Start
 ```python
 import seaborn as sns
 from waveome.model_search import GPSearch
@@ -55,7 +51,7 @@ gps.plot_heatmap(var_cutoff=0, cluster=False)
 ```
 See the tutorial notebook `waveome_overview.ipynb` for longitudinal synthetic data generation and more visualization options post-fitting.
 
-## Applications
+# Applications
 ### Simulations:
 Path: `examples/simulations/`\
 Summary: We evaluated our methods on simulated data both for holdout distributional fit as well as our automated variable selection strategies. These were performed on the [GW HPC](https://it.gwu.edu/hpc-pegasus), but individuals might be interested in understanding more of the modeling components and methods in `waveome` which can be found in the notebook `simple_regression_different_models.ipynb`. 
@@ -136,10 +132,10 @@ This [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/master/examples
 illustrates the steps.
 -->
 
-## Citation
+# Citation
 If you use `waveome`, please cite:
 > Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
 waveome: characterizing temporal dynamics of metabolites in longitudinal studies, https://github.com/omicsEye/waveome/.
 
-## Support
+# Support
 * Issues: https://github.com/omicsEye/waveome/issues
