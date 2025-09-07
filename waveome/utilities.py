@@ -768,8 +768,8 @@ def individual_kernel_predictions(
             )
 
         # TODO: Show that using the independent kernel is bad!
-        # # Now subset the copied model to the specific kernel component
-        # sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
+        # Now subset the copied model to the specific kernel component
+        sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
 
     # # Then generate predictions
     # pred_mu, pred_var = sub_model.predict_f(X)

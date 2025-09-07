@@ -2,12 +2,10 @@ import setuptools
 
 setuptools.setup(
     name="waveome",
-    version="0.0.3",
+    version="0.1.0",
     author="Allen Ross",
     author_email="allenross@gwu.edu",
-    description="""
-        Automated longitudinal data analysis using Gaussian processes.
-    """,
+    description="Automated longitudinal data analysis using Gaussian processes.",
     url="https://github.com/omicsEye/waveome",
     project_urls={
         "Bug Tracker": "https://github.com/omicsEye/waveome/issues"
@@ -15,28 +13,20 @@ setuptools.setup(
     license="MIT",
     packages=["waveome"],
     install_requires=[
-        
-        # Need to pin TF and TF prob together
-        # Pin for python 3.11.8 - not mac specific
-        "tensorflow==2.15.1",
-        "tensorflow_probability==0.23.0",
-
-        # Main package - doesn't handle TF well at install
-        "gpflow==2.9.1",
-        # "tf-keras", # Don't use this for the time being with keras opts
-
-        # # Pin for python 3.8.12 (tensorflow-metal GPU)
-        # "tensorflow==2.13.0",
-        # "tensorflow-metal==1.0.1",
-        # "tensorflow_probability==0.21.0",
-
-        "pandas==2.1.4",  # Need to pin this for numpy errors
-        "numpy==1.26.1",  # Need to pin this for TF import errors
+        # More flexible TensorFlow requirements (but pinned for TF prob and GPflow compatibility)
+        "tensorflow>=2.12.0,<2.16.0",
+        "tensorflow_probability>=0.20.0,<0.24.0",
+        "gpflow==2.9.1",  # Pin to specific version to avoid pkg_resources warning
+        "pandas>=2.0.0",
+        "numpy>=1.24.0",
         "ray[default]",
-        "scipy==1.11.2",  # Need to pin this for TF import errors
-        "joblib",  # Switch out for ray
+        "scipy>=1.11.0",
+        "joblib",
         "seaborn",
         "matplotlib",
-        "tqdm"
+        "tqdm",
+        "setuptools>=65.5.1,<66.0.0",  # Add this to prevent pkg_resources deprecation warning
+        "psutil"
     ],
+    python_requires=">=3.9,<3.12",
 )

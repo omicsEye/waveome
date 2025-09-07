@@ -2,10 +2,8 @@ import os
 import re
 import time
 import warnings
-from xml.sax.handler import feature_external_pes
 
 import gpflow
-import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
@@ -17,7 +15,6 @@ import seaborn as sns
 import tensorflow as tf
 from gpflow.utilities import set_trainable
 from joblib import Parallel, delayed
-from matplotlib import scale
 from ray.experimental import tqdm_ray
 
 # from tensorflow_probability import distributions as tfd

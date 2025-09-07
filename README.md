@@ -1,286 +1,92 @@
-# waveome #
+# waveome
 
 ## Overview
 
 <img style="float: right;" width="200" height="200" src="./figures/hex-waveome.png">
 
-This repository houses code for the _waveome_ package - an easy to use and powerful Python library that analyzes
-longitudinal data using Gaussian processes.
+This repository houses code for the _waveome_ package - an easy to use and powerful Python library that analyzes longitudinal data using Gaussian processes. It is particularly well-suited to characterize the temporal dynamics of omics measurements and associated variables of interest. This is done by using the Gaussian process as a prior to allow for flexible, nonparametric estimation of the potential relationships between varibles of interest. Futhermore, we allow for automated variable selection through a variety of methods. The software is open source and is built on top of GPflow (and TensorFlow).
 
-<!-- ![waveome logo](./figures/hex-waveome.png) -->
-<!-- <img src="./figures/hex-waveome.png" width="200" height="200"> -->
+### Key features
+* **General Purpose**: Focus for longitudinal data analysis, but also useful for cross-sectional hypotheses
+* **Flexible Modeling**: Variety of kernels (including for categorical variables) and non-Gaussian likelihoods available
+* **Variable Selection**: Search-based as well as global penalization with Horshoe priors to automatically identify relevant covariates and kernel structure
+* **Metrics & Visualizations**: Generalized deviance explained and Bayes factors available as well as a variety of plotting features
+* **Parallelization**: Independent model hyperparameter optimization occurs in parallel through [Ray](https://docs.ray.io) allowing scalability from local machine to clusters
+<!-- * **Documentation**: Open-source GitHub repository of code complete with tutorials and a wide range of real-world applications. -->
 
-*waveome* is a computational method for longitudinal data analysis particularly  to characterize and identify temporal dynamics of omics and clinical variables in association with
-the phenotype of interest. It employs the Gaussian processes as prior to implement a nonparametric
-estimation for the dynamics of the underlying measurements.
+## Installation
 
----
-**Key features:**
+We recommend a fresh conda environment (Python 3.9–3.11):
 
-* **Generality:** *waveome* is a new computational tool for identifying temporal dynamics
-  significantly associated with phenotypes of interest.
-* **Validation:** A comprehensive evaluation of waveome performance using synthetic
-  data generation with known ground truth for genotype-phenotype association testing.
-* **Interpretation:** By prioritizing comprehensive and flexible kernel functions, _waveome_ significantly reduces
-  computational costs.
-* **Elegance:** User-friendly, open-source software allowing for high-quality visualization
-  and statistical tests.
-* **Optimization:** Since omics data are often very high dimensional, all modules have been written and benchmarked for
-  computing time.
-* **Documentation:** Open-source GitHub repository of code complete with tutorials and a wide range of
-  real-world applications.
-
----
-**Citation:**
-
-Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
-**_waveome_: characterizing temporal dynamics of metabolites in longitudinal studies
-**, https://github.com/omicsEye/waveome/.
-
----
-
-# waveome user manual #
-
-## Contents ##
-
-* [Features](#features)
-* [General usage](#general-usage)
-* [Installation](#installation)
-   * [Overl requirements](#overal-requirements)
-   * [Windows\Linux\Mac](#windowslinuxmac)
-   * [Jupyter kernel definition](#jupyter-kernel-definition)
-* [Loading and preparing data](#loading-and-preparing-data)
-  * [Input](#input)
-  * [Output](#output)
-  * [Tutorial](#tutorial)
-* [Applications](#applications)
-    * [Breastmilk microbiome](#breastmilk-rna-sequence-infant-gut-microbiome-and-metabolites-analysis)
-    * [iHMP](#metagenomes-targeting-diverse-body-sites-in-multiple-time-points)
-    * [CD4 counts](#treatment-effect-on-longitudinal-cd4-counts-)
-    * [Inflammotory bowel disease](#identifying-important-metabolites-associated-with-inflammatory-bowel-disease-)
-* [Support](#support)
-
-------------------------------------------------------------------------------------------------------------------------------
-
-# Features
-
-1. Generic software that can handle any kind of sequencing data and phenotypes
-2. One place to perform all analyses and produce high-quality visualizations
-3. Optimized computation
-4. User-friendly software
-5. Provides temporal dynamics, associated omics features, and metadata
-6. Enhanced with diagnostic and summarizing visualizations
-
-
-# General usage
-
-Running _waveome_ requires multiple steps, including installing _waveome_ package, loading data in the required format,
-specifying covariates and outcomes (
-omics features), running kernel services (takes some time and computing resources), and visualizing overall and
-individual associations. All these steps are
-demonstrated in the [waveome_overview.ipynb](https://github.com/omicsEye/waveome/blob/main/waveome_overview.ipynb)
-notebook as a template (an example of the package modeling simulated data)
-that you can use and modify for your input data. Each step is explained with details in following sections of this
-tutorial.
-# Installation
-To install the package it is suggested that you create a new conda environment (required to have Python >= 3.9 and <= 3.11 for tensorflow)   
-
-## Overall requirements
-Installation of _waveome_ is processed in a conda environment. You therefore need to install _conda_ first. Go to the [Anaconda website](https://www.anaconda.com/) and download the latest version for your operating system.
-* **For Windows users:** do not forget to add _conda_ to your system PATH. It will be asked as a part of installation procedure. 
-* Make sure about _conda_ availability. Open a terminal (or command line for Windows users) and run:
-```
-conda --version
+```bash
+conda create -n waveome_env python=3.11
+conda activate waveome_env
+pip install waveome
 ```
 
-It should output something like:
-
-```
-conda 23.7.4
-```
-
-if not, you must make *conda* available to your system for further steps.
-If you have problems adding conda to PATH, you can find instructions
-[here](https://docs.anaconda.com/anaconda/user-guide/faq/).
-
-## Windows\Linux\Mac
-If you are using Windows operating system, please make sure you have both [git](https://gitforwindows.org/) and 'Microsoft Visual C++ 14.0' or later installed.
-You need also to install [Microsoft C++ build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
-In case you face issues with this step, [this link](https://github.com/pycaret/pycaret/issues/1254) may help you.
-
-Regardless of what your operating system is, follow these steps:
-
-1. Open a terminal in your Linux or Mac system or command (`ctrl+R` then type `cmd` and press Enter) in your Windows system and use the following code to create a conda environment:
-    ```commandline
-    conda create --name waveome_env python=3.11
-    ```
-2. Activate your _conda_ environment:
-    ```commandline
-    conda activate waveome_env 
-    ```
-3. If you want to use _waveome_ in a Python notebook, for instance in Jupyter Notebook 
-(which is recommended for running [waveome_overview.ipynb](https://github.com/omicsEye/waveome/blob/main/waveome_overview.ipynb) sample file 
-and [example projects](https://github.com/omicsEye/waveome/tree/main/examples)), we recommend the installation of 
-_Jupyter Notebook_ in this environment prior to the `pip` installation of _waveome_. To do so, if you are using any operating system **except Mac M1/M2**, 
-simply run:
-    ```commandline
-    conda install jupyter 
-    ```
-    in the `waveome_env` in your terminal or command prompt and go to step 
-[4](#item4). But, if **you are an M1/M2 Mac user**, <ins>prior to installation 
-of _Jupyter Notebook_</ins> run the following in the `waveome_env`:
-    ```commandline
-    conda install -c conda-forge grpcio
-    ```
-
-    and afterwards run:
-
-    ```commandline
-    conda install jupyter
-    ```
-4. Install _waveome_ directly from GitHub:
-
-    ```commandline
-    python -m pip install git+https://github.com/omicsEye/waveome
-    ```
-
-## Run using Jupyter Notebook & Jupyter kernel definition
-If you would like to run `waveome_overview.ipynb` then you should also set up a Jupyter kernel for the new `waveome_env` environment. This can be done with
-```commandline
-conda install -n waveome_env ipykernel
-```
-and then  to employ _waveome_env_ in _Jupyter Notebook_ we need to provide the kernel. This can be done with
-
-```commandline
+Recommended for Jupyter notebooks:
+```bash
+conda install jupyter ipykernel
 python -m ipykernel install --user --name=waveome_env
 ```
+For platform-specific tips, see `docs/INSTALL.md` (optional).
 
-Change directory to where you have your iPhyton notebook
-`cd /PATH-TO_YOUR_iPythonNotebook-DiRECTORY`
+## Quick Start
+```python
+import seaborn as sns
+from waveome.model_search import GPSearch
 
-Then run jupyter notebook in command line
-`jupyter notebook`.
+# Load example dataset
+iris = sns.load_dataset("iris")
 
-in the terminal while `waveome_env` is active.
+# Load waveome object
+# Assume outcomes are sepal_length and sepal_width
+gps = GPSearch(
+  X=iris[["petal_length", "petal_width", "species"]],
+  Y=iris[["sepal_length", "sepal_width"]],
+  categorical_vars=["species"]
+)
 
+# Optimize GP models via penalization
+gps.penalized_optimization()
 
-
-## 
-
-
-# Loading and preparing data
-
-<!--# Getting Started with waveome
-
-## Test waveome
-
-To test if waveome is installed correctly, you may run the following command in the terminal:
-
-```#!cmd
-waveome -h
+# Visualize results
+gps.plot_heatmap(var_cutoff=0, cluster=False)
 ```
+See the tutorial notebook `waveome_overview.ipynb` for longitudinal synthetic data generation and more visualization options post-fitting.
 
-Which yields waveome command line options.
+## Applications
+### Simulations:
+Path: `examples/simulations/`\
+Summary: We evaluated our methods on simulated data both for holdout distributional fit as well as our automated variable selection strategies. These were performed on the [GW HPC](https://it.gwu.edu/hpc-pegasus), but individuals might be interested in understanding more of the modeling components and methods in `waveome` which can be found in the notebook `simple_regression_different_models.ipynb`. 
 
-## Options ##
+### iHMP longitudinal metabolome:
+Path: `examples/iHMP/`\
+Summary: We used metabolomics data from iHMP (Inflammatory Bowel Disease) project [Lloyd-Price et al. (2017)](https://doi.org/10.1038/s41586-019-1237-9) for this application. Our goal was to characterize temporal dynamics of metabolites associated with severity of IBD while controlling for other patient/sample characteristics. The notebook `ihmp_waveome.ipynb` shows the analysis.
 
-```
+### Marine microbiome (In progress):
+Path: `examples/Marine_microbiome/`\
+Summary: We analyzed 28 observations of repeated microbiome samples taken in a marine environment pre and post treatment shock times. Our analysis focused on evaluating the relationship between the abundance of sequence variants and the treatment administered, while controlling for other environmental factors. The preliminary results can be seen in `16S_environment_microbiome_antibiotic_treatments.ipynb`.
 
-```
--->
-## Input
-As an input, _waveome_ requires a pandas data frame which contains at least: 
-1. Subjects/individuals/patients index column,
-2. Columns of covariates; in longitudinal studies these columns 
-contain the time of observing the sample.
-3. An Omics feature measurement.
+### Breastmilk RNA and infant microbiome & metabolome (In progress):
+Path: `examples/Breastmilk/`\
+Summary: [GWDBB](https://github.com/gwcbi/GWDBB/tree/master) is a reference data library for clinical trials and omics 
+data. One study contains the longitudinal gut microbiome and metabolomics data of infants and mothers breast milk RNA collected at multiple time points. Two longitudinal analyses have been performed and can be found in `breastmilk_infant_metabolites_Poisson.ipynb` and `Breastmilk_infant_Microbiome.ipynb` notebook files. 
 
-All the above-mentioned items must be available in numeric types (`int` or `float`) in the data frame:
-![sampledata](https://github.com/omicsEye/waveome/blob/main/figures/sample.png?raw=True)
+### HIV CD4 counts (In progress):
+Path: `examples/CD4/`\
+Summary: The bivariate responses of HIV-1 RNA (count/ml) in seminal and blood of patients in HIV-RNA AIDS studies from Seattle, Swiss and UNCCH cohorts are considered in this example. The data were
+collected out of N = 149 subjects divided into two groups of patients who were receiving a therapy (106 patients) and those with no therapy or unknown therapy method (43 patients). The covariates are scaled time, baseline age, baseline CD4 and two factors consists of group and cohort. Data are also 
+available through [Wang (2013)](https://onlinelibrary.wiley.com/doi/10.1002/bimj.201200001). The analysis using `waveome` is provided in [CD4.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/CD4/CD4.ipynb).
 
+---
 
-The _Subject index_ is used to measure the subject effect. The categorical factors are encouraged to be considered 
-through dummy variables. For instance, in the above example the factor `Sex` is considered as 'is the subject Female?' 
-and '1' means "yes". _waveome_ does not consider the samples with missing values and it is required to delete 
-the rows with missing values prior to `GPSearch`. 
-
-## Output
-The output of `GPSearch.run_serach` contains the results for each Bayesian nonparametric regression model 
-fit on the data corresponding a kernel (or summation or multiplication of kernels) function including but not 
-restricted to the BIC, corresponding parameter estimations and residuals. Based on information criterion, the 
-best kernel is selected and the coefficients of determination of each omics feature and all the 
-covariates can be displayed. The estimated mean function of the omics feature as a function of each covariate 
-alongside the corresponding residual is provided. Depend on the response distribution assumption on the omics feature (Gaussian and 
-Poisson for now; but the negative binomial distribution is also under construction) the posterior mean of the 
-omics feature is also included as an output. We refer the users to see the outputs of 
-[waveome_overview.ipynb](https://github.com/omicsEye/waveome/blob/main/waveome_overview.ipynb) ipython notebook 
-file for more details.
-
-
-<!--## Demo
-
-```commandline
-waveome -sf PATH_TO_SEQUENCE.FASTA -st aa -md PATH_TO_META_DATA.tsv -mv
- META_VARIABLE_NAME -a reg  -dth 0.15 --plot --write
-```
--->
-
-<!-- ß
-### Running Kernel search
-
-### Visualization
--->
-
-## Tutorial
-
-Multiple detailed ipython notebook of _waveome_ implementations are available in the
-[examples](https://github.com/omicsEye/waveome/tree/master/examples) and the
-required data for the examples are also available either in the
-[data](https://github.com/omicsEye/waveome/tree/master/data) directory or the corresponding application directory.
-
-# Applications
-
-Here we try to use the _waveome_ on different datasets and elaborate on the results.
-
-## Breastmilk RNA sequence, infant gut microbiome and metabolites analysis
-[GWDBB](https://github.com/gwcbi/GWDBB/tree/master) is a reference data library for clinical trials and omics 
-data. It contains the longitudinal gut microbiome and metabolomics data 
-of infants and mothers breast milk RNA in different time-points. Two different 
-longitudinal analysis has been derived on the data and can be found in 
-[breastmilk_infant_metabolites_Poisson.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/Breastmilk/breastmilk_infant_metabolites_Poisson.ipynb) and 
-[Breastmilk_infant_Microbiome.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/Breastmilk/Breastmilk_infant_Microbiome.ipynb) 
-notebook files. 
-
-
-## Metagenomes targeting diverse body sites in multiple time-points
+<!-- ## Metagenomes targeting diverse body sites in multiple time-points
 
 [iHMP](https://www.nature.com/articles/nature23889) provided one of the broadest datasets for human microbiome 
 data hosted in different niches in the body at different time-points. The available dataset has been collected out of 
 265 individuals. The longitudinal analysis for different body sights are presented in 
-[multioutput_ihmp.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/iHMP/multioutput_ihmp.ipynb). 
-
-## Treatment effect on longitudinal CD4 counts 
-The bivariate responses of HIV-1 RNA (count/ml) in seminal and blood of patients in HIV-RNA AIDS 
-studies from Seattle, Swiss and UNCCH cohorts are considered in this example. The data were
-collected out of N = 149 subjects divided into two groups of patients who were receiving a therapy
-(14=106 patients) and those with no therapy or unknown therapy method (43 patients). The covariates
-are scaled time, baseline age, baseline CD4 and two factors consists of group and cohort. Data are also 
-available through Wang (2013). The analysis using _waveome_ is also provided in 
-[CD4.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/CD4/CD4.ipynb).
-
-Wang, W.-L. (2013), Multivariate t linear mixed models for irregularly observed multiple repeated measures 
-with missing outcomes. _Biom. J._, **55**: 554-571. 
-[10.1002/bimj.201200001](https://onlinelibrary.wiley.com/doi/10.1002/bimj.201200001)
-
-## Identifying important metabolites associated with inflammatory bowel disease 
-
-![ihmp](https://github.com/omicsEye/waveome/blob/main/figures/ihmp.png?raw=True)
-
-We used metabolomics data from iHMP (Inflammatory Bowel Diseases)
-project [Lloyd-Price et al. (2017)](https://doi.org/10.1038/s41586-019-1237-9) for this application. Our goal was to
-characterize temporal dynamics of metabolites associated with severity of IBD and other patient characteristics.
-This [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/main/examples/iHMP/iHMP%20Data%20Overview.ipynb)
-illustrates the steps.
+[multioutput_ihmp.ipynb](https://github.com/omicsEye/waveome/blob/main/examples/iHMP/multioutput_ihmp.ipynb).  -->
 
 <!-- 
 ## Novel insights of niche associations in the oral microbiome
@@ -298,8 +104,6 @@ illustrates the steps.
 
 
 ## Reveals important SARS-CoV-2 regions associated with Alpha and Delta variants
-
-
 Variants occur with new mutations in the virus genome. Most mutations in the SARS-CoV-2 genome do not affect the
 functioning of the virus. However, mutations in the spike protein of SARS-CoV-2, which binds to receptors on cells
 lining the inside of the human nose, may make the virus easier to spread or affect how well vaccines protect people.
@@ -331,9 +135,11 @@ nucleotide sequences of the V3 loop of subtypes B and C.
 This [Jupyter Notebook](https://github.com/omicsEye/waveome/blob/master/examples/discrete_phenotype_HIV.ipynb)
 illustrates the steps.
 -->
-# Support
 
-* Please submit your questions or issues with the software at
-  [Issues tracker](https://github.com/omicsEye/waveome/issues).
-* For community discussions, questions, and issue reporting, please visit our
-  forum [here](https://forum.omicseye.org/c/omics-downstream-analysis/waveome/12)
+## Citation
+If you use `waveome`, please cite:
+> Allen Ross, Ali Reza Taheriouyn, Jason Llyod-Price, Ali Rahnavard (2024).
+waveome: characterizing temporal dynamics of metabolites in longitudinal studies, https://github.com/omicsEye/waveome/.
+
+## Support
+* Issues: https://github.com/omicsEye/waveome/issues
