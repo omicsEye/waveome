@@ -21,7 +21,7 @@ We recommend a fresh conda environment (Python 3.9–3.11):
 ```bash
 conda create -n waveome_env python=3.11
 conda activate waveome_env
-pip install git+https://github.com/omicsEye/waveome
+pip install waveome
 ```
 
 Recommended for Jupyter notebooks:
@@ -142,6 +142,4 @@ If you use `waveome`, please cite:
 waveome: characterizing temporal dynamics of metabolites in longitudinal studies, https://github.com/omicsEye/waveome/.
 
 ## Support
-
 * Issues: https://github.com/omicsEye/waveome/issues
-* ~~Community forum: https://forum.omicseye.org/c/omics-downstream-analysis/waveome~~

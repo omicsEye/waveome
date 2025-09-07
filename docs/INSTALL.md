@@ -26,7 +26,11 @@ conda activate waveome_env
 ```
 
 ### 3. Install waveome
-Install directly from GitHub:
+Install from PyPi:
+```bash
+pip install waveome
+```
+or install directly from GitHub:
 ```bash
 pip install git+https://github.com/omicsEye/waveome
 ```
