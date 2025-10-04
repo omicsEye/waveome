@@ -5,6 +5,10 @@
 .idea
 .pytest_cache
 .virtual_documents
+*.pickle
+*.pkl
+*.png
+*.pdf
 
 __pycache__
 build/
