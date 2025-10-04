@@ -32,10 +32,7 @@ f64 = gpflow.utilities.to_default_float
 
 def convert_data_to_tensors(X: np.array, Y: np.array):
 
-    tensor_tuple = (
-        tf.convert_to_tensor(X),
-        tf.convert_to_tensor(Y)
-    )
+    tensor_tuple = (tf.convert_to_tensor(X), tf.convert_to_tensor(Y))
 
     return tensor_tuple
 
@@ -179,16 +176,14 @@ def calc_residuals(m, X=None, Y=None, resid_type="raw"):
             model_mu=mean_resp,
             model_var=var_resp,
             aggregate=False,
-            return_deviance_explained=False
+            return_deviance_explained=False,
         )
     elif resid_type == "pearson":
         # Calculate standardized residuals
         resids = (
-            (
-                (tf.cast(Y, gpflow.default_float()) - mean_resp) /
-                np.sqrt(var_resp)
-            ).numpy()
-        )
+            (tf.cast(Y, gpflow.default_float()) - mean_resp)
+            / np.sqrt(var_resp)
+        ).numpy()
     else:
         raise ArgumentError("resid_type can only be 'raw' or pearson'")
 
@@ -483,17 +478,17 @@ def variance_contributions_diag(m, lik="gaussian"):
 
 
 def calc_deviance_explained(
-        model,
-        data=None,
-        model_mu=None,
-        model_var=None,
-        base_mu=None,
-        base_var=None,
-        aggregate=True,
-        return_deviance_explained=True,
-        return_loglik=False
-        ):
-    """ Calculates explained deviance for model components compared to null
+    model,
+    data=None,
+    model_mu=None,
+    model_var=None,
+    base_mu=None,
+    base_var=None,
+    aggregate=True,
+    return_deviance_explained=True,
+    return_loglik=False,
+):
+    """Calculates explained deviance for model components compared to null
     model.
     """
 
@@ -505,39 +500,25 @@ def calc_deviance_explained(
         log_dens_fn = getattr(gpflow.logdensities, lk_fn)
     except AttributeError:
         log_dens_fn = getattr(
-            scipy.stats,
-            "nbinom" if lk_fn == "negative_binomial" else lk_fn
+            scipy.stats, "nbinom" if lk_fn == "negative_binomial" else lk_fn
         ).logpmf
 
     # Calculate log likelihoods
     if lk_fn == "gaussian":
         y_var = np.var(data[1])
-        sat_ll = log_dens_fn(
-            x=data[1],
-            mu=data[1],
-            var=y_var
-        )
+        sat_ll = log_dens_fn(x=data[1], mu=data[1], var=y_var)
         base_ll = log_dens_fn(
             x=data[1],
             mu=np.mean(data[1]) if base_mu is None else base_mu,
-            var=y_var
+            var=y_var,
         )
-        mod_ll = log_dens_fn(
-            x=data[1],
-            mu=model_mu,
-            var=y_var
-        )
+        mod_ll = log_dens_fn(x=data[1], mu=model_mu, var=y_var)
     elif lk_fn in ["bernoulli", "poisson"]:
-        sat_ll = log_dens_fn(
-            data[1], data[1]
-        )
+        sat_ll = log_dens_fn(data[1], data[1])
         base_ll = log_dens_fn(
-            data[1],
-            np.mean(data[1]) if base_mu is None else base_mu
+            data[1], np.mean(data[1]) if base_mu is None else base_mu
         )
-        mod_ll = log_dens_fn(
-            data[1], model_mu
-        )
+        mod_ll = log_dens_fn(data[1], model_mu)
     elif lk_fn == "negative_binomial":
 
         # sigma^2 = mu + mu^2 * alpha
@@ -549,27 +530,21 @@ def calc_deviance_explained(
 
         sat_mu_ = np.array(data[1]) + 1e-6
         sat_ll = negative_binomial(
-            m=sat_mu_,
-            Y=np.array(data[1]),
-            alpha=alpha_val
+            m=sat_mu_, Y=np.array(data[1]), alpha=alpha_val
         )
 
         base_mu_ = max(1e-6, np.mean(data[1])) if base_mu is None else base_mu
         base_ll = negative_binomial(
-            m=base_mu_,
-            Y=np.array(data[1]),
-            alpha=alpha_val
+            m=base_mu_, Y=np.array(data[1]), alpha=alpha_val
         )
 
         mod_ll = negative_binomial(
-            m=model_mu,
-            Y=np.array(data[1]),
-            alpha=alpha_val
+            m=model_mu, Y=np.array(data[1]), alpha=alpha_val
         )
 
     else:
         raise ValueError("Unknown likelihood to calculate deviance")
-    
+
     if return_loglik:
         return base_ll, mod_ll, sat_ll
 
@@ -581,20 +556,16 @@ def calc_deviance_explained(
         model_deviance = max(0, 2 * np.sum(sat_ll - mod_ll))
         # Then calculate deviance explained
         deviance_explained = (
-            1 - (model_deviance / null_deviance)
-            if null_deviance > 0
-            else 0
+            1 - (model_deviance / null_deviance) if null_deviance > 0 else 0
         )
     else:
         null_deviance = np.clip(2 * (sat_ll - base_ll), a_min=0, a_max=np.inf)
         model_deviance = np.clip(2 * (sat_ll - mod_ll), a_min=0, a_max=np.inf)
-        deviance_explained = (
-            1 - np.divide(
-                model_deviance,
-                null_deviance,
-                out=np.ones_like(model_deviance, dtype="float"),
-                where=(null_deviance != 0)
-            )
+        deviance_explained = 1 - np.divide(
+            model_deviance,
+            null_deviance,
+            out=np.ones_like(model_deviance, dtype="float"),
+            where=(null_deviance != 0),
         )
 
     if return_deviance_explained:
@@ -603,12 +574,12 @@ def calc_deviance_explained(
         return null_deviance, model_deviance
 
 
-def calc_deviance_explained_components(
-        model,
-        data=None,
-        return_value="log_bf"
-    ):
-    """ Calculate deviance explained for each additive component.
+def calc_feature_importance_components(
+    model, data=None, return_value="log_bf"
+):
+    """Calculate deviance explained for entire model and use 1 - that for
+    residual component. Then for each kernel component calculate the return
+    value [log_bf, statistic, de].
     """
 
     # Save output list
@@ -626,12 +597,16 @@ def calc_deviance_explained_components(
         model_var=full_var_hat,
         return_deviance_explained=False,
         aggregate=False,
-        return_loglik=True
+        return_loglik=True,
     )
 
     # calculate model deviance: 1 - (full_dev / null_dev)
-    if np.sum(sat_lls) >= np.sum(mod_lls) and np.sum(mod_lls) >= np.sum(null_lls):
-        full_de = 1 - (-2 * np.sum(mod_lls - sat_lls) / (-2 * np.sum(null_lls - sat_lls)))
+    if np.sum(sat_lls) >= np.sum(mod_lls) and np.sum(mod_lls) >= np.sum(
+        null_lls
+    ):
+        full_de = 1 - (
+            -2 * np.sum(mod_lls - sat_lls) / (-2 * np.sum(null_lls - sat_lls))
+        )
         full_de = max(min(1, full_de), 0)
     else:
         full_de = 0
@@ -652,24 +627,23 @@ def calc_deviance_explained_components(
                 model_var=mod_var_hat,
                 return_deviance_explained=False,
                 aggregate=False,
-                return_loglik=True
+                return_loglik=True,
             )
 
             # Calc deviance explained by looking at deviance without feature
             # included ("best" is fit model not saturated)
             if return_value == "statistic":
-                scaled_de = np.round(-2 * (np.sum(sub_mod_lls) - np.sum(mod_lls)), 1)
+                scaled_de = np.round(
+                    -2 * (np.sum(sub_mod_lls) - np.sum(mod_lls)), 1
+                )
                 scaled_de = max(scaled_de, 0)
             elif return_value == "log_bf":
                 scaled_de = np.round(np.sum(mod_lls) - np.sum(sub_mod_lls), 1)
             else:
-                scaled_de = (
-                    1
-                    - (
-                        -2 * np.sum(sub_mod_lls - mod_lls)
-                        /
-                        (-2 * np.sum(null_lls - mod_lls))
-                    )
+                scaled_de = 1 - (
+                    -2
+                    * np.sum(sub_mod_lls - mod_lls)
+                    / (-2 * np.sum(null_lls - mod_lls))
                 )
                 scaled_de = np.round(max(min(1, scaled_de), 0), 3)
 
@@ -679,10 +653,12 @@ def calc_deviance_explained_components(
     else:
         # If there is just a single term
         if k.name == "constant":
-            de_list += [0.]
+            de_list += [0.0]
         else:
             if return_value == "statistic":
-                de_list += [np.round(-2 * (np.sum(null_lls) - np.sum(mod_lls)), 1)]
+                de_list += [
+                    np.round(-2 * (np.sum(null_lls) - np.sum(mod_lls)), 1)
+                ]
             elif return_value == "log_bf":
                 de_list += [np.round((np.sum(mod_lls) - np.sum(null_lls)), 1)]
             else:
@@ -815,7 +791,9 @@ def individual_kernel_predictions(
             pred_mu, pred_var = sub_model.predict_f(X)
             _, pred_cov = sub_model.predict_f(X, full_cov=True)
             sample_fns = tf.transpose(
-                sub_model.predict_f_samples(X, num_samples=num_samples)[:, :, 0]
+                sub_model.predict_f_samples(X, num_samples=num_samples)[
+                    :, :, 0
+                ]
             )
         else:
             # Build each part of the covariance matrix
@@ -868,7 +846,9 @@ def individual_kernel_predictions(
             # Invert sigma_22
             # Try LU decomposition first
             try:
-                inv_sigma_22 = tfp.math.lu_matrix_inverse(*tf.linalg.lu(sigma_22))
+                inv_sigma_22 = tfp.math.lu_matrix_inverse(
+                    *tf.linalg.lu(sigma_22)
+                )
             except ValueError:
                 print("Warning - Approximating the covariance inverse")
                 inv_sigma_22 = tf.linalg.pinv(sigma_22)
@@ -877,7 +857,8 @@ def individual_kernel_predictions(
             if latent is True:
                 pred_mu = np.zeros((X.shape[0], 1)) + tf.matmul(
                     a=tf.matmul(
-                        a=sigma_12, b=inv_sigma_22  # b=tf.linalg.inv(sigma_22)),
+                        a=sigma_12,
+                        b=inv_sigma_22,  # b=tf.linalg.inv(sigma_22)),
                     ),
                     b=(
                         model.q_mu.numpy()[:, kernel_idx].reshape(-1, 1)
@@ -918,20 +899,15 @@ def individual_kernel_predictions(
 
             # Add uncertainty from inducing variables if present
             if model.inducing_variable is not None:
-                pred_cov += (
-                    tf.matmul(
-                        a=sigma_12,
+                pred_cov += tf.matmul(
+                    a=sigma_12,
+                    b=tf.matmul(
+                        a=inv_sigma_22,
                         b=tf.matmul(
-                            a=inv_sigma_22,
-                            b=tf.matmul(
-                                a=model.q_sqrt,
-                                b=tf.matmul(
-                                    a=inv_sigma_22,
-                                    b=sigma_21
-                                )
-                            )
-                        )
-                    )
+                            a=model.q_sqrt,
+                            b=tf.matmul(a=inv_sigma_22, b=sigma_21),
+                        ),
+                    ),
                 )
 
             # Variance component
@@ -942,10 +918,12 @@ def individual_kernel_predictions(
                 posterior_dist = tfp.distributions.MultivariateNormalTriL(
                     loc=tf.transpose(pred_mu),
                     scale_tril=tf.linalg.cholesky(pred_cov),
-                    validate_args=True
+                    validate_args=True,
                 )
                 sample_fns = posterior_dist.sample(sample_shape=num_samples)
-                sample_fns = tf.transpose(tf.reshape(sample_fns, (num_samples, -1)))
+                sample_fns = tf.transpose(
+                    tf.reshape(sample_fns, (num_samples, -1))
+                )
             except tf.errors.InvalidArgumentError:
                 sample_fns = tf.repeat(pred_mu, num_samples, axis=1)
 
@@ -1066,16 +1044,13 @@ def find_variance_components_tf(
         else:
             return var_list
     elif kern.name == "product":
-        return (
-            penalize_factor_prod *
-            tf.reduce_prod(
-                    tf.stack(
-                        [
-                            find_variance_components_tf(x, sum_reduce)
-                            for x in kern.kernels
-                        ]
-                    )
-                )
+        return penalize_factor_prod * tf.reduce_prod(
+            tf.stack(
+                [
+                    find_variance_components_tf(x, sum_reduce)
+                    for x in kern.kernels
+                ]
+            )
         )
     elif kern.name == "linear_coregionalization":
         temp_weights = kern.W
@@ -1122,8 +1097,7 @@ def tqdm_joblib(tqdm_object):
 
 
 def keep_kernel_lengthscale_(kernel_component, X):
-    """ Check to see if we should drop kernel component based on lengthscale.
-    """
+    """Check to see if we should drop kernel component based on lengthscale."""
     # Drill down to base kernel if periodic
     if kernel_component.name == "periodic":
         kernel_component = kernel_component.base_kernel
@@ -1131,7 +1105,7 @@ def keep_kernel_lengthscale_(kernel_component, X):
     # Test to make sure this kernel component is governed by lengthscale
     if hasattr(kernel_component, "lengthscales") is False:
         return True
-    
+
     # Pull off active dimension
     active_index = kernel_component.active_dims[0]
 
@@ -1139,27 +1113,25 @@ def keep_kernel_lengthscale_(kernel_component, X):
     var_range = 3 * np.ptp(X[:, active_index])
 
     # See if lengthscale is larger than range of input
-    return (kernel_component.lengthscales.numpy() < var_range)
+    return kernel_component.lengthscales.numpy() < var_range
 
 
 def search_through_kernel_list_(kernel_list, list_type="sum", X=None):
-    """ Only keep kernel components that meet criteria. 
+    """Only keep kernel components that meet criteria.
     Account for sum versus product kernels.
     """
     out_list = []
     for i, k in enumerate(kernel_list):
         if k.name == "product":
             prod_out = search_through_kernel_list_(
-                k.kernels,
-                list_type="product",
-                X=X
+                k.kernels, list_type="product", X=X
             )
             out_list.append(prod_out)
         else:
             keep_component = keep_kernel_lengthscale_(k, X)
             if keep_component:
                 out_list.append(k)
-    
+
     # Stich together components based on type
     out_kernel = None
     if len(out_list) > 1:
@@ -1220,7 +1192,7 @@ class ParallelTqdm(Parallel):
         desc: str | None = None,
         disable_progressbar: bool = False,
         show_joblib_header: bool = False,
-        **kwargs
+        **kwargs,
     ):
         if "verbose" in kwargs:
             raise ValueError(
@@ -1296,7 +1268,7 @@ def run_ray_process(
         num_feats_per_round = num_entities_per_round * num_processes
 
     grouped_feat_list = [
-        model_output_names[x:x+num_feats_per_round]
+        model_output_names[x : x + num_feats_per_round]
         for x in range(0, len(model_output_names), num_feats_per_round)
     ]
 
@@ -1315,14 +1287,14 @@ def run_ray_process(
             ray.init(
                 num_cpus=num_processes,
                 include_dashboard=include_ray_dashboard,
-                configure_logging=False
+                configure_logging=False,
             )
         except RuntimeError:
             ray.shutdown()
             ray.init(
                 num_cpus=num_processes,
                 include_dashboard=include_ray_dashboard,
-                configure_logging=False
+                configure_logging=False,
             )
 
         # Store data in shared data store
@@ -1339,23 +1311,25 @@ def run_ray_process(
 
         # Load function
         func_remote = ray.remote(func)
-        
+
         # Create progress bar
         bar = remote_tqdm.remote(total=len(i))
 
         # Retrieve output from processes
-        out = ray.get([
-            func_remote.remote(
-                # self_X,
-                # self_Y,
-                # self_likelihood,
-                # self_Y_stds,
-                **stored_func_args,
-                feat=feat,
-                bar=bar
-            )
-            for feat in i
-        ])
+        out = ray.get(
+            [
+                func_remote.remote(
+                    # self_X,
+                    # self_Y,
+                    # self_likelihood,
+                    # self_Y_stds,
+                    **stored_func_args,
+                    feat=feat,
+                    bar=bar,
+                )
+                for feat in i
+            ]
+        )
 
         # Save output to returned object
         for feat, mod in zip(i, out):
@@ -1369,11 +1343,11 @@ def run_ray_process(
         c += len(i)
 
         # Print output
-        prop_done = int(np.round(100*c/num_feats))
-        elapsed_time = np.round((time.time() - start_time)/60, 1)
+        prop_done = int(np.round(100 * c / num_feats))
+        elapsed_time = np.round((time.time() - start_time) / 60, 1)
         print(
             f"Finished {c} models ({prop_done}%),",
-            f"elapsed time: {elapsed_time} minutes"
+            f"elapsed time: {elapsed_time} minutes",
         )
 
     return objs

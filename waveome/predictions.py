@@ -8,7 +8,7 @@ import seaborn as sns
 import tensorflow as tf
 
 from .utilities import (
-    calc_deviance_explained_components,
+    calc_feature_importance_components,
     calc_residuals,
     calc_rsquare,
     individual_kernel_predictions,
@@ -61,13 +61,11 @@ def pred_kernel_parts(
     x_idx_max = X[:, x_idx].max() if x_idx_max is None else x_idx_max
 
     # Get variance pieces
-    # var_contribs = calc_rsquare(m=m_copy)
     if var_explained is None:
-        var_contribs = calc_deviance_explained_components(model=m_copy, data=data)
+        var_contribs = calc_feature_importance_components(model=m_copy, data=data)
     else:
         var_contribs = copy.deepcopy(var_explained)
-    # var_percent = [100 * round(x / sum(var_contribs), 3) for x in var_contribs]
-    # var_percent = [100 * x for x in var_contribs]
+
     var_percent = var_contribs
     var_percent[-1] *= 100
 

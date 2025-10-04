@@ -27,9 +27,7 @@ from .model_classes import PSVGP
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import full_kernel_build
 from .utilities import (
-    ParallelTqdm,
     calc_bic,
-    calc_deviance_explained_components,
     calc_rsquare,
     check_if_model_exists,
     convert_data_to_tensors,
@@ -37,7 +35,6 @@ from .utilities import (
     print_kernel_names,
     replace_kernel_variables,
     run_ray_process,
-    tqdm_joblib,
 )
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -204,24 +201,16 @@ class GPSearch:
         mean_function=gpflow.mean_functions.Constant(),
         kernel_options={
             "second_order_numeric": False,
+            "categorical_numeric_interactions": True,
             "unit_numeric_interactions": False,
-            "kerns": [
-                gpflow.kernels.SquaredExponential(),
-                # gpflow.kernels.Matern12(),
-                # Lin(),
-                # gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential())
-            ],
+            "kerns": [gpflow.kernels.SquaredExponential()],
         },
         penalization_factor=1.0,
         num_factor_iter=5,
         num_restart=0,
         sparse_options={},
         variational_options={},
-        optimization_options={
-            # "optimizer": "adam/gradient",
-            # "minibatch_size": 64
-            "optimizer": "scipy"
-        },
+        optimization_options={"optimizer": "scipy"},
         random_seed=None,
         ray_dashboard=False,
         ray_logging=False
@@ -391,7 +380,7 @@ class GPSearch:
             # TODO: Prune kernel (specifically interactions)
 
             mod.update_kernel_name()
-            mod.get_variance_explained(
+            mod.get_feature_importances(
                 data=convert_data_to_tensors(
                     self_X.to_numpy(),
                     self_Y[feat].to_numpy().reshape(-1, 1)
@@ -1006,7 +995,7 @@ class GPSearch:
 
             # Copy model
             m_copy = gpflow.utilities.deepcopy(self.models[o])
-            var_explained = m_copy.variance_explained
+            var_explained = m_copy.feature_importances
 
             # First see if a feature is in each model
             if feature_name is not None:
@@ -1037,7 +1026,7 @@ class GPSearch:
                     
                     # Grab the specific explained component + leftovers
                     var_explained = [
-                        m_copy.variance_explained[x]
+                        m_copy.feature_importances[x]
                         for x in (
                             feature_kernel_index
                             + [-1]
@@ -1054,22 +1043,6 @@ class GPSearch:
                     
             else:
                 feature_index = None
-
-            # # Calculate the variance explained for each component and overall
-            # if (
-            #     feature_index is None
-            #     and self.models[o].variance_explained is not None
-            # ):
-            #     print("Loading previous variance explained")
-            #     var_explained = self.models[o].variance_explained
-            # else:
-            #     var_explained = calc_deviance_explained_components(
-            #         model=m_copy,
-            #         data=(
-            #             self.X.to_numpy(),
-            #             self.Y[o].to_numpy().reshape(-1, 1)
-            #         )
-            #     )
 
             # Now check to make sure we have explained "enough" variance
             if (1 - var_explained[-1]) < var_cutoff:
@@ -1134,6 +1107,15 @@ class GPSearch:
             height += c_char_pad * max(list(map(len, out_info.columns.tolist())))
             figsize = (width*scale_size, height*scale_size)
 
+        if "dendrogram_ratio" not in clustermap_kwargs.keys():
+            clustermap_kwargs["dendrogram_ratio"] = (0.05, 0.05)
+        if "cbar_pos" not in clustermap_kwargs.keys():
+            clustermap_kwargs["cbar_pos"] = (0.5, 0.05, 0.2, 0.03)
+            clustermap_kwargs["cbar_kws"] = {
+                "orientation": "horizontal",
+                "use_gridspec": False,
+                "label": "Feature importance"
+            }
         clm = sns.clustermap(
             out_info.transpose(),
             figsize=figsize,
@@ -1141,35 +1123,23 @@ class GPSearch:
             annot_kws={'size': 6*scale_size},
             robust=True,
             cmap="Greens",
-            # cbar_pos=(0.8, 0.8, 0.05, 0.15),
             fmt="g",
-            dendrogram_ratio=(0.05, 0.05),
             col_cluster=col_cluster,
             row_cluster=row_cluster,
             **clustermap_kwargs
-            #cbar=False
         )
-        #clm.ax_row_dendrogram.set_visible(False)
-        #clm.ax_col_dendrogram.set_visible(False)
-        #clm.cax.set_visible(False)
+
         ax = clm.ax_heatmap
-        # else:
-        #     fig, ax = plt.subplots(1, 1, figsize=figsize)
-        #     clm = sns.heatmap(
-        #         out_info.transpose(),
-        #         ax=ax,
-        #         annot=show_vals,
-        #         annot_kws={'size': 6},
-        #         vmin=0,
-        #         vmax=1,
-        #         cmap="Greens",
-        #         **kwargs
-        #     )
         # Adjust text for easier reading
         plt.setp(
             ax.xaxis.get_majorticklabels(),
-            rotation=45,
-            horizontalalignment="right"
+            rotation=90,
+            horizontalalignment="center"
+        )
+        plt.setp(
+            ax.yaxis.get_majorticklabels(),
+            rotation=0,
+            horizontalalignment="left"
         )
         # Add text if requested
         if show_vals:
@@ -1178,12 +1148,13 @@ class GPSearch:
                     t.set_text(t.get_text())
                 else:
                     t.set_text("")
+
         # Set xlabel on the heatmap axes
-        ax.set_xlabel('Omics features', fontweight='bold', fontsize=8*scale_size)
-        ax.set_ylabel('Dynamics ', fontweight='bold', fontsize=8*scale_size)
+        ax.set_xlabel('Outcomes', fontweight='bold', fontsize=8*scale_size)
+        ax.set_ylabel('Kernel features', fontweight='bold', fontsize=8*scale_size)
         ax.get_xaxis().set_tick_params(which='both', labelsize=6*scale_size)
         ax.get_yaxis().set_tick_params(which='both', labelsize=6*scale_size)
-        ax.set_title("Explained variation", fontweight='bold', fontsize=9*scale_size, loc='left')
+        # ax.set_title("Feature importance", fontweight='bold', fontsize=9*scale_size, loc='left')
         return clm
 
     def plot_parts(
@@ -1285,7 +1256,7 @@ class GPSearch:
 
             # Copy model
             m_copy = gpflow.utilities.deepcopy(self.models[o])
-            var_explained = m_copy.variance_explained
+            var_explained = m_copy.feature_importances
 
             if 1 - var_explained[-1] < min_total_explained:
                 continue
@@ -1307,7 +1278,7 @@ class GPSearch:
                 # If this feature is in the selected model and the model has other compon
                 if sum(feature_kernel_flags) > 0:
                     out_values_list.append(
-                        max(np.array(m_copy.variance_explained[:-1])[np.array(feature_kernel_flags)])
+                        max(np.array(m_copy.feature_importances[:-1])[np.array(feature_kernel_flags)])
                     )
                     out_names_list.append(o)
 
