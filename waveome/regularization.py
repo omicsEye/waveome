@@ -1,5 +1,3 @@
-# IS THIS SCRIPT STILL NECESSARY?
-# If not we can also remove model_fitting.py, I believe
 import os
 
 import gpflow

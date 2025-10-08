@@ -4,11 +4,6 @@ import gpflow
 import numpy as np
 import tensorflow as tf
 from gpflow.utilities import deepcopy
-
-# Not currently using below because it presents warning on M1 mac
-# from tensorflow.keras.optimizers import Adam
-# import tensorflow_probability as tfp
-# from gpflow.base import RegressionData
 from joblib import Parallel, delayed
 from tensorflow.keras.optimizers.legacy import Adam
 from tensorflow_probability import distributions as tfd
@@ -17,10 +12,9 @@ from tqdm import tqdm
 from .kernels import Empty
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import make_folds
-from .utilities import (  # hmc_sampling,
+from .utilities import (
     calc_bic,
-    calc_deviance_explained_components,
-    calc_rsquare,
+    calc_feature_importance_components,
     convert_data_to_tensors,
     find_variance_components,
     find_variance_components_tf,
@@ -28,7 +22,6 @@ from .utilities import (  # hmc_sampling,
     print_kernel_names,
     search_through_kernel_list_,
     tqdm_joblib,
-    variance_contributions,
 )
 
 f64 = gpflow.utilities.to_default_float
@@ -533,34 +526,35 @@ class BaseGP(gpflow.models.SVGP):
 
         return None
 
-    def get_variance_explained(self, data=None):
-        """Calculates variance explained for each additive kernel component.
+    def get_feature_importances(self, data=None, return_value="log_bf"):
+        """Calculates feature importance for each additive kernel component.
 
         Arguments
         ---------
-        None
+        data: tuple
+            Tuple of (X, Y) data to use for calculating feature importance.
+        return_value: str
+            Value to return for each component. Options are:
+            "log_bf" (default - log bayes factor), "statistic" (chi-squared),
+            "de" (deviance explained). See calc_feature_importance_components
+            for more details.
 
         Returns
         -------
         None
-            Variance contributions in self.variance_explained
+            Feature importances in self.feature_importances
         """
-        # self.variance_explained = list(
-        #     variance_contributions(
-        #         self, k_names=self.kernel_name, lik=self.likelihood.name
-        #     )
-        # )
+
         # var_list = calc_rsquare(self, data=data)
-        var_list = calc_deviance_explained_components(
+        importance_list = calc_feature_importance_components(
             model=self,
-            data=data
+            data=data,
+            return_value=return_value
         )
-        
 
         # Fix ListWrapper issue with Tensorflow tensors
-        self.variance_explained = list(var_list)
+        self.feature_importances = list(importance_list)
 
-        # return self.variance_explained
         return None
 
     def calc_metric(self, data=None, metric="BIC"):
@@ -588,9 +582,8 @@ class BaseGP(gpflow.models.SVGP):
         return pred_kernel_parts(
             self,
             x_idx=x_idx,
-            # unit_idx=unit_idx,
             col_names=col_names,
-            var_explained=self.variance_explained,
+            var_explained=self.feature_importances,
             lik=lik,
             data=data,
             **kwargs,

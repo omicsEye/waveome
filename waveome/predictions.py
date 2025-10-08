@@ -8,7 +8,7 @@ import seaborn as sns
 import tensorflow as tf
 
 from .utilities import (
-    calc_deviance_explained_components,
+    calc_feature_importance_components,
     calc_residuals,
     calc_rsquare,
     individual_kernel_predictions,
@@ -37,6 +37,7 @@ def pred_kernel_parts(
     figsize=None,
     sharey=False,
     conf_level_val=1.96,
+    residual_dict={"resid_type": "pearson", "residuals_on_y_axis": True}
 ):
     """
     Breaks up kernel in model to plot separate pieces
@@ -60,13 +61,11 @@ def pred_kernel_parts(
     x_idx_max = X[:, x_idx].max() if x_idx_max is None else x_idx_max
 
     # Get variance pieces
-    # var_contribs = calc_rsquare(m=m_copy)
     if var_explained is None:
-        var_contribs = calc_deviance_explained_components(model=m_copy, data=data)
+        var_contribs = calc_feature_importance_components(model=m_copy, data=data)
     else:
         var_contribs = copy.deepcopy(var_explained)
-    # var_percent = [100 * round(x / sum(var_contribs), 3) for x in var_contribs]
-    # var_percent = [100 * x for x in var_contribs]
+
     var_percent = var_contribs
     var_percent[-1] *= 100
 
@@ -80,14 +79,9 @@ def pred_kernel_parts(
         plot_residuals(
             m,
             data,
-            lik,
-            x_idx,
-            x_idx_min,
-            x_idx_max,
             ax,
             var_percent=100,
-            col_names=col_names,
-            conf_level_val=conf_level_val,
+            **residual_dict
         )
         return fig, ax
     else:
@@ -451,15 +445,9 @@ def pred_kernel_parts(
     plot_residuals(
         m,
         data,
-        lik,
-        x_idx,
-        x_idx_min,
-        x_idx_max,
         ax[plot_row_idx, plot_col_idx],
         var_percent=var_percent[plot_idx],
-        col_names=col_names,
-        conf_level_val=conf_level_val,
-        resid_type="pearson"
+        **residual_dict
     )
 
     # Remove empty plots in last row
@@ -480,91 +468,27 @@ def pred_kernel_parts(
 def plot_residuals(
     m,
     data,
-    lik,
-    x_idx,
-    x_idx_min,
-    x_idx_max,
     ax,
     var_percent,
-    col_names,
-    conf_level_val=1.96,
-    resid_type="raw"
+    resid_type="raw",
+    residuals_on_y_axis=True
 ):
     # Compute residuals
     mean_pred, var_pred = m.predict_y(data[0])
     resids = calc_residuals(m, X=data[0], Y=data[1], resid_type=resid_type)
+
+    # Plot residuals
     ax.scatter(
-        mean_pred,
-        resids,
+        mean_pred if residuals_on_y_axis else resids,
+        resids if residuals_on_y_axis else mean_pred,
         color="black",
         alpha=0.5,
         s=20
     )
-    # ax.scatter(data[0][:, x_idx], resids, color="black", alpha=0.5, s=20)
-    # TODO: Think about line of best fit here maybe?
 
-    # if lik == 'gaussian':
-    #     x_resid = np.linspace(
-    #         x_idx_min, # X[:, x_idx].min(),
-    #         x_idx_max, # X[:, x_idx].max(),
-    #         1000
-    #     )
-    #     ax.plot(
-    #         x_resid, #x_new[:, x_idx],
-    #         np.zeros(len(x_resid)), #np.zeros_like(x_new[:, x_idx]),
-    #         color='darkgreen',
-    #         linewidth=2.5
-    #     )
-    #     # error_sd = np.sqrt(m.parameters[-1].numpy())
-    #     # Calculate the model residuals to get the standard deviation
-    #     error_sd = np.std(resids)
-    #     ax.fill_between(
-    #         x_resid, #x_new[:, x_idx],
-    #         -conf_level_val * error_sd,
-    #         conf_level_val * error_sd,
-    #         color='lightgreen',
-    #         alpha=0.5
-    #     )
-    #     ax.scatter(m.data[0][:, x_idx],
-    #                   resids,
-    #                   color='black',
-    #                   alpha=0.5,
-    #                   s=20)
-    # else:
-    #     x_resid = np.linspace(
-    #         x_idx_min, # X[:, x_idx].min(),
-    #         x_idx_max, # X[:, x_idx].max(),
-    #         1000
-    #     )
-    #     ax.plot(
-    #         x_resid, #x_new[:, x_idx],
-    #         m.likelihood.invlink(np.zeros(len(x_resid))),
-    #         color='darkgreen',
-    #         linewidth=2.5
-    #     )
-    #     # error_sd = np.sqrt(m.parameters[-1].numpy())
-    #     # Calculate the model residuals to get the standard deviation
-    #     error_sd = np.std(resids)
-    #     ax.fill_between(
-    #         x_resid, #x_new[:, x_idx],
-    #         m.likelihood.invlink(-conf_level_val * error_sd),
-    #         m.likelihood.invlink(conf_level_val * error_sd),
-    #         color='lightgreen',
-    #         alpha=0.5
-    #     )
-    #     ax.scatter(m.data[0][:, x_idx],
-    #                   m.likelihood.invlink(resids),
-    #                   color='black',
-    #                   alpha=0.5,
-    #                   s=20)
+    # Set title and labels
     ax.set(
         title=f"residuals ({round(var_percent, 1)}%)",
-        # xlabel=(
-        #     f"""{replace_kernel_variables(
-        #         '['+str(x_idx)+']',
-        #         col_names
-        #     ).strip('[]')}"""
-        # ),
         xlabel="fitted value",
         ylabel=f"{resid_type} residual"
     )

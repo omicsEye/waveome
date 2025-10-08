@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name="waveome",
-    version="0.1.0",
+    version="0.1.1",
     author="Allen Ross",
     author_email="allenross@gwu.edu",
     description="Automated longitudinal data analysis using Gaussian processes.",
