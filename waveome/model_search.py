@@ -218,6 +218,13 @@ class GPSearch:
         # Set model selection type
         self.model_selection_type = "penalized"
 
+        # Set other configurables for traceability
+        if not hasattr(self, 'run_parameters'):
+            self.run_parameters = {}
+        args = locals()
+        del args['self']  # Don't need to store the object instance itself
+        self.run_parameters['penalized_optimization'] = args
+
         # Set seed if requested
         if random_seed is not None:
             np.random.seed(random_seed)
@@ -251,6 +258,9 @@ class GPSearch:
                 feat,
                 tqdm_bar
         ):
+
+            if random_seed is not None:
+                tf.random.set_seed(random_seed)
 
             # # Add scale if negative binomial
             # if (self_likelihood == "negativebinomial" and
@@ -1176,7 +1186,7 @@ class GPSearch:
 
         pkp = self.models[out_label].plot_parts(
             x_idx=self.feat_names.index(x_axis_label),
-            # unit_idx=self.unit_idx,
+            unit_idx=self.unit_idx,
             col_names=self.feat_names,
             lik=self.likelihood,
             categorical_dict=self.categorical_dict,
@@ -1323,7 +1333,7 @@ class GPSearch:
         out_label,
         x_axis_label,
         unit_label=None,
-        num_funs=100,
+        num_funs=10,
         ax=None,
         plot_points=True,
         reverse_transform_axes=False,
