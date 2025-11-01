@@ -409,7 +409,6 @@ class BaseGP(gpflow.models.SVGP):
 
             # Checkpoint!
             if i % 100 == 0:
-            # if i % 500 == 0:
                 # Save previous values
                 previous_values = gpflow.utilities.deepcopy(
                     gpflow.utilities.parameter_dict(self)
@@ -576,7 +575,7 @@ class BaseGP(gpflow.models.SVGP):
             **kwargs
         )
 
-    def plot_parts(self, x_idx, col_names, data=None, lik=None, **kwargs):
+    def plot_parts(self, x_idx, col_names, data=None, lik=None, unit_idx=None, **kwargs):
         if lik is None:
             lik = self.likelihood
         return pred_kernel_parts(
@@ -586,6 +585,7 @@ class BaseGP(gpflow.models.SVGP):
             var_explained=self.feature_importances,
             lik=lik,
             data=data,
+            unit_idx=unit_idx,
             **kwargs,
         )
 

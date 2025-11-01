@@ -37,7 +37,10 @@ def pred_kernel_parts(
     figsize=None,
     sharey=False,
     conf_level_val=1.96,
-    residual_dict={"resid_type": "pearson", "residuals_on_y_axis": True}
+    residual_dict={"resid_type": "pearson", "residuals_on_y_axis": True},
+    unit_idx=None,
+    cat_color_pal=sns.color_palette("Set1"),
+    **kwargs,
 ):
     """
     Breaks up kernel in model to plot separate pieces
@@ -109,6 +112,7 @@ def pred_kernel_parts(
         squeeze=False,
     )
 
+    resid_cat_idx = None
     plot_row_idx = 0
     plot_col_idx = 0
     kernel_idx = 0
@@ -149,6 +153,8 @@ def pred_kernel_parts(
                 r"categorical\[(\d+)\]", k_name
             ):  # kernel_names[c]):
                 cat_idx = int(cat_idx)
+                if unit_idx is not None and cat_idx == unit_idx:
+                    resid_cat_idx = unit_idx
                 # # Set up empyty dataset with domain support
                 # x_new = np.zeros((1000, X.shape[1]))
                 # x_new[:, x_idx] = np.linspace(x_idx_min, x_idx_max, 1000)
@@ -212,6 +218,9 @@ def pred_kernel_parts(
                                     int(cat_val)
                                 ]
                             ),
+                            color=cat_color_pal[
+                                int(cat_val) % len(cat_color_pal)
+                            ],
                         )
                         ax[plot_row_idx, plot_col_idx].fill_between(
                             x_new[:, plot_x_idx],
@@ -229,7 +238,10 @@ def pred_kernel_parts(
 
                     else:
                         ax[plot_row_idx, plot_col_idx].plot(
-                            x_new[:, plot_x_idx], mean_resp, alpha=0.5
+                            x_new[:, plot_x_idx],
+                            mean_resp,
+                            alpha=0.5,
+                            color=cat_color_pal[int(cat_val) % len(cat_color_pal)]
                         )
 
                 # Set the subplot title to match the true variable name
@@ -447,6 +459,8 @@ def pred_kernel_parts(
         data,
         ax[plot_row_idx, plot_col_idx],
         var_percent=var_percent[plot_idx],
+        cat_idx=resid_cat_idx,
+        cat_color_pal=cat_color_pal,
         **residual_dict
     )
 
@@ -470,18 +484,26 @@ def plot_residuals(
     data,
     ax,
     var_percent,
+    cat_idx=None,
     resid_type="raw",
-    residuals_on_y_axis=True
+    residuals_on_y_axis=True,
+    cat_color_pal=None,
 ):
     # Compute residuals
     mean_pred, var_pred = m.predict_y(data[0])
     resids = calc_residuals(m, X=data[0], Y=data[1], resid_type=resid_type)
 
     # Plot residuals
+    if cat_idx is not None and cat_color_pal is not None:
+        colors = [
+            cat_color_pal[int(c) % len(cat_color_pal)] for c in data[0][:, cat_idx]
+        ]
+    else:
+        colors = data[0][:, cat_idx] if cat_idx is not None else "black"
     ax.scatter(
         mean_pred if residuals_on_y_axis else resids,
         resids if residuals_on_y_axis else mean_pred,
-        color="black",
+        c=colors,
         alpha=0.5,
         s=20
     )
@@ -504,7 +526,7 @@ def gp_predict_fun(
     x_max=None,
     unit_idx=None,
     unit_label=None,
-    num_funs=100,
+    num_funs=10,
     ref_quantile=0.5,
     return_vals=False,
     predict_type="mean",
@@ -615,43 +637,28 @@ def gp_predict_fun(
         lower_ci = (mean - conf_level_val * np.sqrt(var)).numpy().flatten()
         upper_ci = (mean + conf_level_val * np.sqrt(var)).numpy().flatten()
 
-    # Generate plot
-    #     p = plt.figure(figsize=(10, 5))
     if ax is None:
         fig, ax = plt.subplots(figsize=(7.2, 3.6))
-    #     p = sns.scatterplot(x=X[:,x_idx],
-    #                     y=Y.flatten(),
-    #                     hue=X[:,unit_idx].astype(int).astype(str),
-    #                         legend=False)
+
     # Do we want to plot individual points?
     if plot_points:
         # Do we want these points to be weighted by a single unit?
         if unit_idx is not None:
             person_rows = X_train[:, unit_idx] == unit_label
             _ = sns.scatterplot(
-                x=X_train[person_rows, x_idx],
-                y=Y_train.flatten()[person_rows],
-                #                     hue=X[:,unit_idx].astype(int).astype(str),
-                #                         legend=False
-                s=100,
-                color="black",
-                linewidths=0.5,
-                ax=ax,
-            )
-            _ = sns.scatterplot(
                 x=X_train[~np.array(person_rows), x_idx],
                 y=Y_train.flatten()[~np.array(person_rows)],
-                #                     hue=X[:,unit_idx].astype(int).astype(str),
-                #                         legend=False
-                s=20,
+                s=30, # 20
                 color="grey",
                 ax=ax,
+                linewidths=0,
+                alpha=0.3,
             )
         else:
             _ = sns.scatterplot(
                 x=X_train[:, x_idx],
                 y=Y_train.flatten(),
-                s=20,
+                s=30, # 20
                 color="grey",
                 ax=ax,
             )
@@ -692,12 +699,11 @@ def gp_predict_fun(
 
     ax.plot(
         x_new[:, x_idx],
-        samples,  # [:, :, 0].numpy().T,# "C0",
+        samples,
         color="dimgray",
-        linewidth=0.5,
+        linewidth=1.0,
         alpha=0.25,
     )
-    #     plt.close()
 
     ax.set(
         xlabel=(
@@ -707,4 +713,17 @@ def gp_predict_fun(
             ).strip('[]')}"""
         )
     )
+    
+    if plot_points and unit_idx is not None:
+        person_rows = X_train[:, unit_idx] == unit_label
+        _ = sns.scatterplot(
+            x=X_train[person_rows, x_idx],
+            y=Y_train.flatten()[person_rows],
+            s=30, # 50 # a bit smaller
+            color='darkviolet',
+            marker='D',
+            ax=ax,
+            zorder=3
+        )
+
     return ax
