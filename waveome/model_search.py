@@ -23,9 +23,9 @@ from tqdm import tqdm
 from .kernels import Categorical, Lin
 
 # from .likelihoods import ZeroInflatedNegativeBinomial
-from .model_classes import PSVGP
+from .model_classes import PSVGP, MultiOutputPSVGP
 from .predictions import gp_predict_fun, pred_kernel_parts
-from .regularization import full_kernel_build
+from .regularization import full_kernel_build, make_folds
 from .utilities import (
     calc_bic,
     calc_rsquare,
@@ -146,9 +146,9 @@ class GPSearch:
         self.likelihood = outcome_likelihood
 
         # Pull off continuous column indexes
-        self.cont_idx = np.where(
-            ~np.in1d(np.arange(X.shape[1]), self.cat_idx)
-        )[0].tolist()
+        self.cont_idx = np.where(~np.in1d(np.arange(X.shape[1]), self.cat_idx))[
+            0
+        ].tolist()
 
         # Standardize continuous X columns
         if standardize_X:
@@ -188,7 +188,7 @@ class GPSearch:
             self.Y_stds = self.Y.std(axis=0)
             self.Y_original = self.Y.copy()
             self.Y = self.Y / self.Y_stds
-        
+
         # Unclear if we still need this step
         # elif Y_transform is None and self.likelihood == "negativebinomial":
         #     self.Y_stds = self.Y.std(axis=0)
@@ -213,17 +213,17 @@ class GPSearch:
         optimization_options={"optimizer": "scipy"},
         random_seed=None,
         ray_dashboard=False,
-        ray_logging=False
+        ray_logging=False,
     ):
         # Set model selection type
         self.model_selection_type = "penalized"
 
         # Set other configurables for traceability
-        if not hasattr(self, 'run_parameters'):
+        if not hasattr(self, "run_parameters"):
             self.run_parameters = {}
         args = locals()
-        del args['self']  # Don't need to store the object instance itself
-        self.run_parameters['penalized_optimization'] = args
+        del args["self"]  # Don't need to store the object instance itself
+        self.run_parameters["penalized_optimization"] = args
 
         # Set seed if requested
         if random_seed is not None:
@@ -248,15 +248,15 @@ class GPSearch:
         # Parallel model building function
         @ray.remote(max_calls=1, max_retries=5)
         def model_build_steps_remote(
-                self_X,
-                self_Y,
-                self_likelihood,
-                self_Y_stds,
-                self_penalization_factor,
-                self_mean_function,
-                self_full_kernel,
-                feat,
-                tqdm_bar
+            self_X,
+            self_Y,
+            self_likelihood,
+            self_Y_stds,
+            self_penalization_factor,
+            self_mean_function,
+            self_full_kernel,
+            feat,
+            tqdm_bar,
         ):
 
             if random_seed is not None:
@@ -284,15 +284,14 @@ class GPSearch:
                     * 1.1
                     * sigma_hat
                     * np.sqrt(self_X.shape[0])
-                    * scipy.stats.norm().ppf(1-(0.1 / (2 * num_params)))
+                    * scipy.stats.norm().ppf(1 - (0.1 / (2 * num_params)))
                 )
 
                 self.iterating_penalization_factor = True
 
                 if verbose:
                     print(
-                        "Setting penalization factor to",
-                        f" {self_penalization_factor}"
+                        "Setting penalization factor to", f" {self_penalization_factor}"
                     )
             else:
                 self.iterating_penalization_factor = False
@@ -304,19 +303,16 @@ class GPSearch:
                 mean_function=gpflow.utilities.deepcopy(self_mean_function),
                 kernel=gpflow.utilities.deepcopy(self_full_kernel),
                 verbose=verbose,
-                penalized_options={
-                    "penalization_factor": self_penalization_factor
-                },
+                penalized_options={"penalization_factor": self_penalization_factor},
                 sparse_options=sparse_options,
                 variational_options=variational_options,
             )
-            
+
             # Random restarts to find optimal parameters
             if num_restart > 0:
                 mod.random_restart_optimize(
                     data=convert_data_to_tensors(
-                        self_X.to_numpy(),
-                        self_Y[feat].to_numpy().reshape(-1, 1)
+                        self_X.to_numpy(), self_Y[feat].to_numpy().reshape(-1, 1)
                     ),
                     num_restart=num_restart,
                     randomize_kwargs={"random_seed": random_seed},
@@ -325,8 +321,7 @@ class GPSearch:
             else:
                 mod.optimize_params(
                     data=convert_data_to_tensors(
-                        self_X.to_numpy(),
-                        self_Y[feat].to_numpy().reshape(-1, 1)
+                        self_X.to_numpy(), self_Y[feat].to_numpy().reshape(-1, 1)
                     ),
                     **optimization_options,
                 )
@@ -347,26 +342,22 @@ class GPSearch:
                         * 1.1
                         * new_sd
                         * np.sqrt(self_X.shape[0])
-                        * scipy.stats.norm().ppf(1-(0.1 / (2 * num_params)))
+                        * scipy.stats.norm().ppf(1 - (0.1 / (2 * num_params)))
                     )
 
                     if verbose:
-                        print(
-                            "New penalization factor:"
-                            f" {new_penalization_factor}"
-                        )
+                        print("New penalization factor:" f" {new_penalization_factor}")
 
                     # Break out if the new factor is similar to current factor
-                    if (
-                        abs(new_penalization_factor - mod.penalization_factor)
-                        <= 1e-3
-                    ):
+                    if abs(new_penalization_factor - mod.penalization_factor) <= 1e-3:
                         break
 
                     # Assign previous values and break out if new factor is larger
                     if new_penalization_factor > mod.penalization_factor:
                         if verbose:
-                            print("Larger penalization factor, assigning previous values and exiting")
+                            print(
+                                "Larger penalization factor, assigning previous values and exiting"
+                            )
                         gpflow.utilities.multiple_assign(self, prev_params)
                         break
 
@@ -377,23 +368,19 @@ class GPSearch:
                     mod.optimize_params(
                         **optimization_options,
                         data=convert_data_to_tensors(
-                            self_X.to_numpy(),
-                            self_Y[feat].to_numpy().reshape(-1, 1)
-                        )
+                            self_X.to_numpy(), self_Y[feat].to_numpy().reshape(-1, 1)
+                        ),
                     )
 
             # Clean up final model
-            mod.cut_kernel_components(
-                data=convert_data_to_tensors(self_X, self_Y)
-            )
+            mod.cut_kernel_components(data=convert_data_to_tensors(self_X, self_Y))
 
             # TODO: Prune kernel (specifically interactions)
 
             mod.update_kernel_name()
             mod.get_feature_importances(
                 data=convert_data_to_tensors(
-                    self_X.to_numpy(),
-                    self_Y[feat].to_numpy().reshape(-1, 1)
+                    self_X.to_numpy(), self_Y[feat].to_numpy().reshape(-1, 1)
                 )
             )
 
@@ -418,7 +405,7 @@ class GPSearch:
         #         feat
         #     ) for feat in self.out_names
         # ])
-        
+
         # Loop to build models on Ray cluster
         self.models = {}
 
@@ -431,7 +418,7 @@ class GPSearch:
             num_feats_per_round = 1000 * num_processes
 
         grouped_feat_list = [
-            self.out_names[x:x+num_feats_per_round]
+            self.out_names[x : x + num_feats_per_round]
             for x in range(0, len(self.out_names), num_feats_per_round)
         ]
 
@@ -448,16 +435,15 @@ class GPSearch:
                 ray.init(
                     num_cpus=num_processes,
                     include_dashboard=ray_dashboard,
-                    configure_logging=ray_logging
+                    configure_logging=ray_logging,
                 )
             except RuntimeError:
                 ray.shutdown()
                 ray.init(
                     num_cpus=num_processes,
                     include_dashboard=ray_dashboard,
-                    configure_logging=ray_logging
+                    configure_logging=ray_logging,
                 )
-
 
             # Put main information in shared data store
             # self_ref = ray.put(self)
@@ -483,20 +469,22 @@ class GPSearch:
             bar = remote_tqdm.remote(total=len(i))
 
             # Retrieve models
-            out = ray.get([
-                model_build_steps_remote.remote(
-                    self_X,
-                    self_Y,
-                    self_likelihood,
-                    self_Y_stds,
-                    self_penalization_factor,
-                    self_mean_function,
-                    self_full_kernel,
-                    feat,
-                    bar
-                )
-                for feat in i  # self.out_names
-            ])
+            out = ray.get(
+                [
+                    model_build_steps_remote.remote(
+                        self_X,
+                        self_Y,
+                        self_likelihood,
+                        self_Y_stds,
+                        self_penalization_factor,
+                        self_mean_function,
+                        self_full_kernel,
+                        feat,
+                        bar,
+                    )
+                    for feat in i  # self.out_names
+                ]
+            )
 
             # Add models to dictionary
             for m, feat in zip(out, i):
@@ -514,17 +502,319 @@ class GPSearch:
 
             # Print output
             # if c % 10 == 0 and c > 0:
-            prop_done = int(np.round(100*c/num_feats))
-            elapsed_time = np.round((time.time() - start_time)/60, 1)
+            prop_done = int(np.round(100 * c / num_feats))
+            elapsed_time = np.round((time.time() - start_time) / 60, 1)
             print(
                 f"Finished {c} models ({prop_done}%),",
-                f"elapsed time: {elapsed_time} minutes"
+                f"elapsed time: {elapsed_time} minutes",
             )
 
         # # Load up model dictionary
         # self.models = {feat: mod for feat, mod in zip(self.out_names, out)}
 
         return None
+
+    def multioutput_penalized_optimization(
+        self,
+        latent_kernels=None,
+        penalization_factor=1.0,
+        num_opt_iter=2000,
+        adam_learning_rate=0.01,
+        nat_gradient_gamma=0.1,
+        constraint_weight=1.0,
+        sparse_options={},
+        variational_options={},
+        verbose=False,
+        random_seed=None,
+        kernel_options=None,
+    ):
+        """
+        Fit a multi-output model using Linear Coregionalization.
+        """
+        if random_seed is not None:
+            np.random.seed(random_seed)
+            tf.random.set_seed(random_seed)
+
+        # Add likelihood information
+        variational_options["likelihood"] = self.likelihood
+
+        # Instantiate MultiOutputPSVGP
+        # Note: self.X and self.Y are DataFrames. self.Y has multiple columns.
+        model = MultiOutputPSVGP(
+            X=self.X.to_numpy(),
+            Y=self.Y.to_numpy(),
+            latent_kernels=latent_kernels,
+            penalization_factor=penalization_factor,
+            verbose=verbose,
+            sparse_options=sparse_options,
+            variational_options=variational_options,
+            # Arguments for full kernel build
+            kernel_options=kernel_options if kernel_options is not None else {},
+            cat_vars=self.cat_idx,
+            num_vars=self.cont_idx,
+            unit_idx=self.unit_idx,
+            var_names=self.feat_names,
+        )
+
+        # Optimize
+        model.optimize_params(
+            num_opt_iter=num_opt_iter,
+            adam_learning_rate=adam_learning_rate,
+            nat_gradient_gamma=nat_gradient_gamma,
+            constraint_weight=constraint_weight,
+        )
+
+        self.models = {}
+        self.models["multioutput"] = model
+
+        # Return None and keep the trained model stored on the GPSearch instance
+        return None
+
+    def multioutput_lam_search(
+        self,
+        lam_list=None,
+        num_lams=20,
+        k_fold=5,
+        num_opt_iter=2000,
+        penalization_factors=None,
+        sparse_options={},
+        variational_options={},
+        latent_kernels=None,
+        kernel_options=None,
+        random_seed=None,
+        num_cpus=None,
+        fit_best=True,
+        prune_best=True,
+        early_stopping=True,
+        verbose=False,
+        show_progress=True,
+        use_tqdm_notebook=True,
+    ):
+        """Cross-validate penalization_factor for multioutput models using Ray.
+
+        Returns a dict with CV log-likelihoods and best penalization.
+        """
+        # Set seed
+        if random_seed is not None:
+            np.random.seed(random_seed)
+
+        # Prepare data
+        X_np = self.X.to_numpy()
+        Y_np = self.Y.to_numpy()
+
+        # Build lambda list if not provided
+        if lam_list is None:
+            max_lambda = 2 * np.var(Y_np)
+            lam_list = np.insert(
+                np.exp(
+                    np.linspace(start=-10, stop=np.log(max_lambda), num=num_lams - 1)
+                ),
+                0,
+                0,
+            ).round(5)
+
+        # If explicit penalization_factors provided, use them
+        if penalization_factors is not None:
+            lam_list = penalization_factors
+
+        # Create folds (use unit-level if self.unit_idx is set)
+        folds = make_folds(
+            X=X_np, unit_col=self.unit_idx, k_fold=k_fold, random_seed=random_seed
+        )
+
+        # Ray init
+        try:
+            ray.init(num_cpus=num_cpus, ignore_reinit_error=True)
+        except Exception:
+            ray.shutdown()
+            ray.init(num_cpus=num_cpus, ignore_reinit_error=True)
+
+        @ray.remote(max_calls=1)
+        def _multioutput_fold_worker(
+            X_np,
+            Y_np,
+            train_idx,
+            val_idx,
+            latent_kernels,
+            penalization_factor,
+            num_opt_iter,
+            adam_learning_rate,
+            nat_gradient_gamma,
+            constraint_weight,
+            sparse_options,
+            variational_options,
+            kernel_options,
+            cat_idx,
+            cont_idx,
+            unit_idx,
+            feat_names,
+            random_seed,
+        ):
+            import numpy as _np
+            import tensorflow as _tf
+
+            from waveome.model_classes import MultiOutputPSVGP as _MultiOutputPSVGP
+
+            if random_seed is not None:
+                _np.random.seed(random_seed)
+                _tf.random.set_seed(int(random_seed))
+
+            X_train = X_np[train_idx]
+            Y_train = Y_np[train_idx]
+
+            model = _MultiOutputPSVGP(
+                X=_np.array(X_train),
+                Y=_np.array(Y_train),
+                latent_kernels=latent_kernels,
+                penalization_factor=penalization_factor,
+                verbose=False,
+                sparse_options=sparse_options,
+                variational_options=variational_options,
+                kernel_options=kernel_options if kernel_options is not None else {},
+                cat_vars=cat_idx,
+                num_vars=cont_idx,
+                unit_idx=unit_idx,
+                var_names=feat_names,
+            )
+
+            # Optimize
+            model.optimize_params(
+                num_opt_iter=num_opt_iter,
+                adam_learning_rate=adam_learning_rate,
+                nat_gradient_gamma=nat_gradient_gamma,
+                constraint_weight=constraint_weight,
+            )
+
+            # Score on validation fold
+            try:
+                val_log_lik = _np.mean(
+                    model.predict_log_density((X_np[val_idx], Y_np[val_idx]))
+                )
+            except Exception:
+                val_log_lik = _np.nan
+
+            return model, float(val_log_lik)
+
+        # Storage: initialize per-lambda lists
+        cv_log_lik = {l: [] for l in lam_list}
+        best_lam = None
+        best_log_lik = None
+        best_se = None
+
+        # Launch ALL (lambda, fold) tasks in parallel
+        all_futures = []
+        ref_to_lam = {}
+        for l_val in lam_list:
+            if verbose:
+                print(f"Scheduling penalization_factor = {l_val}")
+            for f_idx in folds:
+                train_idx = np.setdiff1d(np.arange(X_np.shape[0]), f_idx)
+                val_idx = f_idx
+                fut = _multioutput_fold_worker.remote(
+                    X_np,
+                    Y_np,
+                    train_idx,
+                    val_idx,
+                    latent_kernels,
+                    l_val,
+                    num_opt_iter,
+                    0.01,
+                    0.1,
+                    1.0,
+                    sparse_options,
+                    variational_options,
+                    kernel_options,
+                    self.cat_idx,
+                    self.cont_idx,
+                    self.unit_idx,
+                    self.feat_names,
+                    random_seed,
+                )
+                all_futures.append(fut)
+                ref_to_lam[fut] = l_val
+
+        # Collect results for all tasks; progress bar counts total tasks
+        if show_progress:
+            try:
+                if use_tqdm_notebook:
+                    from tqdm.notebook import tqdm
+                else:
+                    from tqdm import tqdm
+            except Exception:
+                from tqdm import tqdm
+
+            remaining = list(all_futures)
+            with tqdm(total=len(all_futures), desc="CV (lambda x fold)") as pbar:
+                while remaining:
+                    done, remaining = ray.wait(remaining, num_returns=1)
+                    ref = done[0]
+                    res = ray.get(ref)
+                    lam_for_ref = ref_to_lam.get(ref, None)
+                    if lam_for_ref is None:
+                        # fallback: we couldn't map, ignore
+                        pass
+                    else:
+                        cv_log_lik[lam_for_ref].append(res[1])
+                    pbar.update(1)
+        else:
+            # Block until all complete and then aggregate
+            results = ray.get(all_futures)
+            # results correspond in order to all_futures
+            for fut, res in zip(all_futures, results):
+                lam_for_ref = ref_to_lam.get(fut, None)
+                if lam_for_ref is not None:
+                    cv_log_lik[lam_for_ref].append(res[1])
+
+        # Compute mean and SE per lambda and choose best
+        for l_val in lam_list:
+            logliks = cv_log_lik.get(l_val, [])
+            if len(logliks) == 0:
+                mean_ll = np.nan
+                se = np.nan
+            else:
+                mean_ll = np.nanmean(logliks)
+                se = np.nanstd(logliks) / np.sqrt(len(logliks))
+
+            if best_log_lik is None or (
+                not np.isnan(mean_ll) and mean_ll >= best_log_lik
+            ):
+                best_lam = l_val
+                best_log_lik = mean_ll
+                best_se = se
+
+        out = {"cv_log_lik": cv_log_lik, "best_penalization": best_lam}
+
+        # Fit best model on full data and store
+        if fit_best and best_lam is not None:
+            if verbose:
+                print(f"Fitting final multioutput model with penalization={best_lam}")
+            # Use existing multioutput fitter which stores model on self
+            self.multioutput_penalized_optimization(
+                latent_kernels=latent_kernels,
+                penalization_factor=best_lam,
+                num_opt_iter=num_opt_iter,
+                sparse_options=sparse_options,
+                variational_options=variational_options,
+                kernel_options=kernel_options,
+                verbose=verbose,
+                random_seed=random_seed,
+            )
+
+            if prune_best:
+                try:
+                    self.models["multioutput"].prune_latent_factors()
+                except Exception:
+                    pass
+
+            out["final_model"] = self.models.get("multioutput", None)
+
+        # Shutdown ray
+        try:
+            ray.shutdown()
+        except Exception:
+            pass
+
+        return out
 
     # def run_penalized_search(
     #     self,
@@ -649,18 +939,16 @@ class GPSearch:
                 gpflow.kernels.SquaredExponential(),
                 gpflow.kernels.Matern12(),
                 gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential()),
-                Lin()
+                Lin(),
             ],
         },
         penalized_options={},
-        search_options={
-            "num_restart": 1
-        },
+        search_options={"num_restart": 1},
         sparse_options={},
         variational_options={},
         optimization_options={},
         random_seed=None,
-        include_dashboard=False
+        include_dashboard=False,
     ):
 
         raise NotImplementedError(
@@ -702,7 +990,7 @@ class GPSearch:
             search_options,
             variational_options,
             feat,
-            bar
+            bar,
         ):
 
             # Instatiate new model with specifications
@@ -719,16 +1007,13 @@ class GPSearch:
 
             # Calculate total number of tasks needed to search over
             k_fold = (
-                3
-                if "k_fold" not in search_options.keys()
-                else search_options["k_fold"]
+                3 if "k_fold" not in search_options.keys() else search_options["k_fold"]
             )
 
             # Serial processing for each ray task (model)
             model.penalization_search(
                 data=convert_data_to_tensors(
-                    self.X.to_numpy(),
-                    self.Y[feat].to_numpy().reshape(-1, 1)
+                    self.X.to_numpy(), self.Y[feat].to_numpy().reshape(-1, 1)
                 ),
                 parallel_object=None,
                 max_jobs=1,
@@ -741,8 +1026,7 @@ class GPSearch:
             # Clean up models (prune)
             model.cut_kernel_components(
                 data=convert_data_to_tensors(
-                    self.X.to_numpy(),
-                    self.Y[feat].to_numpy().reshape(-1, 1)
+                    self.X.to_numpy(), self.Y[feat].to_numpy().reshape(-1, 1)
                 )
             )
 
@@ -752,8 +1036,7 @@ class GPSearch:
             # Also attach variance explained
             model.get_variance_explained(
                 data=convert_data_to_tensors(
-                    self.X.to_numpy(),
-                    self.Y[feat].to_numpy().reshape(-1, 1)
+                    self.X.to_numpy(), self.Y[feat].to_numpy().reshape(-1, 1)
                 )
             )
 
@@ -775,7 +1058,7 @@ class GPSearch:
                 "search_options": search_options,
                 "variational_options": variational_options,
             },
-            include_ray_dashboard=include_dashboard
+            include_ray_dashboard=include_dashboard,
         )
 
         return None
@@ -786,7 +1069,7 @@ class GPSearch:
             gpflow.kernels.SquaredExponential(),
             gpflow.kernels.Matern12(),
             Lin(),
-            gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential())
+            gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential()),
         ],
         max_depth=5,
         early_stopping=True,
@@ -871,7 +1154,7 @@ class GPSearch:
             num_processes = num_jobs
             num_feats_per_round = 5 * num_processes
         grouped_feat_list = [
-            self.out_names[x:x+num_feats_per_round]
+            self.out_names[x : x + num_feats_per_round]
             for x in range(0, len(self.out_names), num_feats_per_round)
         ]
 
@@ -887,14 +1170,14 @@ class GPSearch:
                 ray.init(
                     num_cpus=num_processes,
                     include_dashboard=False,
-                    configure_logging=False
+                    configure_logging=False,
                 )
             except RuntimeError:
                 ray.shutdown()
                 ray.init(
                     num_cpus=num_processes,
                     include_dashboard=False,
-                    configure_logging=False
+                    configure_logging=False,
                 )
 
             # Put main information in shared data store
@@ -911,27 +1194,29 @@ class GPSearch:
             full_kernel_search_remote = ray.remote(full_kernel_search)
 
             # Retrieve models
-            out = ray.get([
-                full_kernel_search_remote.remote(
-                    X=self_X,
-                    Y=self_Y,
-                    kern_list=kernels,
-                    cat_vars=self_cat_vars,
-                    max_depth=max_depth,
-                    early_stopping=early_stopping,
-                    prune=prune,
-                    keep_all=keep_all,
-                    lik=self_likelihood,
-                    scale_value=self_Y_stds,
-                    metric_diff=metric_diff,
-                    num_restart=num_restart,
-                    random_seed=random_seed,
-                    verbose=verbose,
-                    debug=debug,
-                    feature_name=feat
-                )
-                for feat in self.out_names
-            ])
+            out = ray.get(
+                [
+                    full_kernel_search_remote.remote(
+                        X=self_X,
+                        Y=self_Y,
+                        kern_list=kernels,
+                        cat_vars=self_cat_vars,
+                        max_depth=max_depth,
+                        early_stopping=early_stopping,
+                        prune=prune,
+                        keep_all=keep_all,
+                        lik=self_likelihood,
+                        scale_value=self_Y_stds,
+                        metric_diff=metric_diff,
+                        num_restart=num_restart,
+                        random_seed=random_seed,
+                        verbose=verbose,
+                        debug=debug,
+                        feature_name=feat,
+                    )
+                    for feat in self.out_names
+                ]
+            )
 
             # TODO: Make dictionary of outcomes as lookups
             # self.search_info = {feat: mod for feat, mod in zip(self.out_names, out)}
@@ -941,8 +1226,7 @@ class GPSearch:
                 self.models[feat] = m["models"][m["best_model"]]["model"]
                 self.models[feat].get_variance_explained(
                     data=convert_data_to_tensors(
-                        self.X.to_numpy(),
-                        self.Y[feat].to_numpy().reshape(-1, 1)
+                        self.X.to_numpy(), self.Y[feat].to_numpy().reshape(-1, 1)
                     )
                 )
 
@@ -953,11 +1237,11 @@ class GPSearch:
 
             # Print output
             # if c % 10 == 0 and c > 0:
-            prop_done = int(np.round(100*c/num_feats))
-            elapsed_time = np.round((time.time() - start_time)/60, 1)
+            prop_done = int(np.round(100 * c / num_feats))
+            elapsed_time = np.round((time.time() - start_time) / 60, 1)
             print(
                 f"Finished {c} models ({prop_done}%),",
-                f"elapsed time: {elapsed_time} minutes"
+                f"elapsed time: {elapsed_time} minutes",
             )
 
         return None
@@ -990,7 +1274,7 @@ class GPSearch:
         figsize=None,
         cluster=True,
         print_drop_count=False,
-        **clustermap_kwargs
+        **clustermap_kwargs,
     ):
 
         # Specify output dataframe
@@ -1009,38 +1293,33 @@ class GPSearch:
 
             # First see if a feature is in each model
             if feature_name is not None:
-                
+
                 # Get index of specified feature
                 feature_index = np.where(self.X.columns == feature_name)[0][0]
                 # Figure out where it is in the model kernel
                 feature_kernel_flags = [
-                    str(feature_index) in y for y in [
+                    str(feature_index) in y
+                    for y in [
                         re.findall(r"\[(\d+)\]", x)
                         for x in m_copy.kernel_name.split("+")
-                        ]
                     ]
-                
+                ]
+
                 # If this feature is in the selected model then subset model
                 if sum(feature_kernel_flags) > 0 and m_copy.kernel.name == "sum":
-                    feature_kernel_index = list(
-                        np.where(feature_kernel_flags)[0]
-                    )
+                    feature_kernel_index = list(np.where(feature_kernel_flags)[0])
 
                     if len(feature_kernel_index) > 1:
-                        new_k = gpflow.kernels.Sum([
-                            m_copy.kernel.kernels[x]
-                            for x in feature_kernel_index
-                        ])
+                        new_k = gpflow.kernels.Sum(
+                            [m_copy.kernel.kernels[x] for x in feature_kernel_index]
+                        )
                     else:
                         new_k = m_copy.kernel.kernels[feature_kernel_index[0]]
-                    
+
                     # Grab the specific explained component + leftovers
                     var_explained = [
                         m_copy.feature_importances[x]
-                        for x in (
-                            feature_kernel_index
-                            + [-1]
-                        )
+                        for x in (feature_kernel_index + [-1])
                     ]
 
                     m_copy.kernel = new_k
@@ -1050,7 +1329,7 @@ class GPSearch:
                 elif sum(feature_kernel_flags) == 0:
                     n_feature_drops += 1
                     continue
-                    
+
             else:
                 feature_index = None
 
@@ -1066,28 +1345,27 @@ class GPSearch:
                     continue
 
             # If we are still investigating this feature then save output for ploting
-            kname = replace_kernel_variables(
-                m_copy.kernel_name,
-                self.feat_names
-            )
+            kname = replace_kernel_variables(m_copy.kernel_name, self.feat_names)
 
             # Now add this row to our output dataframe
             new_row = pd.DataFrame(
                 data=np.array(var_explained[:-1]).reshape(1, -1),
                 columns=kname.split("+"),
-                index=[o]
+                index=[o],
             )
-            out_info = pd.concat(
-                objs=[out_info, new_row]
-            )
+            out_info = pd.concat(objs=[out_info, new_row])
 
         # Fill in missing explained boxes with zero
         out_info.fillna(value=0, inplace=True)
 
         if print_drop_count:
             if feature_name is not None:
-                print(f"Number of models dropped because feature not present: {n_feature_drops}")
-            print(f"Number of models dropped because of explained threshold not met: {n_explained_drops}")
+                print(
+                    f"Number of models dropped because feature not present: {n_feature_drops}"
+                )
+            print(
+                f"Number of models dropped because of explained threshold not met: {n_explained_drops}"
+            )
 
         # Now plot
         if cluster:
@@ -1108,14 +1386,14 @@ class GPSearch:
         if figsize is None:
             c_unit_h = 0.01
             c_unit_w = 0.01
-            c_min_height = .1 * c_unit_h + 1
-            c_min_width = .1 * c_unit_w + 1
+            c_min_height = 0.1 * c_unit_h + 1
+            c_min_width = 0.1 * c_unit_w + 1
             c_char_pad = 0.01
             width = max(c_unit_w * out_info.shape[1], c_min_width)
             width += c_char_pad * max(list(map(len, out_info.index.tolist())))
             height = max(c_unit_h * out_info.shape[0], c_min_height)
             height += c_char_pad * max(list(map(len, out_info.columns.tolist())))
-            figsize = (width*scale_size, height*scale_size)
+            figsize = (width * scale_size, height * scale_size)
 
         if "dendrogram_ratio" not in clustermap_kwargs.keys():
             clustermap_kwargs["dendrogram_ratio"] = (0.05, 0.05)
@@ -1124,33 +1402,27 @@ class GPSearch:
             clustermap_kwargs["cbar_kws"] = {
                 "orientation": "horizontal",
                 "use_gridspec": False,
-                "label": "Feature importance"
+                "label": "Feature importance",
             }
         clm = sns.clustermap(
             out_info.transpose(),
             figsize=figsize,
             annot=show_vals,
-            annot_kws={'size': 6*scale_size},
+            annot_kws={"size": 6 * scale_size},
             robust=True,
             cmap="Greens",
             fmt="g",
             col_cluster=col_cluster,
             row_cluster=row_cluster,
-            **clustermap_kwargs
+            **clustermap_kwargs,
         )
 
         ax = clm.ax_heatmap
         # Adjust text for easier reading
         plt.setp(
-            ax.xaxis.get_majorticklabels(),
-            rotation=90,
-            horizontalalignment="center"
+            ax.xaxis.get_majorticklabels(), rotation=90, horizontalalignment="center"
         )
-        plt.setp(
-            ax.yaxis.get_majorticklabels(),
-            rotation=0,
-            horizontalalignment="left"
-        )
+        plt.setp(ax.yaxis.get_majorticklabels(), rotation=0, horizontalalignment="left")
         # Add text if requested
         if show_vals:
             for t in ax.texts:
@@ -1160,19 +1432,15 @@ class GPSearch:
                     t.set_text("")
 
         # Set xlabel on the heatmap axes
-        ax.set_xlabel('Outcomes', fontweight='bold', fontsize=8*scale_size)
-        ax.set_ylabel('Kernel features', fontweight='bold', fontsize=8*scale_size)
-        ax.get_xaxis().set_tick_params(which='both', labelsize=6*scale_size)
-        ax.get_yaxis().set_tick_params(which='both', labelsize=6*scale_size)
+        ax.set_xlabel("Outcomes", fontweight="bold", fontsize=8 * scale_size)
+        ax.set_ylabel("Kernel features", fontweight="bold", fontsize=8 * scale_size)
+        ax.get_xaxis().set_tick_params(which="both", labelsize=6 * scale_size)
+        ax.get_yaxis().set_tick_params(which="both", labelsize=6 * scale_size)
         # ax.set_title("Feature importance", fontweight='bold', fontsize=9*scale_size, loc='left')
         return clm
 
     def plot_parts(
-        self,
-        out_label,
-        x_axis_label,
-        reverse_transform_axes=False,
-        **kwargs
+        self, out_label, x_axis_label, reverse_transform_axes=False, **kwargs
     ):
         """Plot independent kernel components.
 
@@ -1211,9 +1479,7 @@ class GPSearch:
                     a.xaxis.set_major_locator(mticker.FixedLocator(ticks_loc))
                     a.set_xticklabels(
                         self.reverse_transform(
-                            array=ticks_loc,
-                            feature_name=xlab_name,
-                            input_type="X"
+                            array=ticks_loc, feature_name=xlab_name, input_type="X"
                         )
                     )
 
@@ -1226,9 +1492,7 @@ class GPSearch:
                         a.yaxis.set_major_locator(mticker.FixedLocator(ticks_loc))
                         a.set_yticklabels(
                             self.reverse_transform(
-                                array=ticks_loc,
-                                feature_name=out_label,
-                                input_type="Y"
+                                array=ticks_loc, feature_name=out_label, input_type="Y"
                             )
                         )
                     else:
@@ -1236,9 +1500,7 @@ class GPSearch:
                         a.yaxis.set_major_locator(mticker.FixedLocator(ticks_loc))
                         a.set_yticklabels(
                             self.reverse_transform(
-                                array=ticks_loc,
-                                feature_name=out_label,
-                                input_type="Y"
+                                array=ticks_loc, feature_name=out_label, input_type="Y"
                             )
                         )
 
@@ -1250,7 +1512,7 @@ class GPSearch:
         print_drop_count=False,
         return_df=False,
         top_n=None,
-        min_total_explained=0.8
+        min_total_explained=0.8,
     ):
 
         # Drop counters
@@ -1278,17 +1540,22 @@ class GPSearch:
                 feature_index = np.where(self.X.columns == feature_name)[0][0]
                 # Figure out where it is in the model kernel
                 feature_kernel_flags = [
-                    str(feature_index) in y for y in [
+                    str(feature_index) in y
+                    for y in [
                         re.findall(r"\[(\d+)\]", x)
                         for x in m_copy.kernel_name.split("+")
-                        ]
                     ]
+                ]
                 # print(f"{feature_index=}, {feature_kernel_flags=}")
 
                 # If this feature is in the selected model and the model has other compon
                 if sum(feature_kernel_flags) > 0:
                     out_values_list.append(
-                        max(np.array(m_copy.feature_importances[:-1])[np.array(feature_kernel_flags)])
+                        max(
+                            np.array(m_copy.feature_importances[:-1])[
+                                np.array(feature_kernel_flags)
+                            ]
+                        )
                     )
                     out_names_list.append(o)
 
@@ -1302,15 +1569,16 @@ class GPSearch:
 
         if print_drop_count:
             if feature_name is not None:
-                print(f"Number of models dropped because feature not present: {n_feature_drops}")
-            print(f"Number of models dropped because of explained threshold not met: {n_explained_drops}")
+                print(
+                    f"Number of models dropped because feature not present: {n_feature_drops}"
+                )
+            print(
+                f"Number of models dropped because of explained threshold not met: {n_explained_drops}"
+            )
 
         # Order output
         metric_df = pd.DataFrame(
-            data={
-                "name": out_names_list,
-                "metric": out_values_list
-            }
+            data={"name": out_names_list, "metric": out_values_list}
         ).sort_values("metric", ascending=False)
 
         # Truncate output
@@ -1321,11 +1589,7 @@ class GPSearch:
             return metric_df
         else:
             # Plot
-            p = sns.barplot(
-                data=metric_df,
-                y="name",
-                x="metric"
-            )
+            p = sns.barplot(data=metric_df, y="name", x="metric")
             return p
 
     def plot_marginal(
@@ -1349,8 +1613,7 @@ class GPSearch:
         # if self.model_selection_type == "penalized":
         gpf = m.plot_functions(
             data=convert_data_to_tensors(
-                self.X.to_numpy(),
-                self.Y[out_label].to_numpy().reshape(-1, 1)
+                self.X.to_numpy(), self.Y[out_label].to_numpy().reshape(-1, 1)
             ),
             x_idx=x_idx,
             col_names=self.feat_names,
@@ -1365,7 +1628,7 @@ class GPSearch:
         # Reverse transform if requested
         if reverse_transform_axes is True:
             if hasattr(self, "X_stds"):
-                
+
                 # for a in gpf[1].flatten():
 
                 # Get feature name
@@ -1379,9 +1642,7 @@ class GPSearch:
                 gpf.xaxis.set_major_locator(mticker.FixedLocator(ticks_loc))
                 gpf.set_xticklabels(
                     self.reverse_transform(
-                        array=ticks_loc,
-                        feature_name=xlab_name,
-                        input_type="X"
+                        array=ticks_loc, feature_name=xlab_name, input_type="X"
                     )
                 )
 
@@ -1404,28 +1665,19 @@ class GPSearch:
                 gpf.yaxis.set_major_locator(mticker.FixedLocator(ticks_loc))
                 gpf.set_yticklabels(
                     self.reverse_transform(
-                        array=ticks_loc,
-                        feature_name=out_label,
-                        input_type="Y"
+                        array=ticks_loc, feature_name=out_label, input_type="Y"
                     )
                 )
 
         return gpf
 
     def reverse_transform(
-        self,
-        array,
-        feature_name=None,
-        input_type="X",
-        round_digits=1
+        self, array, feature_name=None, input_type="X", round_digits=1
     ):
-        """ Return input values on original scale.
-        """
+        """Return input values on original scale."""
 
         if input_type == "X":
-            assert hasattr(
-                self, "X_stds"
-            ), "Standardize_X wasn't called in GPSearch()"
+            assert hasattr(self, "X_stds"), "Standardize_X wasn't called in GPSearch()"
 
             if feature_name is None:
                 scale_vals = self.X_stds.values
@@ -1435,9 +1687,7 @@ class GPSearch:
                 shift_vals = self.X_means[feature_name]
 
         elif input_type == "Y":
-            assert hasattr(
-                self, "Y_stds"
-            ), "Y_transform wasn't called in GPSearch()"
+            assert hasattr(self, "Y_stds"), "Y_transform wasn't called in GPSearch()"
 
             if feature_name is None:
                 scale_vals = self.Y_stds.values
@@ -1456,8 +1706,7 @@ class GPSearch:
 
         # Perform transformation
         array_transformed = np.round(
-            scale_vals * np.array(array) + shift_vals,
-            decimals=round_digits
+            scale_vals * np.array(array) + shift_vals, decimals=round_digits
         )
 
         return array_transformed
@@ -1505,30 +1754,23 @@ def kernel_test(
             "likelihood": likelihood,
             # "scale_value": scale_value
             # "variational_priors": use_priors
-        }
+        },
     )
 
     if random_init and num_restart > 1:
         best_model.random_restart_optimize(
             data=convert_data_to_tensors(X, Y),
             num_restart=num_restart,
-            randomize_kwargs={
-                "random_seed": random_seed
-            }
+            randomize_kwargs={"random_seed": random_seed},
         )
     elif num_restart > 1:
         best_model.random_restart_optimize(
             data=convert_data_to_tensors(X, Y),
             num_restart=num_restart,
-            randomize_kwargs={
-                "scale": 0.0,
-                "random_seed": random_seed
-            }
+            randomize_kwargs={"scale": 0.0, "random_seed": random_seed},
         )
     else:
-        best_model.optimize_params(
-            data=convert_data_to_tensors(X, Y)
-        )
+        best_model.optimize_params(data=convert_data_to_tensors(X, Y))
 
     # Calculate information criteria
     if split:
@@ -1542,9 +1784,7 @@ def kernel_test(
         )
         bic = round(-1 * estimated_loglik, 2)
     else:
-        estimated_loglik = best_model.log_posterior_density(
-            data=(X, Y)
-        ).numpy()
+        estimated_loglik = best_model.log_posterior_density(data=(X, Y)).numpy()
 
         bic = round(
             calc_bic(
@@ -1616,9 +1856,7 @@ def loc_kernel_search(
 
         temp_kern_list = [gpflow.utilities.deepcopy(x) for x in kern_list]
         # Set kernel list based on feature currently searching
-        k_list = set_feature_kernels(
-            f=f, kern_list=temp_kern_list, cat_vars=cat_vars
-        )
+        k_list = set_feature_kernels(f=f, kern_list=temp_kern_list, cat_vars=cat_vars)
         # Add no /static/ kernel to test if first level and first feature
         if f == 0 and depth == 1:  # and lik=='gaussian':
             # print(f'Current list of kernels: {k_list}')
@@ -1630,9 +1868,7 @@ def loc_kernel_search(
         # Search over kernels
         for k in k_list:
             # Get kernel name and dimension
-            k_info = (
-                k.name + str(k.active_dims) if k.name != "constant" else k.name
-            )
+            k_info = k.name + str(k.active_dims) if k.name != "constant" else k.name
             if verbose:
                 print("Current kernel being tested: {}".format(k_info))
 
@@ -1854,9 +2090,7 @@ def prod_kernel_creation(
                     # print(f'temp_name: {temp_name}')
                     # print(np.where([k_info < x for x in temp_name]))
                     try:
-                        new_idx = np.where([k_info < x for x in temp_name])[0][
-                            0
-                        ]
+                        new_idx = np.where([k_info < x for x in temp_name])[0][0]
                     except Exception:
                         new_idx = len(temp_name) - 1
                     cur_component_name = temp_name.pop(feat)
@@ -1912,9 +2146,7 @@ def check_if_better_metric(model_dict, depth):  # previous_dict, current_dict):
     otherwise end search.
     """
 
-    prev_vals = [
-        x["bic"] for x in model_dict.values() if x["depth"] == (depth - 1)
-    ]
+    prev_vals = [x["bic"] for x in model_dict.values() if x["depth"] == (depth - 1)]
     new_vals = [x["bic"] for x in model_dict.values() if x["depth"] == (depth)]
     if len(prev_vals) > 0 and len(new_vals) > 0:
         best_prev = min(prev_vals)
@@ -1941,9 +2173,7 @@ def keep_top_k(res_dict, depth, metric_diff=6, split=False):
             return x
 
     # Find results from the current depth
-    best_bic = min(
-        [v["bic"] for k, v in res_dict.items() if v["depth"] == depth]
-    )
+    best_bic = min([v["bic"] for k, v in res_dict.items() if v["depth"] == depth])
     #     for k,v in res_dict.items():
     #         if v[3] == depth and v[2] < best_bic:
 
@@ -1963,7 +2193,7 @@ def prune_best_model(
     scale_value=None,
     verbose=False,
     num_restart=5,
-    random_seed=None
+    random_seed=None,
 ):
     out_dict = res_dict.copy()
 
@@ -1985,12 +2215,8 @@ def prune_best_model(
         # k = gpflow.kernels.Sum(
         #     kernels = [k_ for i_, k_ in enumerate(best_model.kernel.kernels)
         #                if i_ != i])
-        k_info = "+".join(
-            [x_ for i_, x_ in enumerate(kernel_names) if i_ != i]
-        )
-        kerns = [
-            k_ for i_, k_ in enumerate(best_model.kernel.kernels) if i_ != i
-        ]
+        k_info = "+".join([x_ for i_, x_ in enumerate(kernel_names) if i_ != i])
+        kerns = [k_ for i_, k_ in enumerate(best_model.kernel.kernels) if i_ != i]
         if len(kerns) > 1:
             k = gpflow.kernels.Sum(kernels=kerns)
         else:
@@ -2008,7 +2234,7 @@ def prune_best_model(
             scale_value=scale_value,
             verbose=verbose,
             num_restart=num_restart,
-            random_seed=random_seed
+            random_seed=random_seed,
         )
         # If better model found then save it
         if bic < best_bic:
@@ -2026,23 +2252,19 @@ def prune_best_model(
 
 
 def prune_best_model2(
-        res_dict,
-        depth,
-        lik,
-        scale_value=None,
-        verbose=False,
-        num_restart=5,
-        random_seed=None
-    ):
+    res_dict,
+    depth,
+    lik,
+    scale_value=None,
+    verbose=False,
+    num_restart=5,
+    random_seed=None,
+):
     out_dict = res_dict.copy()
 
     # Get best model from current depth
     best_bic, best_model_name, best_model = min(
-        [
-            (i["bic"], k, i["model"])
-            for k, i in res_dict.items()
-            if i["depth"] == depth
-        ]
+        [(i["bic"], k, i["model"]) for k, i in res_dict.items() if i["depth"] == depth]
     )
     # print(f'Best model: {best_model_name}')
 
@@ -2062,12 +2284,8 @@ def prune_best_model2(
         if verbose:
             print(f"Current kernel component: {kernel_names[i]}")
         # Glue together the kernel pieces that are not currently being pruned
-        k_info = "+".join(
-            [x_ for i_, x_ in enumerate(kernel_names) if i_ != i]
-        )
-        kerns = [
-            k_ for i_, k_ in enumerate(best_model.kernel.kernels) if i_ != i
-        ]
+        k_info = "+".join([x_ for i_, x_ in enumerate(kernel_names) if i_ != i])
+        kerns = [k_ for i_, k_ in enumerate(best_model.kernel.kernels) if i_ != i]
 
         # TODO: Still can't figure out product term issue
         # Check if this term is a product term, add to end if so
@@ -2099,7 +2317,7 @@ def prune_best_model2(
                 scale_value=scale_value,
                 verbose=verbose,
                 num_restart=num_restart,
-                random_seed=random_seed
+                random_seed=random_seed,
             )
 
             # Skip the rest of the iteration if product was involved
@@ -2125,7 +2343,7 @@ def prune_best_model2(
                 scale_value=scale_value,
                 verbose=verbose,
                 num_restart=num_restart,
-                random_seed=random_seed
+                random_seed=random_seed,
             )
         # If better model found then save it
         if bic < best_bic:
@@ -2195,9 +2413,7 @@ def prune_prod_kernel(
             # print(other_kernel)
             if not isinstance(other_kernel, list):
                 other_kernel = [other_kernel]
-            kerns = list(
-                np.array(other_kernel + [prod_kernel.kernels[i]])[order_set]
-            )
+            kerns = list(np.array(other_kernel + [prod_kernel.kernels[i]])[order_set])
             k = gpflow.kernels.Sum(kernels=kerns)
 
         if verbose:
@@ -2222,7 +2438,7 @@ def prune_prod_kernel(
                 scale_value=scale_value,
                 verbose=verbose,
                 num_restart=num_restart,
-                random_seed=random_seed
+                random_seed=random_seed,
             )
 
             if verbose:
@@ -2262,7 +2478,7 @@ def full_kernel_search(
     keep_only_best=True,
     softmax_select=False,
     random_seed=None,
-    feature_name=None
+    feature_name=None,
 ):
     """
     This function runs the entire kernel search, calling helpers along the way.
@@ -2285,15 +2501,11 @@ def full_kernel_search(
     if feature_name is None:
         Y = Y.to_numpy().reshape(-1, 1)
         scale_value = (
-            None if scale_value is None
-            else scale_value.to_numpy().reshape(1, 1)
+            None if scale_value is None else scale_value.to_numpy().reshape(1, 1)
         )
     else:
         Y = Y[feature_name].to_numpy().reshape(-1, 1)
-        scale_value = (
-            None if scale_value is None
-            else scale_value[feature_name]
-        )
+        scale_value = None if scale_value is None else scale_value[feature_name]
 
     # Flag for missing values
     x_idx = ~np.isnan(X).any(axis=1)
@@ -2420,9 +2632,7 @@ def full_kernel_search(
 
         # Early stopping?
         if early_stopping and d > 1:
-            found_better = check_if_better_metric(
-                model_dict=search_dict, depth=d
-            )
+            found_better = check_if_better_metric(model_dict=search_dict, depth=d)
 
             # If no better kernel found then exit search
             if not found_better:
@@ -2451,15 +2661,11 @@ def full_kernel_search(
             # Filter out results from current depth to just keep best kernel
             # options
             if not keep_all:
-                search_dict = keep_top_k(
-                    search_dict, depth=d, metric_diff=metric_diff
-                )
+                search_dict = keep_top_k(search_dict, depth=d, metric_diff=metric_diff)
 
             # If softmax is model selection option then choose best model
             if softmax_select:
-                model_info_list = [
-                    (i["bic"], k) for k, i in search_dict.items()
-                ]
+                model_info_list = [(i["bic"], k) for k, i in search_dict.items()]
                 model_name_selected = softmax_kernel_selection(
                     bic_list=[x[0] for x in model_info_list],
                     name_list=[x[1] for x in model_info_list],
@@ -2510,9 +2716,9 @@ def full_kernel_search(
 
     # Look for best model
     # best_model_name = min([(i[2], k) for k, i in search_dict.items()])[1]
-    best_model_name = min(
-        [(i["bic"], i["depth"], k) for k, i in search_dict.items()]
-    )[2]
+    best_model_name = min([(i["bic"], i["depth"], k) for k, i in search_dict.items()])[
+        2
+    ]
     if verbose:
         print(f"Best model for depth {d} is {best_model_name}")
 
@@ -2702,9 +2908,7 @@ def split_kernel_search(
 
         # Early stopping?
         if early_stopping and d > 1:
-            found_better = check_if_better_metric(
-                model_dict=search_dict, depth=d
-            )
+            found_better = check_if_better_metric(model_dict=search_dict, depth=d)
 
             # If no better kernel found then exit search
             if not found_better:
@@ -2739,9 +2943,7 @@ def split_kernel_search(
 
             # If softmax is model selection option then choose best model
             if softmax_select:
-                model_info_list = [
-                    (i["bic"], k) for k, i in search_dict.items()
-                ]
+                model_info_list = [(i["bic"], k) for k, i in search_dict.items()]
                 model_name_selected = softmax_kernel_selection(
                     bic_list=[x[0] for x in model_info_list],
                     name_list=[x[1] for x in model_info_list],
@@ -2776,9 +2978,9 @@ def split_kernel_search(
 
     # Look for best model
     # best_model_name = min([(i[2], k) for k, i in search_dict.items()])[1]
-    best_model_name = min(
-        [(i["bic"], i["depth"], k) for k, i in search_dict.items()]
-    )[2]
+    best_model_name = min([(i["bic"], i["depth"], k) for k, i in search_dict.items()])[
+        2
+    ]
     if verbose:
         print(best_model_name)
 
@@ -2819,9 +3021,7 @@ def softmax_kernel_selection(bic_list, name_list):
 
     # Filter out "bad" models
     # print(bic_list)
-    name_list = [
-        name_list[x] for x in range(len(bic_list)) if bic_list[x] != np.Inf
-    ]
+    name_list = [name_list[x] for x in range(len(bic_list)) if bic_list[x] != np.Inf]
     bic_list = [x for x in bic_list if x != np.Inf]
 
     # If there is just a single model then return that one
@@ -2832,9 +3032,7 @@ def softmax_kernel_selection(bic_list, name_list):
     bic_list = np.array([-x for x in bic_list])
 
     # Standardize the values to between 0 and 1
-    norm_bic_list = (bic_list - min(bic_list)) / (
-        max(bic_list) - min(bic_list)
-    )
+    norm_bic_list = (bic_list - min(bic_list)) / (max(bic_list) - min(bic_list))
 
     # Make a probability distribution
     prob_list = np.exp(norm_bic_list) / sum(np.exp(norm_bic_list))

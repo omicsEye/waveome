@@ -21,7 +21,32 @@ def full_kernel_build(
     unit_numeric_interactions=False,
     return_sum=False,
     kerns=[gpflow.kernels.SquaredExponential()],
+    num_outputs=None,
+    ranks=None,
 ):
+    # Determine default rank
+    if ranks is None:
+        if num_outputs is not None:
+            default_rank = num_outputs
+        else:
+            default_rank = 1
+    elif isinstance(ranks, int):
+        default_rank = ranks
+    else:
+        # If ranks is a dict, we default to 1 for anything not specified?
+        # Or default to num_outputs? Let's default to num_outputs if available.
+        if num_outputs is not None:
+            default_rank = num_outputs
+        else:
+            default_rank = 1
+
+    def get_rank(var_idx, ranks_arg, def_rank):
+        if isinstance(ranks_arg, dict):
+            # Try looking up by index or name (if we had access to names easily here)
+            # For now, support looking up by index
+            return ranks_arg.get(var_idx, def_rank)
+        return def_rank
+
     # Get a list of all variable/kernel combinations
     kernel_list = []
 
@@ -34,70 +59,94 @@ def full_kernel_build(
         # Make sure that we aren't double-counting unit id as categorical
         cat_vars = [x for x in cat_vars if x != unit_idx]
 
-        # Only add unit intercept
-        kernel_list += [Categorical(active_dims=[unit_idx])]
-        if var_names is not None:
-            var_list += ["categorical[" + var_names[unit_idx] + "]"]
+        # Determine rank for unit_idx
+        r_unit = get_rank(unit_idx, ranks, default_rank)
+
+        for r in range(r_unit):
+            # Only add unit intercept
+            kernel_list += [Categorical(active_dims=[unit_idx])]
+            if var_names is not None:
+                suffix = f"_{r}" if r_unit > 1 else ""
+                var_list += ["categorical[" + var_names[unit_idx] + "]" + suffix]
 
     # Specify all the categorical options
     for c in cat_vars:
-        # print(f"Adding kernel: categorical[{c}]")
-        kernel_list += [Categorical(active_dims=[c])]
+        r_cat = get_rank(c, ranks, default_rank)
+        for r in range(r_cat):
+            # print(f"Adding kernel: categorical[{c}]")
+            kernel_list += [Categorical(active_dims=[c])]
 
-        if var_names is not None:
-            var_list += ["categorical[" + var_names[c] + "]"]
+            if var_names is not None:
+                suffix = f"_{r}" if r_cat > 1 else ""
+                var_list += ["categorical[" + var_names[c] + "]" + suffix]
 
     # Same for numeric variables and kernel combinations
     for n in num_vars:
+        r_num = get_rank(n, ranks, default_rank)
         for k in kerns:
-            # print(f"Adding kernel: {k.name}[{n}]")
-            k_copy = gpflow.utilities.deepcopy(k)
-            k_copy.active_dims = [n]
-            kernel_list += [k_copy]
-
-            if var_names is not None:
-                var_list += [k_copy.name + "[" + var_names[n] + "]"]
-
-    # See if we want to include ID and continuous interactions
-    if unit_numeric_interactions is True and unit_idx is not None:
-        for n in num_vars:
-            for k in kerns:
-                k1 = Categorical(active_dims=[unit_idx])
-                gpflow.utilities.set_trainable(k1.variance, False)
-                k2 = gpflow.utilities.deepcopy(k)
-                k2.active_dims = [n]
-                k_out = gpflow.kernels.Product([k1, k2])
-                kernel_list += [k_out]
+            for r in range(r_num):
+                # print(f"Adding kernel: {k.name}[{n}]")
+                k_copy = gpflow.utilities.deepcopy(k)
+                k_copy.active_dims = [n]
+                kernel_list += [k_copy]
 
                 if var_names is not None:
-                    var_list += [
-                        f"{k1.name}[{var_names[unit_idx]}]"
-                        f"*{k2.name}[{var_names[n]}]"
-                    ]
+                    suffix = f"_{r}" if r_num > 1 else ""
+                    var_list += [k_copy.name + "[" + var_names[n] + "]" + suffix]
+
+    # See if we want to include ID and continuous interactions
+    # Note: Interactions currently default to rank 1 or inherited default?
+    # For now, let's treat interactions as separate "variables" or just apply default_rank
+    # Ideally, interaction ranks might be huge if we multiply ranks.
+    # Let's stick to default_rank for the interaction terms for now.
+
+    if unit_numeric_interactions is True and unit_idx is not None:
+        for n in num_vars:
+            r_int = default_rank # specific ranks for interactions not yet supported in dict
+            for k in kerns:
+                for r in range(r_int):
+                    k1 = Categorical(active_dims=[unit_idx])
+                    gpflow.utilities.set_trainable(k1.variance, False)
+                    k2 = gpflow.utilities.deepcopy(k)
+                    k2.active_dims = [n]
+                    k_out = gpflow.kernels.Product([k1, k2])
+                    kernel_list += [k_out]
+
+                    if var_names is not None:
+                        suffix = f"_{r}" if r_int > 1 else ""
+                        var_list += [
+                            f"{k1.name}[{var_names[unit_idx]}]"
+                            f"*{k2.name}[{var_names[n]}]"
+                            f"{suffix}"
+                        ]
 
     # Now build out interactions with categorical and continuous
     if categorical_numeric_interactions is True:
         for c in cat_vars:
             for n in num_vars:
+                r_int = default_rank
                 for k in kerns:
-                    # Specify categorical component and freeze variance
-                    k1 = Categorical(active_dims=[c])
-                    gpflow.utilities.set_trainable(k1.variance, False)
+                    for r in range(r_int):
+                        # Specify categorical component and freeze variance
+                        k1 = Categorical(active_dims=[c])
+                        gpflow.utilities.set_trainable(k1.variance, False)
 
-                    # Specify numeric component
-                    k2 = gpflow.utilities.deepcopy(k)
-                    k2.active_dims = [n]
+                        # Specify numeric component
+                        k2 = gpflow.utilities.deepcopy(k)
+                        k2.active_dims = [n]
 
-                    # Combine both
-                    k_out = gpflow.kernels.Product([k1, k2])
-                    kernel_list += [k_out]
+                        # Combine both
+                        k_out = gpflow.kernels.Product([k1, k2])
+                        kernel_list += [k_out]
 
-                    # Store kernel name if requested
-                    if var_names is not None:
-                        var_list += [
-                            f"{k1.name}[{var_names[c]}]"
-                            f"*{k2.name}[{var_names[n]}]"
-                        ]
+                        # Store kernel name if requested
+                        if var_names is not None:
+                            suffix = f"_{r}" if r_int > 1 else ""
+                            var_list += [
+                                f"{k1.name}[{var_names[c]}]"
+                                f"*{k2.name}[{var_names[n]}]"
+                                f"{suffix}"
+                            ]
 
     # If requested also build out two-way numeric interactions
     if second_order_numeric is True:
@@ -108,18 +157,22 @@ def full_kernel_build(
                 # else double count
                 for n_second in num_vars[n_count:]:
                     for k_second in kerns:
-                        k1 = gpflow.utilities.deepcopy(k_first)
-                        k1.active_dims = [n_first]
-                        k2 = gpflow.utilities.deepcopy(k_second)
-                        k2.active_dims = [n_second]
-                        k_out = gpflow.kernels.Product([k1, k2])
-                        kernel_list += [k_out]
+                        r_int = default_rank
+                        for r in range(r_int):
+                            k1 = gpflow.utilities.deepcopy(k_first)
+                            k1.active_dims = [n_first]
+                            k2 = gpflow.utilities.deepcopy(k_second)
+                            k2.active_dims = [n_second]
+                            k_out = gpflow.kernels.Product([k1, k2])
+                            kernel_list += [k_out]
 
-                        if var_names is not None:
-                            var_list += [
-                                f"{k1.name}[{var_names[n_first]}]"
-                                f"*{k2.name}[{var_names[n_second]}]"
-                            ]
+                            if var_names is not None:
+                                suffix = f"_{r}" if r_int > 1 else ""
+                                var_list += [
+                                    f"{k1.name}[{var_names[n_first]}]"
+                                    f"*{k2.name}[{var_names[n_second]}]"
+                                    f"{suffix}"
+                                ]
 
                 # Increment base numeric kernel count
                 n_count += 1
