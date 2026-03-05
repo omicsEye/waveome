@@ -13,3 +13,6 @@
 __pycache__
 build/
 dist/
+
+# Multioutput benchmark generated outputs
+multioutput/benchmarks/simulation/experiments/output/
