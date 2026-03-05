@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+import tensorflow_probability as tfp
 from gpflow.base import Parameter, TensorType
 from gpflow.config import default_float
 from gpflow.likelihoods import ScalarLikelihood
@@ -21,22 +22,33 @@ class NegativeBinomial(ScalarLikelihood):
     def __init__(self, alpha=1.0, invlink=tf.exp, scale=1.0, **kwargs):
         super().__init__(**kwargs)
         self.alpha = Parameter(
-            alpha, transform=positive(), dtype=default_float()
+            alpha,
+            transform=tfp.bijectors.Exp(),  # positive(),
+            dtype=default_float()
         )
-        self.scale = np.array(scale, dtype=default_float())
+        # self.scale = np.array(scale, dtype=default_float())
         self.invlink = invlink
 
     def _scalar_log_prob(
         self, X: TensorType, F: TensorType, Y: TensorType
     ) -> tf.Tensor:
-        return negative_binomial(self.invlink(F) * self.scale, Y, self.alpha)
+        return negative_binomial(
+            self.invlink(F),# * self.scale,
+            Y,
+            self.alpha
+        )
 
     def _conditional_mean(self, X: TensorType, F: TensorType) -> tf.Tensor:
-        return self.invlink(F) * self.scale
+        return self.invlink(F)# * self.scale
 
     def _conditional_variance(self, X: TensorType, F: TensorType) -> tf.Tensor:
-        m = self.invlink(F) * self.scale
+        m = self.invlink(F)# * self.scale
         return m + m**2 * self.alpha
+    
+    def predict_mean_and_var(self, X, Fmu, Fvar):
+        y_mu = self._conditional_mean(X, Fmu)
+        y_var = self._conditional_variance(X, Fmu)
+        return y_mu, y_var
 
     def _predict_mean_and_var(self, X, Fmu, Fvar):
         return (
@@ -45,7 +57,7 @@ class NegativeBinomial(ScalarLikelihood):
         )
     
     def return_p(self, F: TensorType) -> tf.Tensor:
-        m = self.invlink(F) * self.scale
+        m = self.invlink(F)# * self.scale
         r = 1 / self.alpha
         return r / (m + r)
 

@@ -19,14 +19,14 @@ class Lin(gpflow.kernels.Kernel):
     def K(self, X, X2=None) -> tf.Tensor:
         if X.shape[1] > 1:
             X = tf.cast(
-                tf.reshape(X[:, self.active_dims[0]], (-1, 1)), tf.float64
+                tf.reshape(X[:, self.active_dims[0]], (-1, 1)), gpflow.default_float()
             )
         if X2 is None:
             return self.variance * tf.matmul(X, X, transpose_b=True)
         else:
             if X2.shape[1] > 1:
                 X2 = tf.cast(
-                    tf.reshape(X2[:, self.active_dims[0]], (-1, 1)), tf.float64
+                    tf.reshape(X2[:, self.active_dims[0]], (-1, 1)), gpflow.default_float()
                 )
             return self.variance * tf.matmul(X, X2, transpose_b=True)
             # return tf.tensordot(X * self.variance, X2, [[-1], [-1]])
@@ -35,7 +35,7 @@ class Lin(gpflow.kernels.Kernel):
         if len(X.shape) > 1 and X.shape[1] > 1:
             X = X[:, self.active_dims[0]]
         return self.variance * tf.cast(
-            tf.reshape(tf.square(X), (-1,)), tf.float64
+            tf.reshape(tf.square(X), (-1,)), gpflow.default_float()
         )
 
 
@@ -56,7 +56,7 @@ class Poly(gpflow.kernels.Kernel):
     def K(self, X, X2=None) -> tf.Tensor:
         if X.shape[1] > 1:
             X = tf.cast(
-                tf.reshape(X[:, self.active_dims[0]], (-1, 1)), tf.float64
+                tf.reshape(X[:, self.active_dims[0]], (-1, 1)), gpflow.default_float()
             )
         if X2 is None:
             return (
@@ -65,7 +65,7 @@ class Poly(gpflow.kernels.Kernel):
         else:
             if X2.shape[1] > 1:
                 X2 = tf.cast(
-                    tf.reshape(X2[:, self.active_dims[0]], (-1, 1)), tf.float64
+                    tf.reshape(X2[:, self.active_dims[0]], (-1, 1)), gpflow.default_float()
                 )
             return (
                 self.variance * tf.matmul(X, X2, transpose_b=True)
@@ -78,7 +78,7 @@ class Poly(gpflow.kernels.Kernel):
             X = X[:, self.active_dims[0]]
         return (
             self.variance
-            * tf.cast(tf.reshape(tf.square(X), (-1,)), tf.float64)
+            * tf.cast(tf.reshape(tf.square(X), (-1,)), gpflow.default_float())
             + self.offset
         ) ** self.degree
 
@@ -113,14 +113,14 @@ class Categorical(gpflow.kernels.Kernel):
                 tf.cast(tf.round(tf.reshape(X2, (1, -1))), tf.int64),
                 tf.cast(tf.round(X), tf.int64),
             ),
-            tf.float64,
+            gpflow.default_float(),
         )
 
     def K_diag(self, X):
         if len(X.shape) > 1 and X.shape[1] > 1:
             X = X[:, self.active_index]
         return self.variance * tf.cast(
-            tf.reshape(tf.ones_like(X), (-1,)), tf.float64
+            tf.reshape(tf.ones_like(X), (-1,)), gpflow.default_float()
         )
 
 
@@ -139,4 +139,4 @@ class Empty(gpflow.kernels.Kernel):
         return tf.zeros_like(tf.linalg.matmul(X, tf.transpose(X2)))
 
     def K_diag(self, X):
-        return tf.cast(tf.reshape(tf.zeros_like(X), (-1,)), tf.float64)
+        return tf.cast(tf.reshape(tf.zeros_like(X), (-1,)), gpflow.default_float())

@@ -13,9 +13,10 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 import tqdm
 from gpflow.utilities import set_trainable
-from joblib import Parallel
+from joblib import Parallel, delayed
 from ray.experimental import tqdm_ray
 from tensorflow_probability import distributions as tfd
+from scipy.linalg import svd
 
 from .kernels import Empty
 from .likelihoods import (
@@ -30,9 +31,45 @@ from .likelihoods import (
 f64 = gpflow.utilities.to_default_float
 
 
+def set_precision(precision: str = "float64"):
+    """
+    Set the default floating point precision for the library.
+
+    Parameters
+    ----------
+    precision : str
+        Either "float32" or "float64".
+    """
+    if precision not in ["float32", "float64"]:
+        raise ValueError("Precision must be either 'float32' or 'float64'")
+
+    if precision == "float32":
+        gpflow.config.set_default_float(np.float32)
+    else:
+        gpflow.config.set_default_float(np.float64)
+
+
+def get_precision():
+    """
+    Get the current default floating point precision.
+    """
+    dtype = gpflow.config.default_float()
+    if dtype == np.float32:
+        return "float32"
+    else:
+        return "float64"
+
+
+# Set default precision to float64
+set_precision("float64")
+
+
 def convert_data_to_tensors(X: np.array, Y: np.array):
 
-    tensor_tuple = (tf.convert_to_tensor(X), tf.convert_to_tensor(Y))
+    tensor_tuple = (
+        tf.convert_to_tensor(X, dtype=gpflow.default_float()),
+        tf.convert_to_tensor(Y, dtype=gpflow.default_float()),
+    )
 
     return tensor_tuple
 
@@ -802,32 +839,32 @@ def individual_kernel_predictions(
                     model.kernel.latent_kernels[kernel_idx].K(
                         X=model_data[0], X2=X
                     ),
-                    tf.float64,
+                    gpflow.default_float(),
                 )
                 sigma_11 = tf.cast(
-                    model.kernel.latent_kernels[kernel_idx].K(X=X), tf.float64
+                    model.kernel.latent_kernels[kernel_idx].K(X=X), gpflow.default_float()
                 )
             elif model.kernel.name == "sum":
                 sigma_21 = tf.cast(
                     model.kernel.kernels[kernel_idx].K(X=model_data[0], X2=X),
-                    tf.float64,
+                    gpflow.default_float(),
                 )
                 sigma_11 = tf.cast(
-                    model.kernel.kernels[kernel_idx].K(X=X), tf.float64
+                    model.kernel.kernels[kernel_idx].K(X=X), gpflow.default_float()
                 )
             else:
                 sigma_21 = tf.cast(
-                    model.kernel.K(X=model_data[0], X2=X), tf.float64
+                    model.kernel.K(X=model_data[0], X2=X), gpflow.default_float()
                 )
-                sigma_11 = tf.cast(model.kernel.K(X=X), tf.float64)
+                sigma_11 = tf.cast(model.kernel.K(X=X), gpflow.default_float())
 
             if latent is True:
                 sigma_22 = tf.cast(
                     model.kernel.latent_kernels[kernel_idx](X=model_data[0]),
-                    tf.float64,
+                    gpflow.default_float(),
                 )
             else:
-                sigma_22 = tf.cast(model.kernel.K(X=model_data[0]), tf.float64)
+                sigma_22 = tf.cast(model.kernel.K(X=model_data[0]), gpflow.default_float())
             sigma_12 = tf.transpose(sigma_21)
 
             # Figure out white noise amount to add to diag if none given
@@ -1063,7 +1100,7 @@ def find_variance_components_tf(
         if kern.name == "periodic":
             return kern.base_kernel.variance
         elif kern.name == "empty":
-            return tf.zeros(shape=(), dtype=tf.dtypes.float64)
+            return tf.zeros(shape=(), dtype=gpflow.default_float())
         else:
             return tf.reduce_sum(kern.variance)
 
@@ -1351,3 +1388,35 @@ def run_ray_process(
         )
 
     return objs
+
+
+def calculate_rank_estimate(Y, threshold=0.90, transform_counts=True):
+    """
+    Calculate the rank Q that explains 'threshold' variance.
+    Robust to skewed count data.
+    """
+
+    # 1. Log-transform counts, if desired
+    if transform_counts:
+        # Avoid log(0)
+        Y = np.log1p(Y)
+    
+    # 2. Center and scale (standardize)
+    mean = np.mean(Y, axis=0)
+    std = np.std(Y, axis=0) + 1e-6
+    Y_standard = (Y - mean) / std
+
+    # 3. Perform SVD on standardized data
+    _, s, _ = svd(Y_standard, full_matrices=False)
+
+    # 4. Calculate cumulative variance explained
+    eigenvalues = s**2
+    var_explained = eigenvalues / np.sum(eigenvalues)
+    cumulative_var = np.cumsum(var_explained)
+    
+    # 5. Determine rank for cutoff value
+    # If even the first component explains more than threshold, argmax returns 0.
+    # rank must be at least 1.
+    Q = np.argmax(cumulative_var >= threshold) + 1
+
+    return int(Q)
