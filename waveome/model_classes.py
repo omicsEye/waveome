@@ -11,12 +11,13 @@ from tensorflow.keras.optimizers.legacy import Adam
 from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
-from .kernels import Empty
+from .kernels import Categorical, Empty
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import make_folds
 from .utilities import (
     calc_bic,
     calc_feature_importance_components,
+    calculate_rank_estimate,
     convert_data_to_tensors,
     find_variance_components,
     find_variance_components_tf,
@@ -90,7 +91,7 @@ class BaseGP(gpflow.models.SVGP):
         ),
         verbose: bool = False,
         num_latent_gps=1,
-        dtype="float64",
+        dtype=None,
         **svgp_kwargs,
     ):
 
@@ -336,7 +337,7 @@ class BaseGP(gpflow.models.SVGP):
                     if self.verbose:
                         print(f"Attempt {attempt+1} - Scipy exception: {e}")
                     for param in self.parameters:
-                        param = tf.cast(param, tf.float64)
+                        param = tf.cast(param, gpflow.default_float())
 
             return None
 
@@ -521,6 +522,26 @@ class BaseGP(gpflow.models.SVGP):
         gpflow.utilities.multiple_assign(self, best_variables)
 
         return None
+
+    def predict_f(self, Xnew, full_cov=False, full_output_cov=False):
+        """
+        Compute mean and (co)variance of latent function at Xnew.
+        Automatically casts Xnew to the default float type.
+        """
+        Xnew = tf.cast(Xnew, gpflow.default_float())
+        return super().predict_f(
+            Xnew, full_cov=full_cov, full_output_cov=full_output_cov
+        )
+
+    def predict_y(self, Xnew, full_cov=False, full_output_cov=False):
+        """
+        Compute mean and (co)variance of predictive distribution at Xnew.
+        Automatically casts Xnew to the default float type.
+        """
+        Xnew = tf.cast(Xnew, gpflow.default_float())
+        return super().predict_y(
+            Xnew, full_cov=full_cov, full_output_cov=full_output_cov
+        )
 
     def get_feature_importances(self, data=None, return_value="log_bf"):
         """Calculates feature importance for each additive kernel component.
@@ -1085,7 +1106,7 @@ class PSVGP(PenalizedGP, SparseGP, VarGP):
         kernel=gpflow.kernels.SquaredExponential(active_dims=[0]),
         verbose=False,
         num_latent_gps=1,
-        dtype="float64",
+        dtype=None,
         penalized_options={},
         sparse_options={},
         variational_options={},
@@ -1120,7 +1141,7 @@ class MultiOutputPSVGP(PSVGP):
         verbose=False,
         num_latent_gps=None,
         penalization_factor=1.0,
-        dtype="float64",
+        dtype=None,
         # Arguments for full kernel build
         kernel_options={},
         cat_vars=[],
@@ -1129,11 +1150,51 @@ class MultiOutputPSVGP(PSVGP):
         var_names=None,
         **kwargs,
     ):
-        
+
         num_outputs = Y.shape[1]
 
         # Build fully saturated kernel if no latent kernels provided
         if latent_kernels is None:
+            # Estimate rank if not provided in kernel_options
+            if "ranks" not in kernel_options:
+                # Determine likelihood for transform decision
+                var_opts = kwargs.get("variational_options", {})
+                lik_str = var_opts.get("likelihood", "gaussian")
+                count_likelihoods = [
+                    "poisson",
+                    "negative_binomial",
+                    "negativebinomial",
+                    "zeroinflated_negativebinomial",
+                ]
+                transform_counts = lik_str in count_likelihoods
+
+                # Get Y as numpy array
+                if hasattr(Y, "to_numpy"):
+                    Y_np = Y.to_numpy()
+                else:
+                    Y_np = np.array(Y)
+
+                # Estimate rank
+                estimated_rank = calculate_rank_estimate(
+                    Y_np, threshold=0.90, transform_counts=transform_counts
+                )
+
+                # Scale penalization factor by sqrt(Q) to maintain constant total prior variance
+                scale_adjustment = np.sqrt(estimated_rank)
+                # penalization_factor = penalization_factor * scale_adjustment
+
+                if verbose:
+                    print(
+                        f"No rank provided. Estimated rank Q={estimated_rank} (explains 90% variance)."
+                    )
+                    print(
+                        f"Penalization factor will be adjusted by sqrt(Q)={scale_adjustment:.2f}"
+                    )
+
+                # Update kernel_options (copy to avoid side effects if reused)
+                kernel_options = kernel_options.copy()
+                kernel_options["ranks"] = estimated_rank
+
             from .regularization import full_kernel_build
 
             # Default kernel options if not provided
@@ -1145,7 +1206,7 @@ class MultiOutputPSVGP(PSVGP):
             }
             # Merge with provided options
             k_opts = {**default_kernel_options, **kernel_options}
-            
+
             # Inject num_outputs to allow default ranks to match
             k_opts["num_outputs"] = num_outputs
 
@@ -1181,8 +1242,8 @@ class MultiOutputPSVGP(PSVGP):
         if num_latent_gps is None:
             num_latent_gps = len(latent_kernels)
 
-        # Initialize W
-        W_init = np.random.normal(size=(num_outputs, num_latent_gps))
+        # Initialize W to small random values
+        W_init = np.random.normal(scale=0.01, size=(num_outputs, num_latent_gps))
 
         # Construct kernel
         kernel = gpflow.kernels.LinearCoregionalization(
@@ -1197,21 +1258,86 @@ class MultiOutputPSVGP(PSVGP):
         # and directly initializing the underlying SVGP with the correct components.
 
         # 1. Handle Sparse Inducing Variables
+        # Reduce default inducing points to 100 for efficiency
+        default_num_inducing = 100
         num_inducing_points = sparse_options.get(
-            "num_inducing_points", min(X.shape[0], 500)
+            "num_inducing_points", min(X.shape[0], default_num_inducing)
         )
+
         if num_inducing_points >= X.shape[0]:
+            # Use full data if requested points exceed data size
             inducing_variable = iv.SeparateIndependentInducingVariables(
                 [iv.InducingPoints(X.copy()) for _ in range(num_latent_gps)]
             )
         else:
-            # Subset of data for inducing points
-            np.random.seed(sparse_options.get("random_seed"))
-            idx = np.random.choice(X.shape[0], num_inducing_points, replace=False)
-            Z = X[idx, :].copy()
-            inducing_variable = iv.SeparateIndependentInducingVariables(
-                [iv.InducingPoints(Z.copy()) for _ in range(num_latent_gps)]
-            )
+            # Initialize inducing points intelligently per kernel
+            iv_list = []
+
+            # Helper to get numpy array from DataFrame/Tensor
+            if hasattr(X, "to_numpy"):
+                X_np = X.to_numpy()
+            elif tf.is_tensor(X):
+                X_np = X.numpy()
+            else:
+                X_np = np.array(X)
+
+            for i in range(num_latent_gps):
+                k = latent_kernels[i]
+
+                # Check for active dimensions
+                if hasattr(k, "active_dims") and k.active_dims is not None:
+                    dims = np.arange(X_np.shape[1])[k.active_dims]
+
+                    # If 1D active dimension, handle based on kernel type
+                    if len(dims) == 1:
+                        dim_idx = dims[0]
+
+                        # Create Z matrix initialized with means (or zeros)
+                        Z = np.mean(X_np, axis=0, keepdims=True)
+                        Z = np.repeat(Z, num_inducing_points, axis=0)
+
+                        # A) Categorical: Use unique values
+                        if isinstance(k, Categorical):
+                            unique_vals = np.unique(X_np[:, dim_idx])
+
+                            if len(unique_vals) >= num_inducing_points:
+                                # Sample from unique values
+                                np.random.seed(sparse_options.get("random_seed"))
+                                z_grid = np.random.choice(
+                                    unique_vals, num_inducing_points, replace=False
+                                )
+                            else:
+                                # Tile unique values to fill num_inducing_points
+                                z_grid = np.tile(
+                                    unique_vals,
+                                    int(
+                                        np.ceil(num_inducing_points / len(unique_vals))
+                                    ),
+                                )
+                                z_grid = z_grid[:num_inducing_points]
+
+                        # B) Numeric: Use linspace grid
+                        else:
+                            # Get range of data for this dimension
+                            min_val = np.min(X_np[:, dim_idx])
+                            max_val = np.max(X_np[:, dim_idx])
+
+                            # Create linspace grid
+                            z_grid = np.linspace(min_val, max_val, num_inducing_points)
+
+                        # Replace the active dimension column with selected values
+                        Z[:, dim_idx] = z_grid
+
+                        iv_list.append(iv.InducingPoints(Z))
+                        continue
+
+                # Default fallback: Random subset sampling
+                np.random.seed(sparse_options.get("random_seed"))
+                idx = np.random.choice(X.shape[0], num_inducing_points, replace=False)
+                Z = X_np[idx, :].copy()
+                iv_list.append(iv.InducingPoints(Z))
+
+            inducing_variable = iv.SeparateIndependentInducingVariables(iv_list)
 
         # 2. Handle Likelihood
         likelihood_str = variational_options.get("likelihood", "gaussian")
@@ -1235,9 +1361,19 @@ class MultiOutputPSVGP(PSVGP):
         self.verbose = verbose
 
         # 5. Set priors
+        # Scale penalization factor by sqrt(Q) to maintain constant total prior variance
+        # regardless of the number of latent components.
+        scale_adjustment = np.sqrt(num_latent_gps)
+        adjusted_penalization = penalization_factor * scale_adjustment
+
+        if verbose:
+            print(
+                f"Horseshoe prior to W with adjusted penalization: {penalization_factor:.2f} * sqrt({num_latent_gps}) -> {adjusted_penalization:.2f}"
+            )
+
         self.kernel.W.prior = tfd.Horseshoe(
             scale=gpflow.utilities.to_default_float(
-                1.0 / penalization_factor if penalization_factor > 0 else 1.0
+                1.0 / adjusted_penalization if adjusted_penalization > 0 else 1.0
             )
         )
 
@@ -1247,7 +1383,11 @@ class MultiOutputPSVGP(PSVGP):
         freeze_variance_parameters(self.kernel)
 
     def prune_latent_factors(
-        self, threshold=0.1, variance_threshold=None, optimize_after_prune=True, optimize_kwargs=None
+        self,
+        threshold=0.1,
+        variance_threshold=None,
+        optimize_after_prune=True,
+        optimize_kwargs=None,
     ):
         """
         Prune latent factors based on mixing weights and/or kernel variance.
@@ -1419,12 +1559,31 @@ class MultiOutputPSVGP(PSVGP):
         patience = 500
         iterations_no_improve = 0
 
+        # Save initial values
+        previous_values = gpflow.utilities.deepcopy(
+            gpflow.utilities.parameter_dict(self)
+        )
+
         for i in range(num_opt_iter):
-            total_loss, data_loss = optimization_step()
+            try:
+                total_loss, data_loss = optimization_step()
+            except (tf.errors.InvalidArgumentError, tf.errors.OpError) as e:
+                if self.verbose:
+                    print(f"Optimization failed at step {i} with error: {e}")
+                    print("Restoring previous parameter values and stopping.")
+                gpflow.utilities.multiple_assign(self, previous_values)
+                break
+
             loss_val = data_loss.numpy()
 
             if self.verbose and i % 500 == 0:
                 print(f"Iteration {i}: Loss = {loss_val}, Total = {total_loss.numpy()}")
+
+            # Save checkpoint
+            if i % 100 == 0:
+                previous_values = gpflow.utilities.deepcopy(
+                    gpflow.utilities.parameter_dict(self)
+                )
 
             # Check for NaN/Inf
             if np.isnan(loss_val) or np.isinf(loss_val):
@@ -1433,6 +1592,8 @@ class MultiOutputPSVGP(PSVGP):
                         f"Iteration {i}: WARNING - Loss became NaN/Inf: Loss = {loss_val}"
                     )
                     print("Stopping optimization to prevent divergence.")
+                # Restore previous values
+                gpflow.utilities.multiple_assign(self, previous_values)
                 break
 
             # Early stopping based on loss improvement

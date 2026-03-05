@@ -13,6 +13,8 @@ import ray
 import scipy
 import seaborn as sns
 import tensorflow as tf
+from gpflow.conditionals import conditional
+from gpflow.kernels import Product
 from gpflow.utilities import set_trainable
 from joblib import Parallel, delayed
 from ray.experimental import tqdm_ray
@@ -100,7 +102,6 @@ class GPSearch:
                 self.categorical_dict[c] = factor_out
                 X.loc[:, c] = factor_out[0]
                 X = X.astype({c: float})
-
         # Make sure all resulting columns are the same type
         float_match = X.columns.isin(X.select_dtypes(include=[float]).columns)
         if sum(float_match) != len(X.columns):
@@ -1710,6 +1711,527 @@ class GPSearch:
         )
 
         return array_transformed
+
+    def plot_latent_processes(self, X_df=None, figsize=(12, 4)):
+        """
+        Plots latent processes and their mixing weights for a fitted multioutput model.
+
+        Parameters
+        - `X_df`: pandas.DataFrame, optional design dataframe to use for plotting.
+          If None, `self.X_original` (if available) or `self.X` is used.
+        - `figsize`: tuple passed to matplotlib for figure sizing.
+        """
+        if not hasattr(self, "models") or "multioutput" not in self.models:
+            raise ValueError(
+                "self.models['multioutput'] not found. Run self.multioutput_penalized_optimization(...) first."
+            )
+        model = self.models["multioutput"]
+
+        W = model.kernel.W.numpy()
+        num_outputs, num_latents = W.shape
+        output_names = (
+            self.out_names
+            if hasattr(self, "out_names")
+            else [f"Out {i}" for i in range(num_outputs)]
+        )
+
+        # prefer original (unscaled) X for axis labels and reference point
+        ref_point_original = (
+            self.X_original.median() if hasattr(self, "X_original") else self.X.median()
+        )
+
+        for i in range(num_latents):
+            fig, axes = plt.subplots(
+                1, 2, figsize=figsize, gridspec_kw={"width_ratios": [2.5, 1]}
+            )
+            ax_proc, ax_w = axes
+
+            kernel_i = model.kernel.kernels[i]
+
+            # --- Plotting based on kernel type ---
+            is_product = isinstance(kernel_i, Product)
+            is_categorical = isinstance(kernel_i, Categorical) or (
+                hasattr(kernel_i, "base_kernel")
+                and isinstance(kernel_i.base_kernel, Categorical)
+            )
+
+            if is_product:
+                # --- Interaction Term Plot ---
+                k1, k2 = kernel_i.kernels
+
+                # Identify which kernel is categorical and which is continuous
+                cat_kernel = (
+                    k1
+                    if isinstance(k1, Categorical)
+                    else (k2 if isinstance(k2, Categorical) else None)
+                )
+                cont_kernel = (
+                    k1
+                    if not isinstance(k1, Categorical)
+                    else (k2 if not isinstance(k2, Categorical) else None)
+                )
+
+                # --- Interaction: Continuous * Categorical ---
+                if cat_kernel and cont_kernel:
+                    cont_dim = cont_kernel.active_dims[0]
+                    cat_dim = cat_kernel.active_dims[0]
+                    cont_feature_name = self.feat_names[cont_dim]
+                    cat_feature_name = self.feat_names[cat_dim]
+
+                    k_cont_name = getattr(
+                        cont_kernel, "name", cont_kernel.__class__.__name__
+                    )
+                    k_cat_name = getattr(
+                        cat_kernel, "name", cat_kernel.__class__.__name__
+                    )
+                    title = f"Latent {i} (Interaction): {k_cont_name}({cont_feature_name}) * {k_cat_name}({cat_feature_name})"
+                    ax_proc.set_title(title, fontweight="bold")
+
+                    unique_categories = (
+                        sorted(self.X_original[cat_feature_name].unique())
+                        if hasattr(self, "X_original")
+                        else sorted(self.X[cat_feature_name].unique())
+                    )
+                    base_pal = sns.color_palette("Set1")
+                    colors = [
+                        base_pal[i % len(base_pal)]
+                        for i in range(len(unique_categories))
+                    ]
+
+                    for cat_idx, cat_val in enumerate(unique_categories):
+                        pX_raw_feature = np.linspace(
+                            self.X_original[cont_feature_name].min(),
+                            self.X_original[cont_feature_name].max(),
+                            100,
+                        )
+                        pX_design = pd.DataFrame(
+                            [ref_point_original] * 100, columns=self.feat_names
+                        )
+                        pX_design[cont_feature_name] = pX_raw_feature
+
+                        # Set the categorical feature level (internal id)
+                        cat_mask = (
+                            (self.X_original[cat_feature_name] == cat_val).values
+                            if hasattr(self, "X_original")
+                            else (self.X[cat_feature_name] == cat_val).values
+                        )
+                        internal_cat_id = self.X[cat_feature_name][cat_mask].iloc[0]
+                        pX_design[cat_feature_name] = internal_cat_id
+
+                        # Scale continuous columns
+                        pX_scaled = pX_design.copy()
+                        for c_idx in self.cont_idx:
+                            c_name = self.feat_names[c_idx]
+                            pX_scaled[c_name] = (
+                                pX_scaled[c_name] - self.X_means[c_name]
+                            ) / self.X_stds[c_name]
+
+                        mean_g, _ = conditional(
+                            tf.convert_to_tensor(
+                                pX_scaled.to_numpy(), dtype=gpflow.default_float()
+                            ),
+                            model.inducing_variable.inducing_variables[i],
+                            kernel_i,
+                            model.q_mu[:, i : i + 1],
+                            q_sqrt=model.q_sqrt[i : i + 1, :, :],
+                            white=True,
+                        )
+
+                        ax_proc.plot(
+                            pX_raw_feature,
+                            mean_g.numpy().flatten(),
+                            color=colors[cat_idx],
+                            label=f"{cat_feature_name}={cat_val}",
+                        )
+
+                    ax_proc.set_xlabel(cont_feature_name)
+
+                # --- Interaction: Continuous * Continuous ---
+                else:
+                    dim1, dim2 = k1.active_dims[0], k2.active_dims[0]
+                    name1, name2 = self.feat_names[dim1], self.feat_names[dim2]
+                    k1_name = getattr(k1, "name", k1.__class__.__name__)
+                    k2_name = getattr(k2, "name", k2.__class__.__name__)
+                    title = f"Latent {i} (Interaction): {k1_name}({name1}) * {k2_name}({name2})"
+                    ax_proc.set_title(title, fontweight="bold")
+
+                    quantiles = (
+                        np.percentile(self.X_original[name2], [10, 50, 90])
+                        if hasattr(self, "X_original")
+                        else np.percentile(self.X[name2], [10, 50, 90])
+                    )
+                    colors = sns.color_palette("viridis", n_colors=len(quantiles))
+
+                    for q_idx, q_val in enumerate(quantiles):
+                        pX_raw_feature = np.linspace(
+                            self.X_original[name1].min(),
+                            self.X_original[name1].max(),
+                            100,
+                        )
+                        pX_design = pd.DataFrame(
+                            [ref_point_original] * 100, columns=self.feat_names
+                        )
+                        pX_design[name1] = pX_raw_feature
+                        pX_design[name2] = q_val
+
+                        pX_scaled = pX_design.copy()
+                        for c_idx in self.cont_idx:
+                            c_name = self.feat_names[c_idx]
+                            pX_scaled[c_name] = (
+                                pX_scaled[c_name] - self.X_means[c_name]
+                            ) / self.X_stds[c_name]
+
+                        mean_g, _ = conditional(
+                            tf.convert_to_tensor(
+                                pX_scaled.to_numpy(), dtype=gpflow.default_float()
+                            ),
+                            model.inducing_variable.inducing_variables[i],
+                            kernel_i,
+                            model.q_mu[:, i : i + 1],
+                            q_sqrt=model.q_sqrt[i : i + 1, :, :],
+                            white=True,
+                        )
+                        ax_proc.plot(
+                            pX_raw_feature,
+                            mean_g.numpy().flatten(),
+                            color=colors[q_idx],
+                            label=f"{name2} at {q_val:.2f}",
+                        )
+
+                    ax_proc.set_xlabel(name1)
+
+            elif is_categorical:
+                # --- Categorical Feature: Bar Plot ---
+                primary_dim = kernel_i.active_dims[0]
+                feature_name = self.feat_names[primary_dim]
+
+                unique_categories = (
+                    sorted(self.X_original[feature_name].unique())
+                    if hasattr(self, "X_original")
+                    else sorted(self.X[feature_name].unique())
+                )
+                latent_means = []
+
+                for cat in unique_categories:
+                    cat_mask = (
+                        (self.X_original[feature_name] == cat).values
+                        if hasattr(self, "X_original")
+                        else (self.X[feature_name] == cat).values
+                    )
+                    if not np.any(cat_mask):
+                        continue
+                    internal_cat_id = self.X[feature_name][cat_mask].iloc[0]
+
+                    pX_design = pd.DataFrame(
+                        [ref_point_original], columns=self.feat_names
+                    )
+                    pX_design[feature_name] = internal_cat_id
+
+                    pX_scaled = pX_design.copy()
+                    for col_idx in self.cont_idx:
+                        c_name = self.feat_names[col_idx]
+                        pX_scaled[c_name] = (
+                            pX_scaled[c_name] - self.X_means[c_name]
+                        ) / self.X_stds[c_name]
+
+                    pX_tensor = tf.convert_to_tensor(
+                        pX_scaled.to_numpy(), dtype=gpflow.default_float()
+                    )
+
+                    iv_i = (
+                        model.inducing_variable.inducing_variables[i]
+                        if hasattr(model.inducing_variable, "inducing_variables")
+                        else model.inducing_variable
+                    )
+                    mean_g, _ = conditional(
+                        pX_tensor,
+                        iv_i,
+                        kernel_i,
+                        model.q_mu[:, i : i + 1],
+                        q_sqrt=model.q_sqrt[i : i + 1, :, :],
+                        white=True,
+                    )
+                    latent_means.append(mean_g.numpy().flatten()[0])
+
+                bar_labels = [str(cat) for cat in unique_categories]
+                base_pal = sns.color_palette("Set1")
+                bar_colors = [
+                    base_pal[i % len(base_pal)] for i in range(len(unique_categories))
+                ]
+                ax_proc.bar(bar_labels, latent_means, color=bar_colors)
+                ax_proc.set_title(
+                    f"Latent {i} ({kernel_i.name}): {feature_name}", fontweight="bold"
+                )
+                if len(unique_categories) > 10:
+                    ax_proc.set_xticks([])
+                ax_proc.set_ylabel("Latent Value G(x)")
+
+            else:
+                # --- Continuous Main Effect: Line Plot ---
+                active_dims = None
+                if hasattr(kernel_i, "active_dims"):
+                    active_dims = kernel_i.active_dims
+                elif hasattr(kernel_i, "base_kernel") and hasattr(
+                    kernel_i.base_kernel, "active_dims"
+                ):
+                    active_dims = kernel_i.base_kernel.active_dims
+
+                if isinstance(active_dims, slice):
+                    primary_dim = 0
+                elif active_dims is not None and len(active_dims) > 0:
+                    primary_dim = active_dims[0]
+                else:
+                    primary_dim = 0
+
+                feature_name = self.feat_names[primary_dim]
+
+                x_min, x_max = (
+                    (
+                        self.X_original[feature_name].min(),
+                        self.X_original[feature_name].max(),
+                    )
+                    if hasattr(self, "X_original")
+                    else (self.X[feature_name].min(), self.X[feature_name].max())
+                )
+                pX_raw_feature = np.linspace(x_min, x_max, 100)
+
+                pX_design = pd.DataFrame(
+                    [ref_point_original] * 100, columns=self.feat_names
+                )
+                pX_design[feature_name] = pX_raw_feature
+
+                pX_scaled = pX_design.copy()
+                for col_idx in self.cont_idx:
+                    c_name = self.feat_names[col_idx]
+                    pX_scaled[c_name] = (
+                        pX_scaled[c_name] - self.X_means[c_name]
+                    ) / self.X_stds[c_name]
+
+                pX_tensor = tf.convert_to_tensor(
+                    pX_scaled.to_numpy(), dtype=gpflow.default_float()
+                )
+
+                iv_i = (
+                    model.inducing_variable.inducing_variables[i]
+                    if hasattr(model.inducing_variable, "inducing_variables")
+                    else model.inducing_variable
+                )
+                q_mu_i = model.q_mu[:, i : i + 1]
+                q_sqrt_i = model.q_sqrt[i : i + 1, :, :]
+
+                mean_g, var_g = conditional(
+                    pX_tensor, iv_i, kernel_i, q_mu_i, q_sqrt=q_sqrt_i, white=True
+                )
+                mean_g, var_g = mean_g.numpy().flatten(), var_g.numpy().flatten()
+
+                ax_proc.plot(pX_raw_feature, mean_g, color="black", linewidth=2)
+                lower, upper = mean_g - 1.96 * np.sqrt(var_g), mean_g + 1.96 * np.sqrt(
+                    var_g
+                )
+                ax_proc.fill_between(
+                    pX_raw_feature, lower, upper, color="black", alpha=0.15
+                )
+
+                ax_proc.set_title(
+                    f"Latent {i} ({kernel_i.name}): {feature_name}", fontweight="bold"
+                )
+                ax_proc.set_xlabel(feature_name)
+                ax_proc.set_ylabel("Latent Value G(x)")
+
+            # --- Plot Mixing Weights (same for all) ---
+            weights = W[:, i]
+            colors = ["#1f77b4" if w >= 0 else "#d62728" for w in weights]
+            y_pos = np.arange(len(output_names))
+            ax_w.barh(y_pos, weights, align="center", color=colors)
+            ax_w.set_yticks(y_pos)
+            ax_w.set_yticklabels(output_names)
+            ax_w.axvline(0, color="black", linewidth=0.8, linestyle="--")
+            ax_w.set_title("Mixing Weights")
+            ax_w.set_xlabel("Weight Value")
+
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="Tight layout not applied.*",
+                        category=UserWarning,
+                    )
+                    plt.tight_layout()
+            except Exception:
+                plt.subplots_adjust(hspace=0.3, wspace=0.3)
+            plt.show()
+
+    def plot_multioutput_predictions(
+        self, X_df=None, Y_df=None, x_obs=None, unit_col=None, figsize_per_output=3
+    ):
+        """
+        Plots multi-output GP predictions without importing external helpers.
+
+        If `unit_col` is provided, it plots separate trajectories for each unit.
+        """
+        if not hasattr(self, "models") or "multioutput" not in self.models:
+            raise ValueError(
+                "self.models['multioutput'] not found. Run self.multioutput_penalized_optimization(...) first."
+            )
+        model = self.models["multioutput"]
+
+        if X_df is None:
+            X_df = self.X_original if hasattr(self, "X_original") else self.X
+        if Y_df is None:
+            Y_df = self.Y
+
+        num_outputs = Y_df.shape[1]
+        y_obs_np = Y_df.to_numpy()
+
+        # Determine the primary continuous feature for the x-axis
+        if unit_col and unit_col in X_df.columns:
+            # Select the first column that is not the unit column as the x-axis
+            x_axis_col = next(
+                (col for col in X_df.columns if col != unit_col), X_df.columns[0]
+            )
+        else:
+            # Fallback to the first column if no unit_col or if it's not in X_df
+            x_axis_col = X_df.columns[0]
+
+        fig, axes = plt.subplots(
+            num_outputs, 1, sharex=True, figsize=(12, figsize_per_output * num_outputs)
+        )
+        if num_outputs == 1:
+            axes = [axes]
+
+        # --- Plotting Logic ---
+        if unit_col is None or unit_col not in X_df.columns:
+            # Plot a single global prediction based on median of other features
+            ref_point = self.X.median()
+            pX_raw = np.linspace(X_df[x_axis_col].min(), X_df[x_axis_col].max(), 100)
+
+            pX_design = pd.DataFrame([ref_point] * len(pX_raw), columns=self.X.columns)
+            pX_design[x_axis_col] = pX_raw
+
+            pX_scaled = pX_design.copy()
+            for col_idx in self.cont_idx:
+                col_name_str = self.feat_names[col_idx]
+                if col_name_str in pX_scaled.columns:
+                    pX_scaled[col_name_str] = (
+                        pX_scaled[col_name_str] - self.X_means[col_name_str]
+                    ) / self.X_stds[col_name_str]
+
+            pY, pYv = model.predict_y(pX_scaled.to_numpy())
+            pY = pY.numpy() if hasattr(pY, "numpy") else pY
+            pYv = pYv.numpy() if hasattr(pYv, "numpy") else pYv
+
+            for i in range(num_outputs):
+                ax = axes[i]
+                ax.plot(
+                    X_df[x_axis_col],
+                    y_obs_np[:, i],
+                    "o",
+                    alpha=0.4,
+                    label="Observed",
+                    markersize=4,
+                    color="gray",
+                )
+                ax.plot(
+                    pX_raw, pY[:, i], label="Mean Prediction", color="C0", linewidth=2
+                )
+                lower = pY[:, i] - 1.96 * np.sqrt(pYv[:, i])
+                upper = pY[:, i] + 1.96 * np.sqrt(pYv[:, i])
+                ax.fill_between(
+                    pX_raw.flatten(),
+                    lower,
+                    upper,
+                    color="C0",
+                    alpha=0.2,
+                    label="95% CI",
+                )
+                ax.set_ylabel(Y_df.columns[i])
+                if i == 0:
+                    ax.set_title("Multi-output Penalized Optimization Fit")
+                ax.legend(loc="upper right", fontsize="small")
+
+        else:
+            # Plot trajectories for each unit
+            unique_units = (
+                sorted(self.X_original[unit_col].unique())
+                if hasattr(self, "X_original")
+                else sorted(self.X[unit_col].unique())
+            )
+            base_pal = sns.color_palette("Set1")
+            colors = [base_pal[i % len(base_pal)] for i in range(len(unique_units))]
+
+            ref_point = self.X.median()
+
+            for i in range(num_outputs):
+                ax = axes[i]
+                ax.plot(
+                    X_df[x_axis_col],
+                    y_obs_np[:, i],
+                    "o",
+                    alpha=0.15,
+                    markersize=4,
+                    color="gray",
+                    label="_nolegend_",
+                )
+
+                for unit_idx, unit_id in enumerate(unique_units):
+                    color = colors[unit_idx]
+
+                    unit_mask = (
+                        (self.X_original[unit_col] == unit_id).values
+                        if hasattr(self, "X_original")
+                        else (self.X[unit_col] == unit_id).values
+                    )
+                    if not np.any(unit_mask):
+                        continue
+                    internal_unit_id = self.X[unit_col][unit_mask].iloc[0]
+
+                    ax.plot(
+                        X_df[x_axis_col][unit_mask],
+                        y_obs_np[unit_mask, i],
+                        "o",
+                        color=color,
+                        markersize=5,
+                        alpha=0.8,
+                    )
+
+                    pX_raw = np.linspace(
+                        X_df[x_axis_col].min(), X_df[x_axis_col].max(), 100
+                    )
+
+                    pX_design = pd.DataFrame(
+                        [ref_point] * len(pX_raw), columns=self.X.columns
+                    )
+                    pX_design[x_axis_col] = pX_raw
+                    pX_design[unit_col] = internal_unit_id
+
+                    pX_scaled = pX_design.copy()
+                    for col_idx in self.cont_idx:
+                        col_name_str = self.feat_names[col_idx]
+                        if col_name_str in pX_scaled.columns:
+                            pX_scaled[col_name_str] = (
+                                pX_scaled[col_name_str] - self.X_means[col_name_str]
+                            ) / self.X_stds[col_name_str]
+
+                    pY, pYv = model.predict_y(pX_scaled.to_numpy())
+                    pY = pY.numpy() if hasattr(pY, "numpy") else pY
+
+                    ax.plot(
+                        pX_raw,
+                        pY[:, i],
+                        color=color,
+                        linewidth=2.5,
+                        label=f"Unit {unit_id}",
+                    )
+
+                ax.set_ylabel(Y_df.columns[i])
+                if i == 0:
+                    ax.set_title(f"Multi-output Fit by {unit_col}")
+                if len(unique_units) <= 10:
+                    ax.legend(loc="best", fontsize="small")
+
+        axes[-1].set_xlabel(x_axis_col)
+        plt.tight_layout()
+        return fig, axes
 
 
 def kernel_test(
