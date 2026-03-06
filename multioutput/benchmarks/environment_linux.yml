@@ -1,6 +1,6 @@
 name: mogp-waveome-sim
 # Linux (x86_64) environment spec. Swap tensorflow-macos for tensorflow vs. the macOS version.
-# R packages are not conda-managed — install separately via: Rscript code/install_r_deps.R
+# R packages are not conda-managed — install separately via: Rscript install_r_deps.R
 channels:
   - conda-forge
 dependencies:
@@ -15,7 +15,7 @@ dependencies:
     # GP / MOGP (waveome)
     - gpflow==2.9.1
     - tensorflow-probability==0.23.0
-    - waveome==0.1.2
+    - waveome @ git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking
     # Linux x86_64 (CPU or CUDA):
     - tensorflow==2.15.0
     # For GPU nodes, also install: tensorflow[and-cuda]==2.15.0

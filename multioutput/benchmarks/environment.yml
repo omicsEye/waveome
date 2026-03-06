@@ -16,7 +16,7 @@ dependencies:
     # GP / MOGP (waveome)
     - gpflow==2.9.1
     - tensorflow-probability==0.23.0
-    - waveome==0.1.2
+    - waveome @ git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking
     # macOS ARM64:
     - tensorflow-macos==2.15.1
     # Linux / Intel Mac — uncomment and remove tensorflow-macos above:
