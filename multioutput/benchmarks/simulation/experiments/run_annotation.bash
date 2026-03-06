@@ -25,6 +25,8 @@ for ANNOT in "0.9" "0.5" "0.3"; do
             --nuisance_fraction 0.2 \
             --nuisance_amplitude 1.0 \
             --irregular_sampling_sd 1.5 \
+            --n_subjects 20 \
+            --n_metabolites 100 \
             --annotation_fraction $ANNOT \
             --output_dir "$BASE_OUTPUT_DIR/annot_${ANNOT}/$EFFECT"
     done

@@ -21,7 +21,7 @@ from .methods import (
     analyze_with_mogp, analyze_with_wgcna, analyze_with_mefisto,
     analyze_with_dpgp, analyze_with_timeomics, analyze_with_meba,
     analyze_with_pal, fit_metabolite_lmms, analyze_with_lmm_ora, analyze_with_lmm_gsea,
-    analyze_with_mogp_ora,
+    analyze_with_mogp_gsea,
 )
 from .plots import visualize_benchmark_results
 
@@ -105,23 +105,27 @@ def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], 
         ("DPGP", analyze_with_dpgp, args.skip_dpgp, False),
     ]
 
-    mogp_mods, mogp_fit = [], pd.DataFrame()
+    mogp_fit, mogp_W_df = pd.DataFrame(), pd.DataFrame()
     for name, func, skip, is_path in methods:
         if not skip:
             t0 = time.time()
-            mods, fit = func(df, verbose=verbose)
+            if name == "MOGP":
+                mods, fit, mogp_W_df = func(df, verbose=verbose)
+                mogp_fit = fit
+            else:
+                mods, fit = func(df, verbose=verbose)
             results[f"{name}_Time"] = time.time() - t0
             process(name, mods, fit, is_path)
-            if name == "MOGP":
-                mogp_mods, mogp_fit = mods, fit
 
-    # MOGP_ORA: post-hoc hypergeometric enrichment of MOGP modules against annotated pathways.
-    # Enables direct sensitivity/FPR comparison with LMM-ORA/GSEA on the same metric.
-    if not args.skip_mogp and mogp_mods:
+    # MOGP_GSEA: preranked GSEA per latent factor using absolute loading weights |W_{ik}|.
+    # Min-p + Bonferroni correction across factors; self-calibrating when horseshoe
+    # prior concentrates signal onto K≈1 factor per pathway.
+    if not args.skip_mogp and not mogp_W_df.empty:
         t0 = time.time()
-        mogp_ora_paths = analyze_with_mogp_ora(mogp_mods, annotated_pathways, all_ids)
-        results["MOGP_ORA_Time"] = time.time() - t0
-        process("MOGP_ORA", mogp_ora_paths, mogp_fit, is_pathway=True)
+        mogp_gsea_paths = analyze_with_mogp_gsea(mogp_W_df, annotated_pathways)
+        # Total pipeline time = MOGP training + GSEA enrichment step
+        results["MOGP_GSEA_Time"] = results.get("MOGP_Time", 0.0) + (time.time() - t0)
+        process("MOGP_GSEA", mogp_gsea_paths, mogp_fit, is_pathway=True)
 
     if not args.skip_meba:
         t0 = time.time()
@@ -146,9 +150,18 @@ def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], 
     if not args.skip_lmm:
         t0 = time.time()
         lmm_res, lmm_fit = fit_metabolite_lmms(df, verbose=verbose)
-        results["LMM_Fit_Time"] = time.time() - t0
+        lmm_fit_time = time.time() - t0
+        results["LMM_Fit_Time"] = lmm_fit_time
+
+        t0 = time.time()
         process("LMM_ORA", analyze_with_lmm_ora(lmm_res, annotated_pathways), lmm_fit, True)
+        # Total pipeline time = LMM fitting + ORA enrichment step
+        results["LMM_ORA_Time"] = lmm_fit_time + (time.time() - t0)
+
+        t0 = time.time()
         process("LMM_GSEA", analyze_with_lmm_gsea(lmm_res, annotated_pathways), lmm_fit, True)
+        # Total pipeline time = LMM fitting + GSEA enrichment step
+        results["LMM_GSEA_Time"] = lmm_fit_time + (time.time() - t0)
 
     if getattr(args, "skip_fitted_predictions", False):
         return results, pd.DataFrame()

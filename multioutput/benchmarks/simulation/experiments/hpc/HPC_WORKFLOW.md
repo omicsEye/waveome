@@ -191,7 +191,7 @@ R_HOME=$CONDA_PREFIX/lib/R $CONDA_PREFIX/bin/python3.11 -m code.simulation.main 
     --seed 42
 ```
 
-Check that `/tmp/test_full/benchmark_results.csv` contains `MOGP_ORA_Sensitivity`,
+Check that `/tmp/test_full/benchmark_results.csv` contains `MOGP_GSEA_Sensitivity`,
 `LMM_ORA_Sensitivity`, and all other expected columns before proceeding.
 
 ---

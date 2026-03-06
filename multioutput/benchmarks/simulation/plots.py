@@ -294,7 +294,7 @@ def visualize_benchmark_results(results_file: str, output_dir: str = None):
         print(f"Saved Time_comparison.png")
 
     # --- 6. Pathway-Aware Method Performance ---
-    pathway_methods = ["LMM_ORA", "LMM_GSEA", "MEBA", "PAL"]
+    pathway_methods = ["LMM_ORA", "LMM_GSEA", "MEBA", "MOGP_GSEA", "PAL"]
     sensitivity_cols = [f"{m}_Sensitivity" for m in pathway_methods if f"{m}_Sensitivity" in df.columns]
     fpr_cols = [f"{m}_FPR" for m in pathway_methods if f"{m}_FPR" in df.columns]
 

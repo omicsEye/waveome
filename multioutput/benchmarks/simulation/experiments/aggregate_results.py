@@ -30,13 +30,13 @@ import seaborn as sns
 # Clustering methods: evaluated by ARI, Jaccard, UnannotatedRecall, MSE
 CLUSTERING_METHODS = ["MOGP", "WGCNA", "MEFISTO", "DPGP", "timeOmics"]
 
-# Pathway methods (including MOGP_ORA for direct sensitivity comparison)
-PATHWAY_METHODS = ["MOGP_ORA", "LMM_ORA", "LMM_GSEA", "MEBA", "PAL"]
+# Pathway methods (including MOGP_GSEA for direct sensitivity comparison)
+PATHWAY_METHODS = ["MOGP_GSEA", "LMM_ORA", "LMM_GSEA", "MEBA", "PAL"]
 
 # Display names for plots
 METHOD_LABELS = {
     "MOGP": "MOGP",
-    "MOGP_ORA": "MOGP+ORA",
+    "MOGP_GSEA": "MOGP+GSEA",
     "WGCNA": "WGCNA",
     "MEFISTO": "MEFISTO",
     "DPGP": "DPGP",
@@ -47,10 +47,10 @@ METHOD_LABELS = {
     "PAL": "PAL",
 }
 
-# Color palette: MOGP/MOGP_ORA always highlighted
+# Color palette: MOGP/MOGP_GSEA always highlighted
 METHOD_COLORS = {
-    "MOGP":      "#e41a1c",   # red
-    "MOGP_ORA":  "#e41a1c",   # red (same — same underlying model)
+    "MOGP":       "#e41a1c",   # red
+    "MOGP_GSEA":  "#e41a1c",   # red (same — same underlying model)
     "WGCNA":     "#377eb8",
     "MEFISTO":   "#4daf4a",
     "DPGP":      "#984ea3",

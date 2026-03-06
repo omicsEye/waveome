@@ -102,8 +102,11 @@ def analyze_with_mogp(data: pd.DataFrame, weight_threshold: float = 0.2, verbose
             print(f"  MOGP prediction failed: {e}")
 
     modules = []
+    W_df = pd.DataFrame()
     if "multioutput" in ms.models:
         W = ms.models["multioutput"].kernel.W.numpy()
+        factor_names = [f"MOGP_Factor_{k+1}" for k in range(W.shape[1])]
+        W_df = pd.DataFrame(W, index=metabolite_cols, columns=factor_names)
         for k in range(W.shape[1]):
             weights = W[:, k]
             max_w = np.max(np.abs(weights))
@@ -112,7 +115,7 @@ def analyze_with_mogp(data: pd.DataFrame, weight_threshold: float = 0.2, verbose
                 module_mets = [metabolite_cols[i] for i in active]
                 if module_mets: modules.append((f"MOGP_Factor_{k+1}", module_mets))
 
-    return modules, fitted_df_long
+    return modules, fitted_df_long, W_df
 
 _wgcna_patched = False
 
@@ -298,35 +301,48 @@ def analyze_with_lmm_ora(lmm_results: pd.DataFrame, annotated_pathways: Dict[str
         if hypergeom.sf(overlap - 1, len(all_mets), len(p_mets), len(sig)) < 0.05: enriched.append(pid)
     return enriched
 
-def analyze_with_mogp_ora(
-    modules: List[Tuple[str, List[str]]],
+def analyze_with_mogp_gsea(
+    W_df: "pd.DataFrame",
     annotated_pathways: Dict[str, List[str]],
-    all_ids: List[str],
     pvalue_threshold: float = 0.05,
 ) -> List[str]:
-    """Post-hoc ORA on MOGP modules using best-module min-p per pathway.
+    """Preranked GSEA on each MOGP latent factor using absolute loading weights.
 
-    For each pathway, takes the minimum hypergeometric p-value across all MOGP
-    modules. This gives exactly one test per pathway (same as LMM-ORA) so
-    sensitivity/FPR are directly comparable without inflating the test count.
+    For each latent factor k, metabolites are ranked by |W_{ik}| and preranked
+    GSEA is run against each annotated pathway. The per-pathway p-value is the
+    minimum across all factors, with a Bonferroni correction for the number of
+    factors tested. Bonferroni is self-calibrating: when the horseshoe prior
+    concentrates pathway signal onto a single factor, K≈1 and the threshold
+    equals the nominal alpha.
     """
-    from scipy.stats import hypergeom
-    if not modules:
+    try:
+        import gseapy as gp
+    except ImportError:
+        print("  MOGP-GSEA skipped: gseapy not installed (pip install gseapy)")
         return []
-    N = len(all_ids)
-    enriched = []
-    for pid, p_mets in annotated_pathways.items():
-        K = len(p_mets)
-        if K == 0:
+    if W_df is None or W_df.empty:
+        return []
+    n_factors = W_df.shape[1]
+    if n_factors == 0:
+        return []
+    bonferroni_threshold = pvalue_threshold / n_factors
+    pathway_min_p: Dict[str, float] = {pid: 1.0 for pid in annotated_pathways}
+    for factor_col in W_df.columns:
+        rnk = W_df[factor_col].abs().sort_values(ascending=False).reset_index()
+        rnk.columns = ["metabolite_id", "score"]
+        try:
+            res = gp.prerank(rnk=rnk, gene_sets=annotated_pathways, threads=1,
+                             outdir=None, seed=9102, verbose=False, min_size=5)
+            pval_col = "NOM p-val" if "NOM p-val" in res.res2d.columns else "pval"
+            for _, row in res.res2d.iterrows():
+                pid = row["Term"] if "Term" in res.res2d.columns else row.name
+                p = float(row[pval_col]) if pval_col in res.res2d.columns else 1.0
+                if pid in pathway_min_p:
+                    pathway_min_p[pid] = min(pathway_min_p[pid], p)
+        except (Exception, SystemExit) as e:
+            print(f"  MOGP-GSEA factor {factor_col} failed: {e}")
             continue
-        p_set = set(p_mets)
-        min_p = min(
-            hypergeom.sf(len(set(mod_mets) & p_set) - 1, N, K, len(mod_mets))
-            for _, mod_mets in modules if mod_mets
-        )
-        if min_p < pvalue_threshold:
-            enriched.append(pid)
-    return enriched
+    return [pid for pid, p in pathway_min_p.items() if p < bonferroni_threshold]
 
 
 def analyze_with_lmm_gsea(lmm_results: pd.DataFrame, annotated_pathways: Dict[str, List[str]]) -> List[str]:

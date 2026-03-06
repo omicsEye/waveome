@@ -24,5 +24,7 @@ for EFFECT in "spike" "linear"; do
         --dispersion 50.0 \
         --nuisance_fraction 0.0 \
         --irregular_sampling_sd 0.5 \
+        --n_subjects 20 \
+        --n_metabolites 100 \
         --output_dir "$BASE_OUTPUT_DIR/$EFFECT"
 done
