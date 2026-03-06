@@ -15,7 +15,7 @@ dependencies:
     # GP / MOGP (waveome)
     - gpflow==2.9.1
     - tensorflow-probability==0.23.0
-    - waveome @ git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking
+    - git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking
     # Linux x86_64 (CPU or CUDA):
     - tensorflow==2.15.0
     # For GPU nodes, also install: tensorflow[and-cuda]==2.15.0
