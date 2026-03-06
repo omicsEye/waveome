@@ -23,7 +23,7 @@ echo "=== Step 1: Create conda environment ==="
 CONDA_CMD="conda"
 command -v mamba &>/dev/null && CONDA_CMD="mamba"
 
-$CONDA_CMD env create -f "$PROJECT_ROOT/environment_linux.yml" --yes
+$CONDA_CMD env create -f "$PROJECT_ROOT/environment_linux.yml"
 echo "Conda environment 'mogp-waveome-sim' created."
 
 echo ""
