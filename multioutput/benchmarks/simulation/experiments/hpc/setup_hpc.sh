@@ -22,7 +22,13 @@ $CONDA_CMD env create -f "$PROJECT_ROOT/environment_linux.yml" --yes
 echo "Conda environment 'mogp-waveome-sim' created."
 
 echo ""
-echo "=== Step 2: Install R dependencies ==="
+echo "=== Step 2: Install waveome from GitHub ==="
+# conda env create cannot handle git+ URLs in some conda versions, so we pip install separately.
+conda run -n mogp-waveome-sim pip install "git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking"
+echo "waveome installed."
+
+echo ""
+echo "=== Step 3: Install R dependencies ==="
 # R packages must be installed from inside the conda env so they land in its R library.
 # The R_HOME must point to the env's R, not the system R.
 CONDA_PREFIX=$(conda run -n mogp-waveome-sim python -c "import sys; print(sys.prefix)")

@@ -12,10 +12,10 @@ dependencies:
   - pip:
     - numpy==1.26.4
 
-    # GP / MOGP (waveome)
+    # GP / MOGP (waveome installed separately in setup_hpc.sh — git URLs
+    # cause CondaValueError in some conda versions)
     - gpflow==2.9.1
     - tensorflow-probability==0.23.0
-    - git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking
     # Linux x86_64 (CPU or CUDA):
     - tensorflow==2.15.0
     # For GPU nodes, also install: tensorflow[and-cuda]==2.15.0

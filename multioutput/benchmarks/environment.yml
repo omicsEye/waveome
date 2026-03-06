@@ -13,10 +13,10 @@ dependencies:
     # Pinned: numpy 1.26.x required by tensorflow 2.15 / gpflow 2.9
     - numpy==1.26.4
 
-    # GP / MOGP (waveome)
+    # GP / MOGP (waveome installed separately — git URLs cause CondaValueError
+    # in some conda versions; run: pip install git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking)
     - gpflow==2.9.1
     - tensorflow-probability==0.23.0
-    - git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking
     # macOS ARM64:
     - tensorflow-macos==2.15.1
     # Linux / Intel Mac — uncomment and remove tensorflow-macos above:
