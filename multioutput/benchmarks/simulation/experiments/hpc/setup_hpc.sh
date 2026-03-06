@@ -13,6 +13,11 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$SCRIPT_DIR/../../../.."
 
+# Initialize conda — required when running as a subprocess (bash script.sh
+# does not inherit shell functions sourced in the parent session).
+CONDA_BASE=$(conda info --base 2>/dev/null || echo "/c1/apps/miniconda/miniconda3")
+source "$CONDA_BASE/etc/profile.d/conda.sh"
+
 echo "=== Step 1: Create conda environment ==="
 # Use mamba if available (faster), fall back to conda
 CONDA_CMD="conda"
