@@ -20,9 +20,15 @@
 #   N_RUNS            number of simulation replicates
 #   N_JOBS            parallel workers (should match --cpus-per-task)
 #   PYTHON            path to python executable in the conda env
-#   R_HOME            path to R_HOME inside the conda env
+#   (R_HOME is set automatically by module load R/4.5.1 inside this script)
 
 set -euo pipefail
+
+# Load system R (required by rpy2 for comparison methods; adjust module name if needed)
+module load R/4.5.1
+export R_LIBS_USER=~/.R/library
+# libRblas.so is bundled with R but not on the default library path
+export LD_LIBRARY_PATH="/c1/apps/R/4.5.1/lib64/R/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 echo "=== Job: $CONDITION_LABEL | effect=$EFFECT_TYPE ==="
 echo "Node: $(hostname)  CPUs: $SLURM_CPUS_PER_TASK  GPUs: ${CUDA_VISIBLE_DEVICES:-none}"
@@ -30,9 +36,9 @@ echo "Output: $OUTPUT_DIR"
 echo ""
 
 mkdir -p "$OUTPUT_DIR"
-cd "$PROJECT_ROOT"
+cd "$PROJECT_ROOT/multioutput/benchmarks"
 
-R_HOME="$R_HOME" "$PYTHON" -m code.simulation.main \
+"$PYTHON" -m simulation.main \
     --n_runs "$N_RUNS" \
     --n_jobs "$N_JOBS" \
     --effect_type "$EFFECT_TYPE" \

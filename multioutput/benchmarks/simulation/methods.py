@@ -197,8 +197,22 @@ def analyze_with_mefisto(data: pd.DataFrame, weight_threshold: float = 0.5, vari
                     n_factors=min(10, wide_data.shape[1] - 1),
                     groups_label="subject_id",
                     smooth_covariate="time",
-                    smooth_kwargs={"scale_cov": True},
+                    smooth_kwargs={"scale_cov": True, "n_grid": 10},
                     use_var=None,
+                    # Disable spike-and-slab/ARD weight priors: in single-view MOFA these
+                    # priors are too aggressive and collapse all factor weights to zero
+                    # before meaningful optimisation can occur. They were designed for
+                    # multi-view settings where cross-view constraints stabilise sparsity.
+                    spikeslab_weights=False,
+                    ard_weights=False,
+                    # Iteration cap: at N=subjects*timepoints=200, each ELBO iteration
+                    # costs ~60s due to O(N^3) slogdet of the N×N variational posterior
+                    # covariance (Z_nodes_GP_mv.calculateELBO_k, lb_q term). Full
+                    # convergence (~200 iterations, ~2h) is impractical per replicate.
+                    # 25 iterations allows one GP lengthscale optimisation at start_opt=20
+                    # while keeping runtime to ~25 min. Sparse GP does not reduce this
+                    # bottleneck in mofapy2 v0.7.3 (posterior remains N×N). See manuscript.
+                    n_iterations=25,
                     quiet=True,
                     outfile=tmp_h5,
                 )
@@ -346,6 +360,20 @@ def analyze_with_mogp_gsea(
 
 
 def analyze_with_lmm_gsea(lmm_results: pd.DataFrame, annotated_pathways: Dict[str, List[str]]) -> List[str]:
+    # Standard preranked GSEA using signed LMM t-statistics for time.
+    # Threshold: NOM p-val < 0.05 per pathway (not FDR q-val). Using nominal p-values is
+    # consistent with LMM+ORA (hypergeometric p < 0.05) and MOGP+GSEA (Bonferroni-corrected
+    # NOM p-val < 0.05), giving all three methods the same per-pathway alpha = 0.05.
+    # FDR control is not applied because with only 5 pathways, gseapy's permutation-based
+    # FDR is poorly calibrated (FDR=0.36 when NOM p=0.17 in a single-replicate diagnostic).
+    #
+    # NOTE on directionality: signed t-stat (positive = increasing over time, negative =
+    # decreasing). GSEA tests whether pathway members are coordinately up- OR down-regulated.
+    # Contrast with MOGP+GSEA which ranks by |W_{ik}|; MOGP factor sign is arbitrary so
+    # absolute loadings are the correct choice there.
+    #
+    # LMM+GSEA's low sensitivity in this benchmark is a genuine finding: pathway_random_effect_sd
+    # causes bidirectional t-stat estimates within the true pathway, violating GSEA's assumption.
     try:
         import gseapy as gp
     except ImportError:
@@ -353,8 +381,8 @@ def analyze_with_lmm_gsea(lmm_results: pd.DataFrame, annotated_pathways: Dict[st
         return []
     try:
         res = gp.prerank(rnk=lmm_results.sort_values("tstat", ascending=False)[["metabolite_id", "tstat"]], gene_sets=annotated_pathways, threads=1, outdir=None, seed=9102, verbose=False, min_size=5)
-        fdr_col = "FDR q-val" if "FDR q-val" in res.res2d.columns else "fdr"
-        return res.res2d[res.res2d[fdr_col] < 0.05]["Term"].tolist()
+        nom_col = "NOM p-val" if "NOM p-val" in res.res2d.columns else "pval"
+        return res.res2d[res.res2d[nom_col] < 0.05]["Term"].tolist()
     except (Exception, SystemExit) as e:
         print(f"  LMM-GSEA failed: {e}")
     return []
@@ -505,10 +533,10 @@ def analyze_with_timeomics(data: pd.DataFrame, verbose: bool = True) -> Tuple[Li
                 grid_points <- 10
                 pred_time <- seq(min(time_vec), max(time_vec), length.out=grid_points)
                 models <- tryCatch({
-                    utils::capture.output({
+                    suppressWarnings(utils::capture.output({
                         res <- lmms::lmmSpline(data=mat, time=time_vec, sampleID=sampleID_vec,
                                                timePredict=pred_time, keepModels=TRUE, numCores=1)
-                    })
+                    }))
                     res
                 }, error = function(e) NULL)
                 if (is.null(models)) return(NULL)
@@ -519,6 +547,7 @@ def analyze_with_timeomics(data: pd.DataFrame, verbose: bool = True) -> Tuple[Li
                 # to get grid_points x n_mets (samples x features) as spls expects.
                 X_mat <- do.call(rbind, lapply(models@predSpline[[1]], as.numeric))
                 X_mat[is.na(X_mat)] <- 0
+                rownames(X_mat) <- head(colnames(mat), nrow(X_mat))
                 X <- t(X_mat)
 
                 Y <- matrix(1:nrow(X), ncol=1)

@@ -208,36 +208,52 @@ def main():
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+    results_path = os.path.join(args.output_dir, "benchmark_results.csv")
+    fit_path = os.path.join(args.output_dir, "fitted_predictions.csv")
     seeds = [args.seed + i for i in range(args.n_runs)]
     all_res, all_fit = [], []
 
-    if args.n_jobs > 1:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=args.n_jobs) as ex:
-            futures = {ex.submit(run_single_replicate, i + 1, s, args): i + 1 for i, s in enumerate(seeds)}
-            for f in tqdm(concurrent.futures.as_completed(futures), total=len(seeds)):
-                run_id = futures[f]
-                try:
-                    r, fit = f.result()
-                    all_res.append(r); all_fit.append(fit)
-                except Exception as e:
-                    print(f"\n[run {run_id}] FAILED: {type(e).__name__}: {e}", flush=True)
-    else:
-        for i, s in enumerate(seeds):
-            try:
-                r, fit = run_single_replicate(i + 1, s, args)
-                all_res.append(r); all_fit.append(fit)
-            except Exception as e:
-                print(f"\n[run {i + 1}] FAILED: {type(e).__name__}: {e}", flush=True)
+    # Resume: load any previously completed runs so we can skip their seeds
+    completed_ids = set()
+    if os.path.exists(results_path):
+        existing = pd.read_csv(results_path)
+        all_res = existing.to_dict("records")
+        completed_ids = set(existing["run_id"].tolist())
+        if completed_ids:
+            print(f"Resuming: {len(completed_ids)}/{args.n_runs} runs already done, skipping {sorted(completed_ids)}")
 
-    if all_res:
-        results_path = os.path.join(args.output_dir, "benchmark_results.csv")
+    def _save(r, fit):
+        """Append result row and fit frame; rewrite CSV after every completed run."""
+        all_res.append(r)
+        all_fit.append(fit)
         pd.DataFrame(all_res).to_csv(results_path, index=False)
         if not args.skip_fitted_predictions:
             fit_frames = [f for f in all_fit if isinstance(f, pd.DataFrame) and not f.empty]
-            fit_out = pd.concat(fit_frames) if fit_frames else pd.DataFrame()
-            fit_out.to_csv(os.path.join(args.output_dir, "fitted_predictions.csv"), index=False)
+            if fit_frames:
+                pd.concat(fit_frames).to_csv(fit_path, index=False)
 
-        # Automatically generate visualizations
+    pending = [(i + 1, s) for i, s in enumerate(seeds) if (i + 1) not in completed_ids]
+
+    if args.n_jobs > 1:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=args.n_jobs) as ex:
+            futures = {ex.submit(run_single_replicate, run_id, s, args): run_id for run_id, s in pending}
+            for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+                run_id = futures[f]
+                try:
+                    r, fit = f.result()
+                    _save(r, fit)
+                except Exception as e:
+                    print(f"\n[run {run_id}] FAILED: {type(e).__name__}: {e}", flush=True)
+    else:
+        for run_id, s in pending:
+            try:
+                r, fit = run_single_replicate(run_id, s, args)
+                _save(r, fit)
+            except Exception as e:
+                print(f"\n[run {run_id}] FAILED: {type(e).__name__}: {e}", flush=True)
+
+    if all_res:
+        # Regenerate visualizations once at the end over the full result set
         print(f"Generating visualizations in {args.output_dir}...")
         visualize_benchmark_results(results_path, args.output_dir)
 

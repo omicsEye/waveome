@@ -25,7 +25,7 @@ if [ -z "$CONDA_PREFIX" ]; then
     exit 1
 fi
 export PYTHON="$CONDA_PREFIX/bin/python3.11"
-export R_HOME="$CONDA_PREFIX/lib/R"
+# R_HOME is set automatically by `module load R/4.5.1` inside run_condition.sbatch
 # ─────────────────────────────────────────────────────────────────────────────
 
 mkdir -p "$PROJECT_ROOT/logs"

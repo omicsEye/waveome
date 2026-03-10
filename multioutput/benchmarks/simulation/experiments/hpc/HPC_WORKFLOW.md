@@ -14,8 +14,8 @@ Step-by-step guide for running the full benchmark suite on a SLURM cluster.
 | `HPC_WORKFLOW.md` | This file |
 
 Supporting files referenced below:
-- `environment_linux.yml` — conda env spec for Linux (project root)
-- `install_r_deps.R` — R package installer
+- `environment_linux.yml` — conda env spec for reference (not used by setup_hpc.sh directly)
+- `multioutput/benchmarks/install_r_deps.R` — R package installer
 - `simulation/experiments/aggregate_results.py` — cross-condition plots and summary table
 - `simulation/experiments/experiment_plan.bash` — sequential local runner (for testing)
 
@@ -46,7 +46,7 @@ Commit all changes so the repo is clean before transferring:
 
 ```bash
 git add -A && git commit -m "HPC simulation setup"
-git push origin manuscript_comparative_methods
+git push origin multioutput_benchmarking
 ```
 
 Note your waveome situation — see Phase 3b if the PyPI version is outdated.
@@ -58,9 +58,9 @@ Note your waveome situation — see Phase 3b if the PyPI version is outdated.
 **Option A (preferred) — git:**
 ```bash
 # On the HPC login node
-git clone <your-remote-url> ~/mogp-waveome
-cd ~/mogp-waveome
-git checkout manuscript_comparative_methods
+git clone <your-remote-url> <repo-dir>
+cd <repo-dir>
+git checkout multioutput_benchmarking
 ```
 
 **Option B — rsync (if no GitHub remote):**
@@ -68,8 +68,8 @@ git checkout manuscript_comparative_methods
 # From your local machine
 rsync -avz \
   --exclude='__pycache__' --exclude='*.pyc' --exclude='.git' \
-  /Users/allen/Documents/Academics/GW/research/documents/manuscripts/mogp-waveome/ \
-  user@hpc.university.edu:~/mogp-waveome/
+  /path/to/local/waveome/ \
+  user@hpc.example.edu:<repo-dir>/
 ```
 
 ---
@@ -79,60 +79,48 @@ rsync -avz \
 Run once from the project root on the HPC login node:
 
 ```bash
-cd ~/mogp-waveome
-bash simulation/experiments/hpc/setup_hpc.sh
+cd <repo-dir>
+bash multioutput/benchmarks/simulation/experiments/hpc/setup_hpc.sh
 ```
 
 This will:
-1. Create the `mogp-waveome-sim` conda environment from `environment_linux.yml`
-2. Install all R packages via `install_r_deps.R`
+1. Create a python-only `mogp-waveome-sim` conda environment (using conda-forge for Python 3.11)
+2. Install all Python dependencies via pip (including waveome from the `multioutput_benchmarking` branch)
+3. Install all R packages via `install_r_deps.R` into `~/.R/library`
+
+**Prerequisites:** `module load R/4.5.1` and conda on PATH before running.
 
 **Requires internet access from the login node.** Most HPC systems allow this. If yours
 does not, the GitHub-sourced R packages (`MetaboAnalystR`, `PAL`, `PASI`, `lmms`) must
 be installed from a compute node that has internet, or pre-bundled and installed from a
 local path.
 
-At the end of setup, note the conda env path printed (e.g., `~/miniforge3/envs/mogp-waveome-sim`).
-You will need it in Phase 5.
+At the end of setup, the script prints the exact `CONDA_PREFIX` line to paste into `submit_all.sh` (Phase 5).
 
 ---
 
-## Phase 3b — If waveome is not up to date on PyPI
+## Phase 3b — Updating waveome
 
-The `environment_linux.yml` installs `waveome==0.1.2` from PyPI. If your latest MOGP
-code lives in a local directory or a different git branch instead, do the following.
+`setup_hpc.sh` installs waveome directly from the `multioutput_benchmarking` branch on GitHub.
+If you need to update it after the environment is set up (e.g., after pushing new commits):
 
-**1. Remove waveome from the yml** before running `setup_hpc.sh`:
-```yaml
-# In environment_linux.yml — delete or comment out:
-# - waveome==0.1.2
-```
-
-**2. Transfer the waveome source to HPC:**
 ```bash
-# Option A: rsync from local
-rsync -avz /path/to/local/waveome/ user@hpc.university.edu:~/waveome/
-
-# Option B: clone from repo
-git clone <waveome-repo-url> ~/waveome
+CONDA_PREFIX=~/.conda/envs/mogp-waveome-sim   # adjust to actual path
+$CONDA_PREFIX/bin/pip install --force-reinstall \
+  "git+https://github.com/omicsEye/waveome.git@multioutput_benchmarking"
 ```
-
-**3. After `setup_hpc.sh` finishes, install as editable package:**
-```bash
-CONDA_PREFIX=~/miniforge3/envs/mogp-waveome-sim   # adjust to actual path
-$CONDA_PREFIX/bin/pip install -e ~/waveome/
-```
-
-The `-e` flag means Python uses the source directory directly — no reinstall needed
-if you update the source later.
 
 ---
 
 ## Phase 4 — Test runs (do before submitting all jobs)
 
-Set the conda prefix variable first:
+Set variables first:
 ```bash
-CONDA_PREFIX=~/miniforge3/envs/mogp-waveome-sim   # adjust to actual path
+module load R/4.5.1
+export R_LIBS_USER=~/.R/library
+export LD_LIBRARY_PATH="/c1/apps/R/4.5.1/lib64/R/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+CONDA_PREFIX=~/.conda/envs/mogp-waveome-sim   # adjust to actual path
+REPO=<path-to-waveome-repo>                   # e.g. /GWSPH/groups/rahlab/projects/waveome
 ```
 
 ### Test 1 — Environment check (< 2 min)
@@ -140,7 +128,7 @@ CONDA_PREFIX=~/miniforge3/envs/mogp-waveome-sim   # adjust to actual path
 Verify Python imports and R connectivity:
 
 ```bash
-R_HOME=$CONDA_PREFIX/lib/R $CONDA_PREFIX/bin/python3.11 -c "
+$CONDA_PREFIX/bin/python3.11 -c "
 import waveome, gpflow, rpy2
 print('Python imports OK')
 import rpy2.robjects as ro
@@ -149,15 +137,17 @@ ro.r('library(PAL); cat(\"R PAL OK\n\")')
 "
 ```
 
-### Test 2 — MOGP timing at full scale (estimate runtime before committing to 50 replicates)
+### Test 2 — MOGP timing (quick check before committing to 50 replicates)
 
-Runs MOGP only (skips all other methods) for a single replicate at the default
-scale (n_subjects=100, n_metabolites=500):
+Runs MOGP only (skips all other methods) for a single replicate at **reduced scale**
+(n_subjects=20, n_metabolites=100) to get a fast environment check.
+Should finish in 1–3 minutes on CPU:
 
 ```bash
-cd ~/mogp-waveome
-R_HOME=$CONDA_PREFIX/lib/R $CONDA_PREFIX/bin/python3.11 -m code.simulation.main \
+cd "$REPO/multioutput/benchmarks"
+$CONDA_PREFIX/bin/python3.11 -m simulation.main \
     --n_runs 1 --n_jobs 1 \
+    --n_subjects 20 --n_metabolites 100 \
     --skip_wgcna --skip_mefisto --skip_dpgp --skip_timeomics \
     --skip_meba --skip_pal --skip_lmm \
     --skip_fitted_predictions \
@@ -165,22 +155,28 @@ R_HOME=$CONDA_PREFIX/lib/R $CONDA_PREFIX/bin/python3.11 -m code.simulation.main 
     --seed 42
 ```
 
-Check `MOGP_Time` in `/tmp/timing_test/benchmark_results.csv`:
+Check `MOGP_Time` in `/tmp/timing_test/benchmark_results.csv`.
 
-| MOGP_Time | Action |
+**Optional:** to estimate runtime at full scale (n_subjects=100, n_metabolites=500),
+drop the `--n_subjects` / `--n_metabolites` flags. Full-scale MOGP on CPU takes ~15 min;
+on GPU it should be < 5 min.
+
+| MOGP_Time (full scale) | Action |
 |---|---|
 | < 5 min | Proceed as-is |
 | 5–20 min | Fine — 50 replicates × 32 jobs is manageable within 48h |
-| > 30 min | Reduce `--n_subjects` to 50, or verify GPU is being used (`nvidia-smi` during the run) |
+| > 30 min | Verify GPU is being used (`nvidia-smi` during the run) |
 
-### Test 3 — Full pipeline, 3 replicates (end-to-end check)
+### Test 3 — Full pipeline, 1 replicate at reduced scale (end-to-end check)
 
-Runs all methods for one condition to confirm the full output structure:
+Runs all methods for one condition at **reduced scale** (n_subjects=20, n_metabolites=100)
+to confirm the full output structure quickly (target: < 10 min total):
 
 ```bash
-cd ~/mogp-waveome
-R_HOME=$CONDA_PREFIX/lib/R $CONDA_PREFIX/bin/python3.11 -m code.simulation.main \
-    --n_runs 3 --n_jobs 3 \
+cd "$REPO/multioutput/benchmarks"
+$CONDA_PREFIX/bin/python3.11 -m simulation.main \
+    --n_runs 1 --n_jobs 1 \
+    --n_subjects 20 --n_metabolites 100 \
     --effect_type spike \
     --annotation_fraction 0.7 \
     --effect_magnitude 2.5 --subject_noise 0.3 --dispersion 10.0 \
@@ -234,12 +230,12 @@ If a job fails and needs to be rerun, just resubmit that condition manually:
 export CONDITION_LABEL="annot_0.7"
 export EFFECT_TYPE="spike"
 export EXTRA_ARGS="--effect_magnitude 2.5 --subject_noise 0.3 --dispersion 10.0 --nuisance_fraction 0.2 --irregular_sampling_sd 1.5 --annotation_fraction 0.7"
-export OUTPUT_DIR="$PWD/simulation/experiments/output/final_benchmark/annotation_sweep/annot_0.7/spike"
+export OUTPUT_DIR="$PWD/multioutput/benchmarks/simulation/experiments/output/final_benchmark/annotation_sweep/annot_0.7/spike"
 export N_RUNS=50 N_JOBS=32
 export PYTHON=$CONDA_PREFIX/bin/python3.11
-export R_HOME=$CONDA_PREFIX/lib/R
+export PROJECT_ROOT=$PWD
 sbatch --job-name="annot_0.7_spike" --export=ALL \
-    simulation/experiments/hpc/run_condition.sbatch
+    multioutput/benchmarks/simulation/experiments/hpc/run_condition.sbatch
 ```
 
 ---
@@ -249,8 +245,11 @@ sbatch --job-name="annot_0.7_spike" --export=ALL \
 Once all jobs have finished (`squeue -u $USER` shows nothing):
 
 ```bash
-cd ~/mogp-waveome
-R_HOME=$CONDA_PREFIX/lib/R $CONDA_PREFIX/bin/python3.11 \
+cd "$REPO/multioutput/benchmarks"
+module load R/4.5.1
+export R_LIBS_USER=~/.R/library
+export LD_LIBRARY_PATH="/c1/apps/R/4.5.1/lib64/R/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+$CONDA_PREFIX/bin/python3.11 \
     simulation/experiments/aggregate_results.py \
     simulation/experiments/output/final_benchmark \
     --out_dir paper_figures/
@@ -328,8 +327,7 @@ Group covariate: group 1 (50% of subjects) receives 50% of the temporal effect.
 
 ## Troubleshooting
 
-**R_HOME error from rpy2:** Ensure `R_HOME=$CONDA_PREFIX/lib/R` is set in every
-command — rpy2 may point to the wrong R if this is not set explicitly.
+**rpy2 cannot load libR.so / libRblas.so:** Ensure `module load R/4.5.1`, `export R_LIBS_USER=~/.R/library`, and `export LD_LIBRARY_PATH="/c1/apps/R/4.5.1/lib64/R/lib:$LD_LIBRARY_PATH"` are all set before running Python. `run_condition.sbatch` does this automatically for SLURM jobs.
 
 **MOGP fails with TensorFlow/GPU errors:** Check `nvidia-smi` to confirm GPU is
 allocated. Verify `CUDA_VISIBLE_DEVICES` is set by SLURM (`echo $CUDA_VISIBLE_DEVICES`
