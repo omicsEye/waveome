@@ -30,12 +30,13 @@ import seaborn as sns
 # Clustering methods: evaluated by ARI, Jaccard, UnannotatedRecall, MSE
 CLUSTERING_METHODS = ["MOGP", "WGCNA", "MEFISTO", "DPGP", "timeOmics"]
 
-# Pathway methods (including MOGP_GSEA for direct sensitivity comparison)
-PATHWAY_METHODS = ["MOGP_GSEA", "LMM_ORA", "LMM_GSEA", "MEBA", "PAL"]
+# Pathway methods
+PATHWAY_METHODS = ["MOGP_ORA", "MOGP_GSEA", "LMM_ORA", "LMM_GSEA", "MEBA", "PAL"]
 
 # Display names for plots
 METHOD_LABELS = {
     "MOGP": "MOGP",
+    "MOGP_ORA": "MOGP+ORA",
     "MOGP_GSEA": "MOGP+GSEA",
     "WGCNA": "WGCNA",
     "MEFISTO": "MEFISTO",
@@ -47,10 +48,11 @@ METHOD_LABELS = {
     "PAL": "PAL",
 }
 
-# Color palette: MOGP/MOGP_GSEA always highlighted
+# Color palette: MOGP variants always highlighted
 METHOD_COLORS = {
     "MOGP":       "#e41a1c",   # red
-    "MOGP_GSEA":  "#e41a1c",   # red (same — same underlying model)
+    "MOGP_ORA":   "#e41a1c",   # red (same underlying model)
+    "MOGP_GSEA":  "#ff6666",   # lighter red
     "WGCNA":     "#377eb8",
     "MEFISTO":   "#4daf4a",
     "DPGP":      "#984ea3",
@@ -140,6 +142,7 @@ def plot_annotation_sweep(df: pd.DataFrame, out_dir: str):
 
     metrics = [
         ("_BestJaccard",        CLUSTERING_METHODS, "Best Jaccard (active pathway)",   "jaccard"),
+        ("_BestPrecision",      CLUSTERING_METHODS, "Best Precision (active pathway)",  "precision"),
         ("_UnannotatedRecall",   CLUSTERING_METHODS, "Unannotated Metabolite Recall",   "recall"),
         ("_Reconstruction_MSE",  CLUSTERING_METHODS, "Reconstruction MSE (log scale)",  "mse_clust"),
         ("_Sensitivity",         PATHWAY_METHODS,    "Pathway Detection Sensitivity",   "sensitivity"),
@@ -268,6 +271,7 @@ def write_summary_table(df: pd.DataFrame, out_dir: str):
     """Write mean ± SD for key metrics per (condition_label, effect_type, method)."""
     metric_cols = (
         [(f"{m}_BestJaccard", m, "BestJaccard") for m in CLUSTERING_METHODS] +
+        [(f"{m}_BestPrecision", m, "BestPrecision") for m in CLUSTERING_METHODS] +
         [(f"{m}_UnannotatedRecall", m, "UnannotatedRecall") for m in CLUSTERING_METHODS] +
         [(f"{m}_Reconstruction_MSE", m, "MSE") for m in CLUSTERING_METHODS + PATHWAY_METHODS] +
         [(f"{m}_Sensitivity", m, "Sensitivity") for m in PATHWAY_METHODS] +

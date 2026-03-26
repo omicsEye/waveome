@@ -10,7 +10,7 @@ Loads benchmark_results.csv files from all experiment conditions and produces:
   5. Group covariate condition (with PAL)
   6. Summary CSV table (mean ± SE per method per condition)
 
-Usage (run from multioutput/benchmarks/):
+Usage:
     python3 simulation/experiments/generate_summary.py
 
 Outputs saved to:
@@ -35,10 +35,11 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # ── Method metadata ───────────────────────────────────────────────────────────
 
 CLUSTERING_METHODS = ["MOGP", "WGCNA", "DPGP", "MEFISTO", "timeOmics"]
-PATHWAY_METHODS    = ["MOGP_GSEA", "MEBA", "LMM_ORA", "LMM_GSEA", "PAL"]
+PATHWAY_METHODS    = ["MOGP_ORA", "MOGP_GSEA", "MEBA", "LMM_ORA", "LMM_GSEA", "PAL"]
 
 METHOD_LABELS = {
     "MOGP":      "MOGP",
+    "MOGP_ORA":  "MOGP+ORA",
     "MOGP_GSEA": "MOGP+GSEA",
     "WGCNA":     "WGCNA",
     "MEFISTO":   "MEFISTO",
@@ -52,7 +53,8 @@ METHOD_LABELS = {
 
 METHOD_COLORS = {
     "MOGP":      "#e41a1c",
-    "MOGP_GSEA": "#e41a1c",
+    "MOGP_ORA":  "#e41a1c",
+    "MOGP_GSEA": "#ff6666",
     "WGCNA":     "#377eb8",
     "MEFISTO":   "#4daf4a",
     "DPGP":      "#984ea3",
@@ -65,7 +67,8 @@ METHOD_COLORS = {
 
 METHOD_MARKER = {
     "MOGP":      "o",
-    "MOGP_GSEA": "o",
+    "MOGP_ORA":  "o",
+    "MOGP_GSEA": "h",
     "WGCNA":     "s",
     "MEFISTO":   "^",
     "DPGP":      "D",
@@ -82,7 +85,7 @@ METHOD_LS = {m: "-" if "MOGP" in m else "--" for m in METHOD_LABELS}
 SNR_ORDER = ["easy", "medium", "difficult"]
 SNR_LABELS = {"easy": "Easy", "medium": "Medium", "difficult": "Difficult"}
 
-EFFECT_LABELS = {"spike": "Spike", "linear": "Linear"}
+EFFECT_LABELS = {"spike": "Spike", "linear": "Linear", "perturbation": "Perturbation"}
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -99,14 +102,14 @@ def load_all_data():
 
     # SNR sweep
     for snr in SNR_ORDER:
-        for effect in ["spike", "linear"]:
+        for effect in ["spike", "linear", "perturbation"]:
             p = os.path.join(OUTPUT_BASE, f"results_{snr}", effect, "benchmark_results.csv")
             if os.path.exists(p):
                 frames.append(_load_csv(p, snr_level=snr))
 
     # Annotation sweep (medium SNR)
     for frac in ["0.3", "0.5", "0.9"]:
-        for effect in ["spike", "linear"]:
+        for effect in ["spike", "linear", "perturbation"]:
             p = os.path.join(OUTPUT_BASE, "results_annotation", f"annot_{frac}", effect, "benchmark_results.csv")
             if os.path.exists(p):
                 frames.append(_load_csv(p, annotation_fraction=float(frac)))
@@ -182,18 +185,25 @@ def _plot_snr_lines(ax, df_snr, methods, metric_col, effect, ylabel, flag_missin
 def fig_snr_pathway(df):
     snr_df = df[(df["snr_level"].isin(SNR_ORDER)) & (~df["has_group_covariate"])].copy()
 
-    pathway_methods = ["MOGP_GSEA", "MEBA", "LMM_ORA", "LMM_GSEA"]
+    pathway_methods = ["MOGP_ORA", "MOGP_GSEA", "MEBA", "LMM_ORA", "LMM_GSEA"]
     metrics = [
-        ("Sensitivity", "Sensitivity (TPR)", (0, 1.05)),
-        ("FPR",         "False Positive Rate", (0, 1.05)),
+        ("Sensitivity",       "Sensitivity (TPR)",   (0, 1.05)),
+        ("FPR",               "False Positive Rate",  (0, 1.05)),
+        ("Reconstruction_MSE","Reconstruction MSE",   None),
     ]
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
-    for row, effect in enumerate(["linear", "spike"]):
+    effects = [e for e in ["linear", "spike", "perturbation"]
+               if e in snr_df["effect_type"].unique()]
+    n_effects = len(effects)
+    fig, axes = plt.subplots(n_effects, 3, figsize=(18, 4 * n_effects), sharex=True)
+    if n_effects == 1:
+        axes = [axes]
+    for row, effect in enumerate(effects):
         for col, (metric, ylabel, ylim) in enumerate(metrics):
             ax = axes[row][col]
             _plot_snr_lines(ax, snr_df, pathway_methods, metric, effect, ylabel)
-            ax.set_ylim(ylim)
+            if ylim:
+                ax.set_ylim(ylim)
             ax.set_title(f"{EFFECT_LABELS[effect]} — {ylabel}", fontsize=11, fontweight="bold")
             if row == 1:
                 ax.set_xlabel("SNR Level", fontsize=10)
@@ -216,12 +226,19 @@ def fig_snr_clustering(df):
     clust_methods = ["MOGP", "WGCNA", "DPGP", "MEFISTO", "timeOmics"]
     metrics = [
         ("BestJaccard",       "Best Jaccard (active pathway)", (0, 1.0)),
+        ("BestPrecision",     "Best Precision (active pathway)", (0, 1.0)),
         ("UnannotatedRecall", "Unannotated Metabolite Recall", (0, 1.05)),
         ("Reconstruction_MSE","Reconstruction MSE",            None),
     ]
 
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8), sharex=True)
-    for row, effect in enumerate(["linear", "spike"]):
+    effects = [e for e in ["linear", "spike", "perturbation"]
+               if e in snr_df["effect_type"].unique()]
+    n_effects = len(effects)
+    n_metrics = len(metrics)
+    fig, axes = plt.subplots(n_effects, n_metrics, figsize=(5 * n_metrics, 4 * n_effects), sharex=True)
+    if n_effects == 1:
+        axes = [axes]
+    for row, effect in enumerate(effects):
         for col, (metric, ylabel, ylim) in enumerate(metrics):
             ax = axes[row][col]
             _plot_snr_lines(ax, snr_df, clust_methods, metric, effect, ylabel)
@@ -254,24 +271,31 @@ def fig_annotation_sweep(df):
     combined = pd.concat([sweep_df, medium_df], ignore_index=True)
     fracs = sorted(combined["annotation_fraction"].dropna().unique())
 
-    pathway_methods = ["MOGP_GSEA", "MEBA", "LMM_ORA", "LMM_GSEA"]
-    clust_methods   = ["MOGP", "WGCNA", "DPGP"]
+    pathway_methods = ["MOGP_ORA", "MOGP_GSEA", "MEBA", "LMM_ORA", "LMM_GSEA"]
+    clust_methods   = ["MOGP", "WGCNA", "DPGP", "MEFISTO", "timeOmics"]
 
     metrics_path = [
-        ("Sensitivity", "Sensitivity (TPR)", (0, 1.05)),
-        ("FPR",         "False Positive Rate", (0, 1.05)),
+        ("Sensitivity",       "Sensitivity (TPR)",  (0, 1.05)),
+        ("FPR",               "False Positive Rate", (0, 1.05)),
+        ("Reconstruction_MSE","Reconstruction MSE",  None),
     ]
     metrics_clust = [
         ("BestJaccard",       "Best Jaccard",           (0, 1.0)),
+        ("BestPrecision",     "Best Precision",          (0, 1.0)),
         ("UnannotatedRecall", "Unannotated Recall",      (0, 1.05)),
         ("Reconstruction_MSE","Reconstruction MSE",     None),
     ]
 
-    for effect in ["linear", "spike"]:
+    n_path = len(metrics_path)
+    n_clust = len(metrics_clust)
+    n_cols = n_path + n_clust
+    for effect in ["linear", "spike", "perturbation"]:
         edf = combined[combined["effect_type"] == effect]
-        fig, axes = plt.subplots(1, 5, figsize=(20, 5))
+        if edf.empty:
+            continue
+        fig, axes = plt.subplots(1, n_cols, figsize=(4 * n_cols, 5))
 
-        for ax, (metric, ylabel, ylim) in zip(axes[:2], metrics_path):
+        for ax, (metric, ylabel, ylim) in zip(axes[:n_path], metrics_path):
             for m in pathway_methods:
                 col = f"{m}_{metric}"
                 if col not in edf.columns:
@@ -296,7 +320,7 @@ def fig_annotation_sweep(df):
                 ax.set_ylim(ylim)
             _style_ax(ax, xlabel="Annotation Fraction", ylabel=ylabel, title=ylabel)
 
-        for ax, (metric, ylabel, ylim) in zip(axes[2:], metrics_clust):
+        for ax, (metric, ylabel, ylim) in zip(axes[n_path:], metrics_clust):
             for m in clust_methods:
                 col = f"{m}_{metric}"
                 if col not in edf.columns:
@@ -337,6 +361,7 @@ def fig_timing(df):
 
     time_cols = {
         "MOGP":      "MOGP_Time",
+        "MOGP+ORA":  "MOGP_ORA_Time",
         "MOGP+GSEA": "MOGP_GSEA_Time",
         "WGCNA":     "WGCNA_Time",
         "MEFISTO":   "MEFISTO_Time",
@@ -355,6 +380,7 @@ def fig_timing(df):
             if col not in sub.columns:
                 continue
             m = sub[col].dropna().mean()
+            base_method = col.replace("_Time", "").replace("_GSEA", "_GSEA")
             # map label to a base method key for color
             color_key = next((k for k in METHOD_COLORS if METHOD_LABELS.get(k, k) == label), None)
             if color_key is None:
@@ -370,7 +396,7 @@ def fig_timing(df):
         sorted_labels = [labels[i] for i in order]
         sorted_colors = [colors[i] for i in order]
 
-        ax.barh(range(len(sorted_means)), sorted_means, color=sorted_colors, edgecolor="white")
+        bars = ax.barh(range(len(sorted_means)), sorted_means, color=sorted_colors, edgecolor="white")
         ax.set_yticks(range(len(sorted_labels)))
         ax.set_yticklabels(sorted_labels, fontsize=9)
         ax.set_xlabel("Mean Runtime (s)", fontsize=10)
@@ -396,38 +422,45 @@ def fig_group_covariate(df):
         print("No group covariate data — skipping fig5.")
         return
 
-    pathway_methods_gc = ["MOGP_GSEA", "MEBA", "PAL", "LMM_ORA", "LMM_GSEA"]
+    pathway_methods_gc = ["MOGP_ORA", "MOGP_GSEA", "MEBA", "PAL", "LMM_ORA", "LMM_GSEA"]
     metrics = [
-        ("Sensitivity", "Sensitivity (TPR)", (0, 1.05)),
-        ("FPR",         "False Positive Rate", (0, 1.05)),
+        ("Sensitivity",       "Sensitivity (TPR)",   (0, 1.05)),
+        ("FPR",               "False Positive Rate",  (0, 1.05)),
+        ("Reconstruction_MSE","Reconstruction MSE",   None),
     ]
+    effects = [e for e in ["linear", "spike", "perturbation"]
+               if e in gc_df["effect_type"].unique()]
+    n_effects = len(effects)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    for ax, (metric, ylabel, ylim) in zip(axes, metrics):
-        xs = []
-        ys = []
-        yerrs = []
-        method_labels = []
-        colors = []
-        for effect in ["linear", "spike"]:
-            edf = gc_df[gc_df["effect_type"] == effect]
+    fig, axes = plt.subplots(n_effects, 3, figsize=(18, 4.5 * n_effects))
+    if n_effects == 1:
+        axes = [axes]
+    for row, effect in enumerate(effects):
+        edf = gc_df[gc_df["effect_type"] == effect]
+        for col, (metric, ylabel, ylim) in enumerate(metrics):
+            ax = axes[row][col]
+            ys, yerrs, labels, colors = [], [], [], []
             for m in pathway_methods_gc:
-                col = f"{m}_{metric}"
-                if col not in edf.columns:
+                mcol = f"{m}_{metric}"
+                if mcol not in edf.columns:
                     continue
-                mn, se = agg(edf, col)
-                xs.append(f"{METHOD_LABELS.get(m, m)}\n({EFFECT_LABELS[effect]})")
+                mn, se = agg(edf, mcol)
                 ys.append(mn)
                 yerrs.append(se)
-                method_labels.append(m)
+                labels.append(METHOD_LABELS.get(m, m))
                 colors.append(METHOD_COLORS.get(m, "gray"))
 
-        ax.bar(range(len(ys)), ys, yerr=yerrs, color=colors, capsize=4,
-               edgecolor="white", error_kw={"elinewidth": 1.5})
-        ax.set_xticks(range(len(xs)))
-        ax.set_xticklabels(xs, fontsize=8, rotation=30, ha="right")
-        ax.set_ylim(ylim)
-        _style_ax(ax, ylabel=ylabel, title=ylabel, legend=False)
+            ax.bar(range(len(ys)), ys, yerr=yerrs, color=colors, capsize=4,
+                   edgecolor="white", error_kw={"elinewidth": 1.5})
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels(labels, fontsize=9, rotation=30, ha="right")
+            if ylim:
+                ax.set_ylim(ylim)
+            if col == 0:
+                ax.set_ylabel(f"{EFFECT_LABELS[effect]}\n\n{ylabel}", fontsize=10)
+            if row == 0:
+                ax.set_title(ylabel, fontsize=11, fontweight="bold")
+            _style_ax(ax, legend=False)
 
     fig.suptitle("Group Covariate Condition — Pathway Detection Performance\n(Medium SNR, effect_magnitude=3.0)",
                  fontsize=12, fontweight="bold")
@@ -453,6 +486,7 @@ def write_summary_table(df):
             n = len(sub)
             for m in CLUSTERING_METHODS:
                 for metric, col in [("BestJaccard", f"{m}_BestJaccard"),
+                                     ("BestPrecision", f"{m}_BestPrecision"),
                                      ("UnannotatedRecall", f"{m}_UnannotatedRecall"),
                                      ("NumModules", f"{m}_NumModules"),
                                      ("Reconstruction_MSE", f"{m}_Reconstruction_MSE")]:

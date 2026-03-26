@@ -1,22 +1,21 @@
 """
-Generate a 4-panel overview figure of the simulation data-generating process.
+Generate a 6-panel (2x3) overview figure of the simulation data-generating process.
 
 Panels:
-  A  Observed trajectories for 4 active-pathway metabolites under a spike
-     effect, showing NB noise and subject variability across 5 subjects.
-  B  Same metabolites under a linear trend effect.
-  C  Observed trajectories comparing a nuisance (periodic) metabolite against
-     a null background metabolite (no signal).
-  D  Annotation fraction schematic: pathway members as circles, annotated
-     subset filled, withheld subset hollow.
+  A  Observed trajectories for active-pathway metabolites under a spike effect.
+  B  Same metabolites under a sustained ramp (trapezoid) effect.
+  C  Same metabolites under an acute perturbation (exponential relaxation).
+  D  Nuisance (periodic) metabolite vs. null background metabolite.
+  E  Group covariate: one metabolite showing full effect (group 0) vs.
+     50% attenuated effect (group 1).
+  F  Annotation fraction schematic.
 
-Usage (run from multioutput/benchmarks/):
+Usage (from multioutput/benchmarks/):
     python -m simulation.plot_simulation_overview \
-        --output multioutput_manuscript/figures/simulation_overview.pdf
+        --output figures/simulation_overview.pdf
 """
 
 import argparse
-import os
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -27,11 +26,12 @@ from matplotlib.gridspec import GridSpec
 from .core import simulate_longitudinal_data
 from .effects import (
     create_spike_effect,
-    create_linear_increase_effect,
+    create_trapezoid_effect,
+    create_perturbation_effect,
     create_periodic_effect,
 )
 
-N_DISPLAY_SUBJECTS = 5  # subjects shown per panel — enough to show variability without clutter
+N_DISPLAY_SUBJECTS = 3  # subjects shown per panel — enough to show variability without clutter
 
 
 def _select_responsive_mets(df, candidate_mets, effect_window=(8, 12), n=4):
@@ -91,6 +91,7 @@ def _plot_trajectories(ax, traj_dict, palette, alpha_obs=0.3, alpha_mu=0.85, lw_
 
 
 def make_figure(output_path: str, seed: int = 42):
+    import os
     rng_state = np.random.get_state()
     np.random.seed(seed)
 
@@ -116,13 +117,24 @@ def make_figure(output_path: str, seed: int = 42):
         metabolite_effect_sd=0.5,  # larger scaler SD so individual mets show clear signal
     )
 
+    # Ramp (trapezoid) condition
     np.random.seed(seed + 1)
-    slope = EFFECT_MAG / (20 - 6)
-    linear_func = create_linear_increase_effect(slope, intercept_time=6)
-    df_linear, true_pws_linear, _ = simulate_longitudinal_data(
+    ramp_func = create_trapezoid_effect(5, 13, EFFECT_MAG)
+    df_ramp, true_pws_ramp, _ = simulate_longitudinal_data(
         n_subjects=N_SUBJECTS, n_metabolites=N_MET, n_pathways=N_PW,
         metabolites_per_pathway=MPP, time_points=TIME_PTS,
-        effect_func=linear_func, nuisance_fraction=0.2,
+        effect_func=ramp_func, nuisance_fraction=0.2,
+        nuisance_effect_func=nuisance_func, annotation_fraction=ANNOTATION_FRAC,
+        metabolite_effect_sd=0.5,
+    )
+
+    # Perturbation condition
+    np.random.seed(seed + 2)
+    perturb_func = create_perturbation_effect(4, 4, EFFECT_MAG)
+    df_perturb, true_pws_perturb, _ = simulate_longitudinal_data(
+        n_subjects=N_SUBJECTS, n_metabolites=N_MET, n_pathways=N_PW,
+        metabolites_per_pathway=MPP, time_points=TIME_PTS,
+        effect_func=perturb_func, nuisance_fraction=0.2,
         nuisance_effect_func=nuisance_func, annotation_fraction=ANNOTATION_FRAC,
         metabolite_effect_sd=0.5,
     )
@@ -130,9 +142,22 @@ def make_figure(output_path: str, seed: int = 42):
     active_pid = list(true_pws_spike.keys())[0]
     active_mets_all = true_pws_spike[active_pid]
 
-    # Pick metabolites that show clear upward response
-    display_mets_spike  = _select_responsive_mets(df_spike,  active_mets_all, n=4)
-    display_mets_linear = _select_trend_mets(df_linear, true_pws_linear[active_pid], n=4)
+    # Pick metabolites that show clear response for each effect type
+    display_mets_spike = _select_responsive_mets(df_spike, active_mets_all, n=4)
+    display_mets_ramp = _select_trend_mets(df_ramp, true_pws_ramp[active_pid], n=4)
+    display_mets_perturb = _select_responsive_mets(
+        df_perturb, true_pws_perturb[active_pid],
+        effect_window=(4, 8), n=4)
+
+    # Group covariate condition — same seed as spike so pathway members match
+    np.random.seed(seed)
+    df_group, true_pws_group, _ = simulate_longitudinal_data(
+        n_subjects=N_SUBJECTS, n_metabolites=N_MET, n_pathways=N_PW,
+        metabolites_per_pathway=MPP, time_points=TIME_PTS,
+        effect_func=spike_func, nuisance_fraction=0.2,
+        nuisance_effect_func=nuisance_func, annotation_fraction=ANNOTATION_FRAC,
+        metabolite_effect_sd=0.5, add_group_covariate=True,
+    )
 
     all_subjects = sorted(df_spike["subject_id"].unique())
     display_sids = all_subjects[:N_DISPLAY_SUBJECTS]
@@ -153,15 +178,16 @@ def make_figure(output_path: str, seed: int = 42):
         key=lambda m: df_spike[df_spike["metabolite_id"] == m]["true_mu"].std()
     )
 
-    # ---- Figure layout ---------------------------------------------------
-    fig = plt.figure(figsize=(14, 10))
-    gs = GridSpec(2, 2, figure=fig, hspace=0.5, wspace=0.35,
-                  height_ratios=[1.0, 1.0])
+    # ---- Figure layout: 2×3 grid ------------------------------------------
+    fig = plt.figure(figsize=(16, 10))
+    gs = GridSpec(2, 3, figure=fig, hspace=0.45, wspace=0.35)
 
-    ax_spike  = fig.add_subplot(gs[0, 0])
-    ax_linear = fig.add_subplot(gs[0, 1])
-    ax_noise  = fig.add_subplot(gs[1, 0])
-    ax_annot  = fig.add_subplot(gs[1, 1])
+    ax_spike   = fig.add_subplot(gs[0, 0])
+    ax_ramp    = fig.add_subplot(gs[0, 1])
+    ax_perturb = fig.add_subplot(gs[0, 2])
+    ax_noise   = fig.add_subplot(gs[1, 0])
+    ax_group   = fig.add_subplot(gs[1, 1])
+    ax_annot   = fig.add_subplot(gs[1, 2])
 
     palette_active = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
     palette_noise  = ["#ff7f00", "#999999"]
@@ -175,16 +201,31 @@ def make_figure(output_path: str, seed: int = 42):
     ax_spike.set_ylabel("log(abundance + 1)")
     ax_spike.legend(fontsize=7, ncol=2, loc="upper left")
 
-    # ---- Panel B: Linear -------------------------------------------------
-    traj_linear = _trajectories_for(df_linear, display_mets_linear,
-                                    sorted(df_linear["subject_id"].unique())[:N_DISPLAY_SUBJECTS])
-    _plot_trajectories(ax_linear, traj_linear, palette_active)
-    ax_linear.set_title("(B) Active pathway — linear trend", fontsize=11, fontweight="bold")
-    ax_linear.set_xlabel("Time")
-    ax_linear.set_ylabel("log(abundance + 1)")
-    ax_linear.legend(fontsize=7, ncol=2, loc="upper left")
+    # ---- Panel B: Ramp (trapezoid) ---------------------------------------
+    sids_ramp = sorted(df_ramp["subject_id"].unique())[:N_DISPLAY_SUBJECTS]
+    traj_ramp = _trajectories_for(df_ramp, display_mets_ramp, sids_ramp)
+    _plot_trajectories(ax_ramp, traj_ramp, palette_active)
+    ax_ramp.axvspan(5, 13, alpha=0.08, color="blue", label="Ramp window")
+    ax_ramp.set_title("(B) Active pathway — sustained ramp",
+                      fontsize=11, fontweight="bold")
+    ax_ramp.set_xlabel("Time")
+    ax_ramp.set_ylabel("log(abundance + 1)")
+    ax_ramp.legend(fontsize=7, ncol=2, loc="upper left")
 
-    # ---- Panel C: Nuisance vs null ---------------------------------------
+    # ---- Panel C: Perturbation -------------------------------------------
+    sids_perturb = sorted(df_perturb["subject_id"].unique())[:N_DISPLAY_SUBJECTS]
+    traj_perturb = _trajectories_for(df_perturb, display_mets_perturb,
+                                     sids_perturb)
+    _plot_trajectories(ax_perturb, traj_perturb, palette_active)
+    ax_perturb.axvline(4, color="red", ls="--", alpha=0.5,
+                       label="Perturbation onset")
+    ax_perturb.set_title("(C) Active pathway — acute perturbation",
+                         fontsize=11, fontweight="bold")
+    ax_perturb.set_xlabel("Time")
+    ax_perturb.set_ylabel("log(abundance + 1)")
+    ax_perturb.legend(fontsize=7, ncol=2, loc="upper right")
+
+    # ---- Panel D: Nuisance vs null ---------------------------------------
     noise_dict = {"Nuisance (periodic)": nuisance_candidate,
                   "Null (background)":   null_candidate}
     traj_noise = _trajectories_for(df_spike, list(noise_dict.values()), display_sids)
@@ -196,74 +237,122 @@ def make_figure(output_path: str, seed: int = 42):
     periodic_overlay = np.log1p(base_mu * np.exp(NUISANCE_AMP * np.sin(2 * np.pi * t_smooth / NUISANCE_PERIOD)))
     ax_noise.plot(t_smooth, periodic_overlay, color=palette_noise[0],
                   lw=1.5, linestyle="--", alpha=0.6, label="$h(t)$ (true)")
-    ax_noise.set_title("(C) Nuisance vs. null metabolite", fontsize=11, fontweight="bold")
+    ax_noise.set_title("(D) Nuisance vs. null metabolite", fontsize=11, fontweight="bold")
     ax_noise.set_xlabel("Time")
     ax_noise.set_ylabel("log(abundance + 1)")
     ax_noise.legend(fontsize=8, loc="upper right")
 
-    # ---- Panel D: Annotation fraction schematic --------------------------
-    ax_annot.set_xlim(-1, 11)
-    ax_annot.set_ylim(-3.0, 3.0)
+    # ---- Panel E: Group covariate ----------------------------------------
+    # Use the first metabolite from Panel A so readers can cross-reference
+    mid_g = display_mets_spike[0]
+    met_color = "#e41a1c"  # same red as M005 in Panel A
+    group_styles = [("-", "Group 0 (full)"), ("--", "Group 1 (50%)")]
+    for grp, (ls, label_text) in enumerate(group_styles):
+        grp_sids = df_group[df_group["group"] == grp]["subject_id"].unique()
+        grp_sids = sorted(grp_sids)[:N_DISPLAY_SUBJECTS]
+        sub = df_group[
+            (df_group["metabolite_id"] == mid_g) &
+            (df_group["subject_id"].isin(grp_sids))
+        ].sort_values("time")
+        first = True
+        for sid in grp_sids:
+            s = sub[sub["subject_id"] == sid]
+            if s.empty:
+                continue
+            ax_group.scatter(s["time"], np.log1p(s["value"]),
+                             color=met_color, alpha=0.3, s=14, zorder=2)
+            ax_group.plot(s["time"], np.log1p(s["true_mu"]),
+                          color=met_color, alpha=0.85, lw=2.0,
+                          ls=ls, label=label_text if first else None,
+                          zorder=3)
+            first = False
+    ax_group.axvspan(8, 12, alpha=0.10, color="red")
+    ax_group.set_title(f"(E) Group covariate — {mid_g}",
+                       fontsize=11, fontweight="bold")
+    ax_group.set_xlabel("Time")
+    ax_group.set_ylabel("log(abundance + 1)")
+    ax_group.legend(fontsize=8, loc="upper left")
+
+    # ---- Panel F: Annotation fraction schematic (2×5 grid) ----------------
+    n_members = 10
+    n_annotated = 7  # exactly 70%
+    n_rows, n_cols = 5, 2
+    ax_annot.set_xlim(-5, 15)
+    ax_annot.set_ylim(-2.0, 7.5)
     ax_annot.axis("off")
-    ax_annot.set_title(r"(D) Annotation fraction ($\rho = 0.7$)",
+    ax_annot.set_title(r"(F) Annotation fraction ($\rho = 0.7$)",
                        fontsize=11, fontweight="bold")
 
-    n_members = 10
-    n_annotated = int(n_members * ANNOTATION_FRAC)  # 7
-    xs = np.linspace(0, 10, n_members)
-    y_members = 1.0   # circles sit in the upper half; annotations go below
-    radius = 0.42
+    bw = 2.2   # sub-box width
+    bh = 0.75  # sub-box height
+    gap_x = 0.4  # horizontal gap between columns
+    gap_y = 0.35  # vertical gap between rows
+    grid_w = n_cols * bw + (n_cols - 1) * gap_x
+    grid_h = n_rows * bh + (n_rows - 1) * gap_y
+    x0 = 5.0 - grid_w / 2  # left edge
+    y_top = 5.5             # top edge of grid
 
-    # Pathway ellipse + label above
-    ellipse = mpatches.Ellipse((5, y_members), width=12.0, height=1.5,
-                                facecolor="#f0f0f0", edgecolor="#aaaaaa",
-                                linewidth=1.5, zorder=0)
-    ax_annot.add_patch(ellipse)
-    ax_annot.text(5, y_members + 1.05, "True pathway (all 10 members)",
+    # Outer rounded rectangle
+    pad = 0.35
+    box = mpatches.FancyBboxPatch(
+        (x0 - pad, y_top - grid_h - pad), grid_w + 2 * pad, grid_h + 2 * pad,
+        boxstyle="round,pad=0.25", facecolor="#f0f0f0",
+        edgecolor="#aaaaaa", linewidth=1.5, zorder=0)
+    ax_annot.add_patch(box)
+    ax_annot.text(5.0, y_top + pad + 0.5,
+                  f"True pathway (all {n_members} members)",
                   ha="center", va="bottom", fontsize=9, color="#555555")
 
-    for i, x in enumerate(xs):
-        annotated = i < n_annotated
-        circle = plt.Circle((x, y_members), radius,
-                             color="#377eb8" if annotated else "white",
-                             ec="#377eb8", lw=1.5, zorder=2)
-        ax_annot.add_patch(circle)
-        ax_annot.text(x, y_members, f"M{i+1}", ha="center", va="center",
-                      fontsize=6, color="white" if annotated else "#377eb8",
+    # Place sub-boxes: left column top-to-bottom, then right column
+    positions = []  # (cx, cy) for each metabolite
+    for idx in range(n_members):
+        col = idx // n_rows
+        row = idx % n_rows
+        cx = x0 + col * (bw + gap_x) + bw / 2
+        cy = y_top - row * (bh + gap_y) - bh / 2
+        positions.append((cx, cy))
+        annotated = idx < n_annotated
+        sub = mpatches.FancyBboxPatch(
+            (cx - bw / 2, cy - bh / 2), bw, bh,
+            boxstyle="round,pad=0.08",
+            facecolor="#377eb8" if annotated else "white",
+            edgecolor="#377eb8", linewidth=1.5, zorder=2)
+        ax_annot.add_patch(sub)
+        ax_annot.text(cx, cy, f"M{idx+1}", ha="center", va="center",
+                      fontsize=8.5, color="white" if annotated else "#377eb8",
                       fontweight="bold", zorder=3)
 
-    # Both annotations go below the ellipse so the panel title is unobstructed.
-    # Pathway-aware: bracket spanning annotated members
-    mid_annot_x = xs[:n_annotated].mean()
-    ax_annot.annotate(
-        "", xy=(xs[n_annotated - 1] + radius + 0.05, y_members - 0.9),
-        xytext=(xs[0] - radius - 0.05, y_members - 0.9),
-        arrowprops=dict(arrowstyle="-", color="#377eb8", lw=1.3),
-    )
-    ax_annot.plot([xs[0] - radius - 0.05, xs[0] - radius - 0.05],
-                  [y_members - 0.75, y_members - 0.9], color="#377eb8", lw=1.3)
-    ax_annot.plot([xs[n_annotated - 1] + radius + 0.05,
-                   xs[n_annotated - 1] + radius + 0.05],
-                  [y_members - 0.75, y_members - 0.9], color="#377eb8", lw=1.3)
-    ax_annot.text(mid_annot_x, y_members - 1.0,
-                  "Pathway-aware methods see\nonly annotated members (filled)",
-                  ha="center", va="top", fontsize=7.5, color="#377eb8")
+    # Bracket left: annotated members (span full grid height for rows 0-6)
+    annot_positions = positions[:n_annotated]
+    annot_top = max(cy for _, cy in annot_positions) + bh / 2
+    annot_bot = min(cy for _, cy in annot_positions) - bh / 2
+    mid_annot_y = (annot_top + annot_bot) / 2
+    bx = x0 - pad - 0.5
+    ax_annot.plot([bx, bx], [annot_top, annot_bot],
+                  color="#377eb8", lw=1.3)
+    ax_annot.plot([bx, bx + 0.2], [annot_top, annot_top],
+                  color="#377eb8", lw=1.3)
+    ax_annot.plot([bx, bx + 0.2], [annot_bot, annot_bot],
+                  color="#377eb8", lw=1.3)
+    ax_annot.text(bx - 0.15, mid_annot_y,
+                  "Pathway-aware\nmethods see only\nannotated members\n(filled)",
+                  ha="right", va="center", fontsize=7.5, color="#377eb8")
 
-    # Data-driven: bracket spanning withheld members
-    mid_withheld_x = xs[n_annotated:].mean()
-    ax_annot.annotate(
-        "", xy=(xs[-1] + radius + 0.05, y_members - 0.9),
-        xytext=(xs[n_annotated] - radius - 0.05, y_members - 0.9),
-        arrowprops=dict(arrowstyle="-", color="#e41a1c", lw=1.3),
-    )
-    ax_annot.plot([xs[n_annotated] - radius - 0.05,
-                   xs[n_annotated] - radius - 0.05],
-                  [y_members - 0.75, y_members - 0.9], color="#e41a1c", lw=1.3)
-    ax_annot.plot([xs[-1] + radius + 0.05, xs[-1] + radius + 0.05],
-                  [y_members - 0.75, y_members - 0.9], color="#e41a1c", lw=1.3)
-    ax_annot.text(mid_withheld_x, y_members - 1.0,
-                  "Data-driven methods can\ndiscover withheld members (hollow)",
-                  ha="center", va="top", fontsize=7.5, color="#e41a1c")
+    # Bracket right: withheld members
+    with_positions = positions[n_annotated:]
+    with_top = max(cy for _, cy in with_positions) + bh / 2
+    with_bot = min(cy for _, cy in with_positions) - bh / 2
+    mid_with_y = (with_top + with_bot) / 2
+    bx_r = x0 + grid_w + pad + 0.5
+    ax_annot.plot([bx_r, bx_r], [with_top, with_bot],
+                  color="#e41a1c", lw=1.3)
+    ax_annot.plot([bx_r, bx_r - 0.2], [with_top, with_top],
+                  color="#e41a1c", lw=1.3)
+    ax_annot.plot([bx_r, bx_r - 0.2], [with_bot, with_bot],
+                  color="#e41a1c", lw=1.3)
+    ax_annot.text(bx_r + 0.15, mid_with_y,
+                  "Data-driven methods\ncan discover withheld\nmembers (hollow)",
+                  ha="left", va="center", fontsize=7.5, color="#e41a1c")
 
     # ---- Save ------------------------------------------------------------
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -278,7 +367,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output",
-        default="multioutput_manuscript/figures/simulation_overview.pdf",
+        default="figures/simulation_overview.pdf",
         help="Output file path (.pdf or .png)",
     )
     parser.add_argument("--seed", type=int, default=42)

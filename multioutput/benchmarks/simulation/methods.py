@@ -54,7 +54,26 @@ def calculate_centroid_predictions(
 # 2. Benchmarking Methods
 # =============================================================================
 
-def analyze_with_mogp(data: pd.DataFrame, weight_threshold: float = 0.2, verbose: bool = True) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
+def _otsu_threshold(values: np.ndarray) -> float:
+    """Otsu's method: find threshold minimizing within-class variance of |W| column."""
+    vals = values.flatten()
+    candidates = np.unique(vals)
+    best_t, best_var = candidates[0], np.inf
+    n = len(vals)
+    for t in candidates[:-1]:
+        below = vals[vals <= t]
+        above = vals[vals > t]
+        if len(below) == 0 or len(above) == 0:
+            continue
+        w0, w1 = len(below) / n, len(above) / n
+        within_var = w0 * below.var() + w1 * above.var()
+        if within_var < best_var:
+            best_var = within_var
+            best_t = t
+    return best_t
+
+
+def analyze_with_mogp(data: pd.DataFrame, weight_threshold: float = 0.2, use_otsu: bool = True, verbose: bool = True) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
     if verbose: print("Running MOGP analysis...")
     try:
         import gpflow
@@ -108,12 +127,23 @@ def analyze_with_mogp(data: pd.DataFrame, weight_threshold: float = 0.2, verbose
         factor_names = [f"MOGP_Factor_{k+1}" for k in range(W.shape[1])]
         W_df = pd.DataFrame(W, index=metabolite_cols, columns=factor_names)
         for k in range(W.shape[1]):
-            weights = W[:, k]
-            max_w = np.max(np.abs(weights))
-            if max_w > 0:
-                active = np.where((np.abs(weights) / max_w) > weight_threshold)[0]
-                module_mets = [metabolite_cols[i] for i in active]
-                if module_mets: modules.append((f"MOGP_Factor_{k+1}", module_mets))
+            abs_w = np.abs(W[:, k])
+            max_w = abs_w.max()
+            if max_w < 1e-6:
+                continue
+            # Use Otsu's method to find the natural signal/noise split in the
+            # horseshoe-prior loading distribution. Falls back to relative threshold.
+            if use_otsu and len(np.unique(abs_w)) > 1:
+                try:
+                    t = _otsu_threshold(abs_w)
+                except Exception:
+                    t = max_w * weight_threshold
+            else:
+                t = max_w * weight_threshold
+            active = np.where(abs_w > t)[0]
+            module_mets = [metabolite_cols[i] for i in active]
+            if module_mets:
+                modules.append((f"MOGP_Factor_{k+1}", module_mets))
 
     return modules, fitted_df_long, W_df
 
@@ -205,14 +235,14 @@ def analyze_with_mefisto(data: pd.DataFrame, weight_threshold: float = 0.5, vari
                     # multi-view settings where cross-view constraints stabilise sparsity.
                     spikeslab_weights=False,
                     ard_weights=False,
-                    # Iteration cap: at N=subjects*timepoints=200, each ELBO iteration
+                    # Iteration budget: at N=subjects*timepoints=200, each ELBO iteration
                     # costs ~60s due to O(N^3) slogdet of the N×N variational posterior
                     # covariance (Z_nodes_GP_mv.calculateELBO_k, lb_q term). Full
                     # convergence (~200 iterations, ~2h) is impractical per replicate.
-                    # 25 iterations allows one GP lengthscale optimisation at start_opt=20
-                    # while keeping runtime to ~25 min. Sparse GP does not reduce this
-                    # bottleneck in mofapy2 v0.7.3 (posterior remains N×N). See manuscript.
-                    n_iterations=25,
+                    # 100 iterations (~100 min) allows more lengthscale optimisation while
+                    # remaining feasible on HPC. Sparse GP does not reduce this bottleneck
+                    # in mofapy2 v0.7.3 (posterior remains N×N). See manuscript.
+                    n_iterations=100,
                     quiet=True,
                     outfile=tmp_h5,
                 )
@@ -315,72 +345,123 @@ def analyze_with_lmm_ora(lmm_results: pd.DataFrame, annotated_pathways: Dict[str
         if hypergeom.sf(overlap - 1, len(all_mets), len(p_mets), len(sig)) < 0.05: enriched.append(pid)
     return enriched
 
+def analyze_with_mogp_ora(
+    modules: List[Tuple[str, List[str]]],
+    annotated_pathways: Dict[str, List[str]],
+    all_metabolite_ids: List[str],
+    pvalue_threshold: float = 0.05,
+) -> List[str]:
+    """Hypergeometric ORA on each MOGP module against each annotated pathway.
+
+    For each module, runs a one-sided hypergeometric test per pathway. The
+    per-pathway p-value is the minimum across all modules, Bonferroni-corrected
+    for the number of modules tested. A pathway is detected if its corrected
+    p-value < pvalue_threshold.
+    """
+    from scipy.stats import hypergeom
+
+    if not modules:
+        return []
+    N = len(all_metabolite_ids)
+    n_modules = len(modules)
+    bonferroni_threshold = pvalue_threshold / n_modules
+    pathway_min_p: Dict[str, float] = {pid: 1.0 for pid in annotated_pathways}
+    for _, mod_mets in modules:
+        mod_set = set(mod_mets)
+        n = len(mod_set)
+        for pid, p_mets in annotated_pathways.items():
+            K = len(p_mets)
+            k = len(mod_set.intersection(p_mets))
+            if k == 0:
+                continue
+            p = hypergeom.sf(k - 1, N, K, n)
+            if p < pathway_min_p[pid]:
+                pathway_min_p[pid] = p
+    return [pid for pid, p in pathway_min_p.items() if p < bonferroni_threshold]
+
+
 def analyze_with_mogp_gsea(
-    W_df: "pd.DataFrame",
+    W_df: pd.DataFrame,
     annotated_pathways: Dict[str, List[str]],
     pvalue_threshold: float = 0.05,
 ) -> List[str]:
-    """Preranked GSEA on each MOGP latent factor using absolute loading weights.
+    """Preranked GSEA on MOGP absolute loading weights per factor.
 
-    For each latent factor k, metabolites are ranked by |W_{ik}| and preranked
-    GSEA is run against each annotated pathway. The per-pathway p-value is the
-    minimum across all factors, with a Bonferroni correction for the number of
-    factors tested. Bonferroni is self-calibrating: when the horseshoe prior
-    concentrates pathway signal onto a single factor, K≈1 and the threshold
-    equals the nominal alpha.
+    For each factor k, metabolites are ranked by |W_{i,k}| and gseapy.prerank
+    tests enrichment of each annotated pathway.  A pathway is detected if its
+    NOM p-val < pvalue_threshold for any factor (consistent with LMM+GSEA).
     """
     try:
         import gseapy as gp
     except ImportError:
-        print("  MOGP-GSEA skipped: gseapy not installed (pip install gseapy)")
+        print("  MOGP-GSEA skipped: gseapy not installed")
         return []
-    if W_df is None or W_df.empty:
+
+    if W_df.empty:
         return []
-    n_factors = W_df.shape[1]
-    if n_factors == 0:
-        return []
-    bonferroni_threshold = pvalue_threshold / n_factors
-    pathway_min_p: Dict[str, float] = {pid: 1.0 for pid in annotated_pathways}
-    for factor_col in W_df.columns:
-        rnk = W_df[factor_col].abs().sort_values(ascending=False).reset_index()
-        rnk.columns = ["metabolite_id", "score"]
+
+    pathway_min_p: Dict[str, float] = {
+        pid: 1.0 for pid in annotated_pathways
+    }
+    for col in W_df.columns:
+        rnk = W_df[col].abs().sort_values(ascending=False)
+        rnk_df = rnk.reset_index()
+        rnk_df.columns = ["metabolite_id", "abs_loading"]
         try:
-            res = gp.prerank(rnk=rnk, gene_sets=annotated_pathways, threads=1,
-                             outdir=None, seed=9102, verbose=False, min_size=5)
-            pval_col = "NOM p-val" if "NOM p-val" in res.res2d.columns else "pval"
-            for _, row in res.res2d.iterrows():
-                pid = row["Term"] if "Term" in res.res2d.columns else row.name
-                p = float(row[pval_col]) if pval_col in res.res2d.columns else 1.0
-                if pid in pathway_min_p:
-                    pathway_min_p[pid] = min(pathway_min_p[pid], p)
-        except (Exception, SystemExit) as e:
-            print(f"  MOGP-GSEA factor {factor_col} failed: {e}")
+            res = gp.prerank(
+                rnk=rnk_df,
+                gene_sets=annotated_pathways,
+                threads=1,
+                outdir=None,
+                min_size=1,
+                max_size=10000,
+                permutation_num=1000,
+                seed=42,
+                verbose=False,
+            )
+            for term in res.res2d["Term"].tolist():
+                row = res.res2d[res.res2d["Term"] == term]
+                nom_p = float(row["NOM p-val"].values[0])
+                if term in pathway_min_p and nom_p < pathway_min_p[term]:
+                    pathway_min_p[term] = nom_p
+        except Exception:
             continue
-    return [pid for pid, p in pathway_min_p.items() if p < bonferroni_threshold]
+
+    return [pid for pid, p in pathway_min_p.items() if p < pvalue_threshold]
 
 
-def analyze_with_lmm_gsea(lmm_results: pd.DataFrame, annotated_pathways: Dict[str, List[str]]) -> List[str]:
-    # Standard preranked GSEA using signed LMM t-statistics for time.
-    # Threshold: NOM p-val < 0.05 per pathway (not FDR q-val). Using nominal p-values is
-    # consistent with LMM+ORA (hypergeometric p < 0.05) and MOGP+GSEA (Bonferroni-corrected
-    # NOM p-val < 0.05), giving all three methods the same per-pathway alpha = 0.05.
-    # FDR control is not applied because with only 5 pathways, gseapy's permutation-based
-    # FDR is poorly calibrated (FDR=0.36 when NOM p=0.17 in a single-replicate diagnostic).
+def analyze_with_lmm_gsea(
+    lmm_results: pd.DataFrame, annotated_pathways: Dict[str, List[str]]
+) -> List[str]:
+    # Preranked GSEA using |t-stat| from LMM time coefficient.
+    # Absolute values used so that both LMM+GSEA and MOGP+GSEA test the same
+    # question: "is this pathway enriched for metabolites with strong temporal
+    # dynamics?" — making the two directly comparable. Signed t-stats would
+    # test coordinated unidirectional regulation, but pathway_random_effect_sd
+    # creates bidirectional effects that violate that assumption.
     #
-    # NOTE on directionality: signed t-stat (positive = increasing over time, negative =
-    # decreasing). GSEA tests whether pathway members are coordinately up- OR down-regulated.
-    # Contrast with MOGP+GSEA which ranks by |W_{ik}|; MOGP factor sign is arbitrary so
-    # absolute loadings are the correct choice there.
-    #
-    # LMM+GSEA's low sensitivity in this benchmark is a genuine finding: pathway_random_effect_sd
-    # causes bidirectional t-stat estimates within the true pathway, violating GSEA's assumption.
+    # Threshold: NOM p-val < 0.05 per pathway (not FDR q-val), consistent with
+    # LMM+ORA and MOGP+GSEA (all per-pathway alpha = 0.05). FDR is not applied
+    # because with only 5 pathways gseapy's permutation-based FDR is poorly
+    # calibrated.
     try:
         import gseapy as gp
     except ImportError:
         print("  LMM-GSEA skipped: gseapy not installed (pip install gseapy)")
         return []
     try:
-        res = gp.prerank(rnk=lmm_results.sort_values("tstat", ascending=False)[["metabolite_id", "tstat"]], gene_sets=annotated_pathways, threads=1, outdir=None, seed=9102, verbose=False, min_size=5)
+        rnk = lmm_results[["metabolite_id", "tstat"]].copy()
+        rnk["tstat"] = rnk["tstat"].abs()
+        rnk = rnk.sort_values("tstat", ascending=False)
+        res = gp.prerank(
+            rnk=rnk,
+            gene_sets=annotated_pathways,
+            threads=1,
+            outdir=None,
+            seed=9102,
+            verbose=False,
+            min_size=5,
+        )
         nom_col = "NOM p-val" if "NOM p-val" in res.res2d.columns else "pval"
         return res.res2d[res.res2d[nom_col] < 0.05]["Term"].tolist()
     except (Exception, SystemExit) as e:

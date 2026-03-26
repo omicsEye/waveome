@@ -10,7 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-export PROJECT_ROOT="$SCRIPT_DIR/../../../.."
+export PROJECT_ROOT="$( cd "$SCRIPT_DIR/../../../../.." && pwd )"
 SBATCH_TEMPLATE="$SCRIPT_DIR/run_condition.sbatch"
 BASE_OUTPUT="$SCRIPT_DIR/../output/final_benchmark"
 
@@ -49,7 +49,7 @@ MED_SNR="--effect_magnitude 2.5 --subject_noise 0.3 --dispersion 10.0 --nuisance
 
 echo "=== Submitting Primary: Annotation Sweep ==="
 for ANNOT in 0.3 0.5 0.7 0.9; do
-    for EFFECT in spike linear; do
+    for EFFECT in spike linear perturbation; do
         submit "annot_${ANNOT}" "$EFFECT" \
             "$MED_SNR --annotation_fraction $ANNOT" \
             "annotation_sweep/annot_${ANNOT}/${EFFECT}"
@@ -58,7 +58,7 @@ done
 
 echo ""
 echo "=== Submitting Secondary: SNR Sweep ==="
-for EFFECT in spike linear; do
+for EFFECT in spike linear perturbation; do
     submit "snr_easy" "$EFFECT" \
         "--effect_magnitude 4.0 --subject_noise 0.1 --dispersion 50.0 --nuisance_fraction 0.0 --irregular_sampling_sd 0.5 --n_time_points 10" \
         "snr_sweep/snr_easy/${EFFECT}"
@@ -74,26 +74,46 @@ done
 
 echo ""
 echo "=== Submitting Secondary: Group Covariate ==="
-for EFFECT in spike linear; do
+for EFFECT in spike linear perturbation; do
     submit "group_covariate" "$EFFECT" \
         "$MED_SNR --effect_magnitude 3.0 --add_group_covariate" \
         "group_covariate/${EFFECT}"
 done
 
 echo ""
-echo "=== Submitting Supplemental ==="
-for EFFECT in spike linear; do
+echo "=== Submitting Supplemental — Sparse Data / High Irregularity ==="
+for EFFECT in spike linear perturbation; do
     submit "sparse_data" "$EFFECT" \
         "$MED_SNR --n_subjects 20 --n_time_points 3" \
         "supplemental/sparse_data/${EFFECT}"
 
-    submit "nuisance_noise" "$EFFECT" \
-        "$MED_SNR --nuisance_fraction 0.4 --nuisance_amplitude 2.5" \
-        "supplemental/nuisance_noise/${EFFECT}"
-
     submit "high_irregularity" "$EFFECT" \
         "$MED_SNR --irregular_sampling_sd 4.0" \
         "supplemental/high_irregularity/${EFFECT}"
+done
+
+echo ""
+echo "=== Submitting Supplemental — Temporal Resolution Sweep ==="
+# Vary n_time_points at default n_subjects; tests whether GP temporal structure
+# learning improves with more observations per unit.
+for EFFECT in spike linear perturbation; do
+    for N_TIME in 3 5 8 15; do
+        submit "n_time_${N_TIME}" "$EFFECT" \
+            "$MED_SNR --n_time_points $N_TIME" \
+            "supplemental/n_time_sweep/n_time_${N_TIME}/${EFFECT}"
+    done
+done
+
+echo ""
+echo "=== Submitting Supplemental — Sample Size Sweep ==="
+# Vary n_subjects at default n_time_points; tests how methods scale with
+# the number of units (GP posterior precision vs. MEBA EB shrinkage vs. LMM stability).
+for EFFECT in spike linear perturbation; do
+    for N_SUBJ in 10 20 50 100; do
+        submit "n_subj_${N_SUBJ}" "$EFFECT" \
+            "$MED_SNR --n_subjects $N_SUBJ" \
+            "supplemental/n_subj_sweep/n_subj_${N_SUBJ}/${EFFECT}"
+    done
 done
 
 echo ""

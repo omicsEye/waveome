@@ -10,7 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PROJECT_ROOT="$SCRIPT_DIR/../../.."
+PROJECT_ROOT="$SCRIPT_DIR/../.."
 BASE_OUTPUT="$SCRIPT_DIR/output/final_benchmark"
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ COMMON="--n_runs $N_RUNS --n_jobs $N_JOBS --skip_fitted_predictions"
 run() {
     local label="$1" effect="$2" extra="$3" outdir="$4"
     echo "--- $label | effect=$effect ---"
-    $PYTHON -m code.simulation.main $COMMON \
+    $PYTHON -m simulation.main $COMMON \
         --effect_type "$effect" \
         --condition_label "$label" \
         --output_dir "$BASE_OUTPUT/$outdir" \
@@ -39,7 +39,7 @@ run() {
 # ── Primary: Annotation Sweep ─────────────────────────────────────────────────
 echo "=== Experiment 1: Annotation Sweep ==="
 for ANNOT in 0.3 0.5 0.7 0.9; do
-    for EFFECT in spike linear; do
+    for EFFECT in spike linear perturbation; do
         run "annot_${ANNOT}" "$EFFECT" \
             "$MED_SNR --annotation_fraction $ANNOT" \
             "annotation_sweep/annot_${ANNOT}/$EFFECT"
@@ -48,7 +48,7 @@ done
 
 # ── Secondary: SNR Sweep ──────────────────────────────────────────────────────
 echo "=== Experiment 2: SNR Sweep ==="
-for EFFECT in spike linear; do
+for EFFECT in spike linear perturbation; do
     run "snr_easy" "$EFFECT" \
         "--effect_magnitude 4.0 --subject_noise 0.1 --dispersion 50.0 --nuisance_fraction 0.0 --irregular_sampling_sd 0.5 --n_time_points 10" \
         "snr_sweep/snr_easy/$EFFECT"
@@ -64,26 +64,44 @@ done
 
 # ── Secondary: Group Covariate ────────────────────────────────────────────────
 echo "=== Experiment 3: Group Covariate ==="
-for EFFECT in spike linear; do
+for EFFECT in spike linear perturbation; do
     run "group_covariate" "$EFFECT" \
         "$MED_SNR --effect_magnitude 3.0 --add_group_covariate" \
         "group_covariate/$EFFECT"
 done
 
 # ── Supplemental ──────────────────────────────────────────────────────────────
-echo "=== Experiment 4: Supplemental Conditions ==="
-for EFFECT in spike linear; do
+echo "=== Experiment 4: Supplemental — Sparse Data / High Irregularity ==="
+for EFFECT in spike linear perturbation; do
     run "sparse_data" "$EFFECT" \
         "$MED_SNR --n_subjects 20 --n_time_points 3" \
         "supplemental/sparse_data/$EFFECT"
 
-    run "nuisance_noise" "$EFFECT" \
-        "$MED_SNR --nuisance_fraction 0.4 --nuisance_amplitude 2.5" \
-        "supplemental/nuisance_noise/$EFFECT"
-
     run "high_irregularity" "$EFFECT" \
         "$MED_SNR --irregular_sampling_sd 4.0" \
         "supplemental/high_irregularity/$EFFECT"
+done
+
+echo "=== Experiment 5: Temporal Resolution Sweep ==="
+# Vary n_time_points at default n_subjects; tests whether GP temporal structure
+# learning improves with more observations per unit.
+for EFFECT in spike linear perturbation; do
+    for N_TIME in 3 5 8 15; do
+        run "n_time_${N_TIME}" "$EFFECT" \
+            "$MED_SNR --n_time_points $N_TIME" \
+            "supplemental/n_time_sweep/n_time_${N_TIME}/$EFFECT"
+    done
+done
+
+echo "=== Experiment 6: Sample Size Sweep ==="
+# Vary n_subjects at default n_time_points; tests how methods scale with
+# the number of units (GP posterior precision vs. MEBA EB shrinkage vs. LMM stability).
+for EFFECT in spike linear perturbation; do
+    for N_SUBJ in 10 20 50 100; do
+        run "n_subj_${N_SUBJ}" "$EFFECT" \
+            "$MED_SNR --n_subjects $N_SUBJ" \
+            "supplemental/n_subj_sweep/n_subj_${N_SUBJ}/$EFFECT"
+    done
 done
 
 echo ""

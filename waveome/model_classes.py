@@ -1499,6 +1499,80 @@ class MultiOutputPSVGP(PSVGP):
                 if self.verbose:
                     print(f"Warning: re-optimization after pruning failed: {e}")
 
+    def get_module_membership(
+        self,
+        output_names=None,
+        method="otsu",
+        threshold=0.2,
+    ):
+        """Return module membership for each latent factor.
+
+        For each factor k, assigns outputs (e.g. metabolites) whose absolute
+        loading |W_{ik}| exceeds a threshold.  Two thresholding methods are
+        supported:
+
+        - ``'otsu'``  — Otsu's method finds the threshold that minimises
+          within-class variance of |W[:,k]|, exploiting the bimodal
+          signal/noise distribution induced by the horseshoe prior.  Falls
+          back to ``'fixed'`` when all values are identical.
+        - ``'fixed'`` — threshold = ``threshold * max(|W[:,k]|)``.
+
+        Args:
+            output_names (list[str], optional): Names for the model outputs
+                (e.g. metabolite IDs).  Defaults to ``["Out_0", "Out_1", ...]``.
+            method (str): ``'otsu'`` (default) or ``'fixed'``.
+            threshold (float): Relative threshold used when ``method='fixed'``
+                or as fallback for ``'otsu'``.  Ignored for pure Otsu runs.
+
+        Returns:
+            list[tuple[str, list[str]]]: Each entry is
+            ``(factor_name, [member_output_names])``, one per factor that has
+            at least one member.  Factors are named ``"Factor_1"``, etc.
+        """
+        W = self.kernel.W.numpy()  # shape: (n_outputs, n_latents)
+        n_outputs, n_latents = W.shape
+
+        if output_names is None:
+            output_names = [f"Out_{i}" for i in range(n_outputs)]
+
+        def _otsu(values):
+            vals = values.flatten()
+            candidates = np.unique(vals)
+            if len(candidates) < 2:
+                return vals[0]
+            best_t, best_var = candidates[0], np.inf
+            n = len(vals)
+            for t in candidates[:-1]:
+                below = vals[vals <= t]
+                above = vals[vals > t]
+                if len(below) == 0 or len(above) == 0:
+                    continue
+                w0, w1 = len(below) / n, len(above) / n
+                within_var = w0 * below.var() + w1 * above.var()
+                if within_var < best_var:
+                    best_var = within_var
+                    best_t = t
+            return best_t
+
+        modules = []
+        for k in range(n_latents):
+            abs_w = np.abs(W[:, k])
+            max_w = abs_w.max()
+            if max_w < 1e-6:
+                continue
+            if method == "otsu" and len(np.unique(abs_w)) > 1:
+                try:
+                    t = _otsu(abs_w)
+                except Exception:
+                    t = max_w * threshold
+            else:
+                t = max_w * threshold
+            members = [output_names[i] for i in np.where(abs_w > t)[0]]
+            if members:
+                modules.append((f"Factor_{k + 1}", members))
+
+        return modules
+
     def optimize_params(
         self,
         adam_learning_rate=0.01,

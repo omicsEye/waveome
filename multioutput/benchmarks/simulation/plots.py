@@ -212,7 +212,36 @@ def visualize_benchmark_results(results_file: str, output_dir: str = None):
             plt.close()
             print(f"Saved Jaccard_comparison.png")
 
-    # --- 3. Unannotated Metabolite Recall ---
+    # --- 3. Module Precision ---
+    precision_cols = [c for c in df.columns if c.endswith("_BestPrecision")]
+    if precision_cols:
+        plt.figure(figsize=(10, 6))
+        df_prec = df.melt(
+            id_vars=["run_id"], value_vars=precision_cols,
+            var_name="Method", value_name="Precision",
+        )
+        df_prec["Method"] = df_prec["Method"].str.replace("_BestPrecision", "")
+        df_prec = df_prec[df_prec["Method"] != "LMM"]
+        if not df_prec.empty:
+            sns.boxplot(
+                data=df_prec, x="Method", y="Precision",
+                hue="Method", palette="flare", legend=False,
+            )
+            sns.stripplot(
+                data=df_prec, x="Method", y="Precision",
+                color="black", alpha=0.5, jitter=True,
+            )
+            plt.title("Module Precision for Best-Matching Module (Active Pathway)")
+            plt.ylabel("Precision")
+            plt.ylim(-0.1, 1.1)
+            plt.tight_layout()
+            plt.savefig(
+                os.path.join(output_dir, "Precision_comparison.png"), dpi=300
+            )
+            plt.close()
+            print("Saved Precision_comparison.png")
+
+    # --- 4. Unannotated Metabolite Recall ---
     recall_cols = [c for c in df.columns if c.endswith("_UnannotatedRecall")]
     if recall_cols:
         plt.figure(figsize=(10, 6))
@@ -294,7 +323,7 @@ def visualize_benchmark_results(results_file: str, output_dir: str = None):
         print(f"Saved Time_comparison.png")
 
     # --- 6. Pathway-Aware Method Performance ---
-    pathway_methods = ["LMM_ORA", "LMM_GSEA", "MEBA", "MOGP_GSEA", "PAL"]
+    pathway_methods = ["LMM_ORA", "LMM_GSEA", "MEBA", "MOGP_ORA", "MOGP_GSEA", "PAL"]
     sensitivity_cols = [f"{m}_Sensitivity" for m in pathway_methods if f"{m}_Sensitivity" in df.columns]
     fpr_cols = [f"{m}_FPR" for m in pathway_methods if f"{m}_FPR" in df.columns]
 

@@ -22,6 +22,7 @@ def simulate_longitudinal_data(
     active_pathway_idx: int = 0,
     effect_func: Callable[[np.ndarray], np.ndarray] = None,
     nuisance_fraction: float = 0.2,
+    nuisance_pathway_only: bool = False,
     nuisance_effect_func: Callable[[np.ndarray], np.ndarray] = None,
     likelihood_func: Callable[[np.ndarray, float], np.ndarray] = negative_binomial_likelihood,
     dispersion: float = 10.0,
@@ -90,9 +91,19 @@ def simulate_longitudinal_data(
         )
 
     if nuisance_fraction > 0 and nuisance_effect_func is not None:
-        n_nuisance = int(n_metabolites * nuisance_fraction)
+        if nuisance_pathway_only:
+            # Nuisance (circadian) oscillations concentrated in annotated pathway
+            # metabolites, not unannotated background metabolites.
+            candidate_indices = sorted({
+                metabolite_ids.index(m)
+                for mets in true_pathway_mapping.values()
+                for m in mets
+            })
+        else:
+            candidate_indices = list(range(n_metabolites))
+        n_nuisance = min(int(len(candidate_indices) * nuisance_fraction), len(candidate_indices))
         if n_nuisance > 0:
-            nuisance_indices = np.random.choice(np.arange(n_metabolites), n_nuisance, replace=False)
+            nuisance_indices = np.random.choice(candidate_indices, n_nuisance, replace=False)
             nuisance_profile = nuisance_effect_func(subject_times)
             latent_signal[:, :, nuisance_indices] += nuisance_profile[:, :, np.newaxis]
 

@@ -187,8 +187,9 @@ $CONDA_PREFIX/bin/python3.11 -m simulation.main \
     --seed 42
 ```
 
-Check that `/tmp/test_full/benchmark_results.csv` contains `MOGP_GSEA_Sensitivity`,
-`LMM_ORA_Sensitivity`, and all other expected columns before proceeding.
+Check that `/tmp/test_full/benchmark_results.csv` contains `MOGP_ORA_Sensitivity`,
+`MOGP_GSEA_Sensitivity`, `LMM_ORA_Sensitivity`, and all other expected columns
+before proceeding.
 
 ---
 
@@ -204,8 +205,8 @@ CONDA_PREFIX=""    # e.g. /home/user/miniforge3/envs/mogp-waveome-sim
 **Submit from the project root:**
 
 ```bash
-cd ~/mogp-waveome
-bash simulation/experiments/hpc/submit_all.sh
+cd $REPO
+bash multioutput/benchmarks/simulation/experiments/hpc/submit_all.sh
 ```
 
 This submits ~20 independent SLURM jobs in one shot (annotation sweep × 8,
