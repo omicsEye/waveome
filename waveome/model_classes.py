@@ -17,7 +17,6 @@ from .regularization import make_folds
 from .utilities import (
     calc_bic,
     calc_feature_importance_components,
-    calculate_rank_estimate,
     convert_data_to_tensors,
     find_variance_components,
     find_variance_components_tf,
@@ -1126,6 +1125,25 @@ class PSVGP(PenalizedGP, SparseGP, VarGP):
         )
 
 
+def _describe_kernel(kern, var_names):
+    """Recursively describe a kernel using variable names."""
+    ktype = type(kern).__name__
+    if hasattr(kern, "kernels"):
+        sep = " × " if ktype == "Product" else " + "
+        return sep.join(_describe_kernel(k, var_names) for k in kern.kernels)
+    dims = getattr(kern, "active_dims", None)
+    if dims is not None:
+        dims = np.asarray(dims).flatten()
+        names = [var_names[d] if d < len(var_names) else f"dim{d}" for d in dims]
+        label = ", ".join(names)
+    else:
+        label = "all"
+    short = {"SquaredExponential": "SE", "Categorical": "Cat",
+             "Matern12": "Mat12", "Matern32": "Mat32", "Matern52": "Mat52",
+             "Linear": "Lin", "Periodic": "Per"}.get(ktype, ktype)
+    return f"{short}({label})"
+
+
 class MultiOutputPSVGP(PSVGP):
     """
     Multi-output Penalized Sparse Variational Gaussian Process.
@@ -1168,24 +1186,13 @@ class MultiOutputPSVGP(PSVGP):
                 ]
                 transform_counts = lik_str in count_likelihoods
 
-                # Get Y as numpy array
-                if hasattr(Y, "to_numpy"):
-                    Y_np = Y.to_numpy()
-                else:
-                    Y_np = np.array(Y)
-
-                # Estimate rank
-                estimated_rank = calculate_rank_estimate(
-                    Y_np, threshold=0.90, transform_counts=transform_counts
-                )
-
-                # Scale penalization factor by sqrt(Q) to maintain constant total prior variance
+                # Fixed rank for continuous kernels
+                estimated_rank = 3
                 scale_adjustment = np.sqrt(estimated_rank)
-                # penalization_factor = penalization_factor * scale_adjustment
 
                 if verbose:
                     print(
-                        f"No rank provided. Estimated rank Q={estimated_rank} (explains 90% variance)."
+                        f"No rank provided. Using fixed rank Q={estimated_rank} for continuous kernels."
                     )
                     print(
                         f"Penalization factor will be adjusted by sqrt(Q)={scale_adjustment:.2f}"
@@ -1193,7 +1200,11 @@ class MultiOutputPSVGP(PSVGP):
 
                 # Update kernel_options (copy to avoid side effects if reused)
                 kernel_options = kernel_options.copy()
-                kernel_options["ranks"] = estimated_rank
+                # Categoricals and unit get ranks=1 (multiple copies are unidentifiable)
+                # Continuous vars get ranks=estimated_rank (can capture multiple trajectory shapes)
+                ranks_dict = {idx: 1 for idx in (list(cat_vars) + ([unit_idx] if unit_idx is not None else []))}
+                ranks_dict.update({idx: estimated_rank for idx in num_vars})
+                kernel_options["ranks"] = ranks_dict
 
             from .regularization import full_kernel_build
 
@@ -1249,6 +1260,23 @@ class MultiOutputPSVGP(PSVGP):
         kernel = gpflow.kernels.LinearCoregionalization(
             kernels=latent_kernels, W=W_init
         )
+
+        # Add LogNormal prior to length scales of continuous kernels.
+        # LogNormal(1.0, 0.5) gives median ~2.7 and 90% CI ~[1.1, 6.6]
+        # in standardized input units, strongly encouraging smooth biological signals
+        # while still allowing the likelihood to win if short-scale structure is real.
+        ls_prior = tfd.LogNormal(loc=tf.cast(1.0, gpflow.default_float()),
+                                 scale=tf.cast(0.5, gpflow.default_float()))
+        for k in latent_kernels:
+            if hasattr(k, "lengthscales"):
+                k.lengthscales.prior = ls_prior
+                k.lengthscales.assign(3.0)
+            # Handle product kernels (e.g. Periodic wrapping SE)
+            if hasattr(k, "kernels"):
+                for sub_k in k.kernels:
+                    if hasattr(sub_k, "lengthscales"):
+                        sub_k.lengthscales.prior = ls_prior
+                        sub_k.lengthscales.assign(3.0)
 
         # Manually handle sparse and variational options to ensure correct init
         sparse_options = kwargs.pop("sparse_options", {})
@@ -1341,7 +1369,37 @@ class MultiOutputPSVGP(PSVGP):
 
         # 2. Handle Likelihood
         likelihood_str = variational_options.get("likelihood", "gaussian")
-        likelihood = gp_likelihood_crosswalk(likelihood_str)
+        if likelihood_str in ("negativebinomial", "negative_binomial") and num_outputs > 1:
+            # Per-output offsets and dispersion for multi-output NB
+            if hasattr(Y, "to_numpy"):
+                Y_np = Y.to_numpy()
+            else:
+                Y_np = np.array(Y)
+
+            # Offset = log(median) per output; clip to avoid log(0)
+            col_medians = np.maximum(np.median(Y_np, axis=0), 1.0)
+            offsets = np.log(col_medians)
+
+            # Dispersion via method of moments: alpha = (Var - mu) / mu^2
+            col_means = np.mean(Y_np, axis=0)
+            col_vars = np.var(Y_np, axis=0)
+            # Clip: alpha must be positive; fallback to 1.0 where variance <= mean
+            with np.errstate(divide="ignore", invalid="ignore"):
+                alpha_init = np.where(
+                    col_vars > col_means,
+                    (col_vars - col_means) / np.maximum(col_means ** 2, 1e-8),
+                    1.0,
+                )
+            alpha_init = np.clip(alpha_init, 1e-4, 1e4)
+
+            if verbose:
+                print(f"NB per-output offsets: median range [{offsets.min():.1f}, {offsets.max():.1f}]")
+                print(f"NB per-output alpha init: range [{alpha_init.min():.4f}, {alpha_init.max():.4f}]")
+
+            from .likelihoods import NegativeBinomialPerOutput
+            likelihood = NegativeBinomialPerOutput(alpha=alpha_init, offset=offsets)
+        else:
+            likelihood = gp_likelihood_crosswalk(likelihood_str)
 
         # 3. Call the grandparent SVGP constructor directly
         gpflow.models.SVGP.__init__(
@@ -1382,37 +1440,142 @@ class MultiOutputPSVGP(PSVGP):
 
         freeze_variance_parameters(self.kernel)
 
+    def plot_kl_scree(self, var_names=None, collapse_threshold=0.01, ax=None):
+        """
+        Plot a KL divergence scree plot for each latent factor.
+
+        Bars are colored by informativeness: steelblue = informative,
+        tomato = collapsed (KL < collapse_threshold * median KL).
+        X-axis labels show the kernel structure for each factor.
+
+        Args:
+            var_names (list, optional): Feature names for kernel label resolution.
+                Defaults to self.var_names if available.
+            collapse_threshold (float): Fraction of median KL below which a
+                factor is considered collapsed. Default 0.01 (1% of median).
+            ax (matplotlib.axes.Axes, optional): Axes to plot into. If None,
+                creates a new figure.
+
+        Returns:
+            kl_arr (np.ndarray): Per-latent KL values (unsorted, original order).
+        """
+        import matplotlib.pyplot as plt
+        from gpflow.kullback_leiblers import gauss_kl
+
+        q_mu_np   = self.q_mu.numpy()
+        q_sqrt_np = self.q_sqrt.numpy()
+        L = q_mu_np.shape[1]
+
+        kl_arr = np.array([
+            float(gauss_kl(
+                tf.constant(q_mu_np[:, k:k+1]),
+                tf.constant(q_sqrt_np[k:k+1]),
+            ))
+            for k in range(L)
+        ])
+
+        sorted_idx = np.argsort(kl_arr)[::-1]
+        sorted_kl  = kl_arr[sorted_idx]
+        kl_median  = np.median(kl_arr)
+        collapse_mask = kl_arr < collapse_threshold * kl_median
+
+        # Resolve kernel labels
+        if var_names is None:
+            var_names = getattr(self, "var_names", []) or []
+        labels = []
+        for k in range(L):
+            kern = self.kernel.kernels[sorted_idx[k]]
+            labels.append(_describe_kernel(kern, var_names))
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(max(6, L * 0.7), 4))
+
+        colors = [
+            "tomato" if collapse_mask[sorted_idx[k]] else "steelblue"
+            for k in range(L)
+        ]
+        ax.bar(range(L), sorted_kl, color=colors)
+        ax.axhline(
+            collapse_threshold * kl_median,
+            color="orange", linestyle="--",
+            label=f"Collapse threshold ({collapse_threshold:.0%} of median = {collapse_threshold * kl_median:.1f})",
+        )
+        ax.set_xticks(range(L))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+        ax.set_xlabel("Latent factor (sorted by KL)")
+        ax.set_ylabel("KL divergence")
+        ax.set_title("KL scree plot — latent factor informativeness")
+        ax.legend(fontsize=9)
+
+        n_collapsed = collapse_mask.sum()
+        if n_collapsed == 0:
+            print("Smooth KL decay — all factors informative. No collapsed factors detected.")
+        else:
+            print(f"Collapsed factors (KL < {collapse_threshold:.0%} of median): {n_collapsed}/{L}")
+            collapsed_kernels = [
+                _describe_kernel(self.kernel.kernels[i], var_names)
+                for i in np.where(collapse_mask)[0]
+            ]
+            print(f"  Collapsed: {collapsed_kernels}")
+
+        return kl_arr
+
     def prune_latent_factors(
         self,
-        threshold=0.1,
-        variance_threshold=None,
+        loading_threshold=0.1,
+        kl_threshold=None,
+        keep_indices=None,
         optimize_after_prune=True,
         optimize_kwargs=None,
     ):
         """
-        Prune latent factors based on mixing weights and/or kernel variance.
+        Prune latent factors based on W loading magnitude, KL divergence,
+        or an explicit index list.
 
         Args:
-            threshold (float): Prune if max absolute weight in W is below this.
-            variance_threshold (float, optional): Prune if kernel variance is below this.
+            loading_threshold (float): Prune if max absolute W loading across
+                all outputs is below this value. Default 0.1.
+            kl_threshold (float, optional): Prune if per-latent KL is below
+                this fraction of the *median* KL. Detects posterior collapse
+                (near-zero KL). E.g. 0.01 = less than 1% of median.
+            keep_indices (array-like, optional): Explicit list of latent column
+                indices to keep. All other criteria are ignored when provided.
         """
+        from gpflow.kullback_leiblers import gauss_kl
+
         W = self.kernel.W.numpy()
-
-        # Criterion 1: Importance from mixing weights
         latent_weight_importance = np.max(np.abs(W), axis=0)
-        to_prune_by_weight = latent_weight_importance < threshold
 
-        # Criterion 2: Importance from kernel variance
-        if variance_threshold is not None:
-            latent_variances = np.array(
-                [k.variance.numpy() for k in self.kernel.kernels]
-            )
-            to_prune_by_variance = latent_variances < variance_threshold
-            to_prune = np.logical_or(to_prune_by_weight, to_prune_by_variance)
+        # Explicit index override — skip all threshold logic
+        if keep_indices is not None:
+            keep_indices = np.asarray(keep_indices)
         else:
-            to_prune = to_prune_by_weight
+            # Criterion 1: W loading magnitude
+            to_prune = latent_weight_importance < loading_threshold
 
-        keep_indices = np.where(~to_prune)[0]
+            # Criterion 3: collapse detection (KL < fraction of median)
+            if kl_threshold is not None:
+                q_mu = self.q_mu.numpy()
+                q_sqrt_np = self.q_sqrt.numpy()
+                L = q_mu.shape[1]
+                kl_per_latent = np.array([
+                    float(gauss_kl(
+                        tf.constant(q_mu[:, k:k+1]),
+                        tf.constant(q_sqrt_np[k:k+1]),
+                    ))
+                    for k in range(L)
+                ])
+                kl_cutoff = kl_threshold * np.median(kl_per_latent)
+                to_prune_by_kl = kl_per_latent < kl_cutoff
+                if self.verbose and to_prune_by_kl.any():
+                    print(
+                        f"KL collapse pruning: {to_prune_by_kl.sum()} latents "
+                        f"(KL < {kl_threshold:.2%} of median "
+                        f"{np.median(kl_per_latent):.2f})"
+                    )
+                to_prune = np.logical_or(to_prune, to_prune_by_kl)
+
+            keep_indices = np.where(~to_prune)[0]
 
         if len(keep_indices) == 0:
             print(
@@ -1579,6 +1742,7 @@ class MultiOutputPSVGP(PSVGP):
         nat_gradient_gamma=0.1,
         num_opt_iter=2000,
         constraint_weight=1.0,
+        grad_clip_norm=1e6,
         **kwargs,
     ):
         # Optimization logic from notebook
@@ -1586,8 +1750,6 @@ class MultiOutputPSVGP(PSVGP):
         # Optimizers
         adam_opt = tf.keras.optimizers.legacy.Adam(learning_rate=adam_learning_rate)
         natgrad_opt = gpflow.optimizers.NaturalGradient(gamma=nat_gradient_gamma)
-
-        # Variational params
         natgrad_vars = [(self.q_mu, self.q_sqrt)]
         gpflow.set_trainable(self.q_mu, False)
         gpflow.set_trainable(self.q_sqrt, False)
@@ -1597,10 +1759,9 @@ class MultiOutputPSVGP(PSVGP):
 
         @tf.function
         def optimization_step():
-            # Optimize variational parameters
             natgrad_opt.minimize(loss_fn, var_list=natgrad_vars)
 
-            # Optimize kernel and likelihood parameters
+            # Optimize kernel and likelihood parameters (+ variational if no natgrad)
             with tf.GradientTape() as tape:
                 loss = loss_fn()
 
@@ -1619,13 +1780,15 @@ class MultiOutputPSVGP(PSVGP):
 
             grads = tape.gradient(total_loss, self.trainable_variables)
 
-            # Clip gradients
-            clipped_grads = [
-                tf.clip_by_norm(g, 1.0) if g is not None else None for g in grads
+            # Global gradient clipping: preserves relative magnitudes across all params
+            raw_grads = [
+                g if g is not None else tf.zeros_like(v)
+                for g, v in zip(grads, self.trainable_variables)
             ]
+            clipped_grads, global_norm = tf.clip_by_global_norm(raw_grads, grad_clip_norm)
 
             adam_opt.apply_gradients(zip(clipped_grads, self.trainable_variables))
-            return total_loss, loss
+            return total_loss, loss, global_norm
 
         # Loop
         loss_history = []
@@ -1640,7 +1803,7 @@ class MultiOutputPSVGP(PSVGP):
 
         for i in range(num_opt_iter):
             try:
-                total_loss, data_loss = optimization_step()
+                total_loss, data_loss, global_norm = optimization_step()
             except (tf.errors.InvalidArgumentError, tf.errors.OpError) as e:
                 if self.verbose:
                     print(f"Optimization failed at step {i} with error: {e}")
@@ -1651,7 +1814,13 @@ class MultiOutputPSVGP(PSVGP):
             loss_val = data_loss.numpy()
 
             if self.verbose and i % 500 == 0:
-                print(f"Iteration {i}: Loss = {loss_val}, Total = {total_loss.numpy()}")
+                W_vals = np.abs(self.kernel.W.numpy())
+                w_col_max = W_vals.max(axis=0)
+                n_active = np.sum(w_col_max >= 0.1)
+                print(
+                    f"Iteration {i}: Loss = {loss_val:.2f}, "
+                    f"Active factors: {n_active}/{W_vals.shape[1]}"
+                )
 
             # Save checkpoint
             if i % 100 == 0:

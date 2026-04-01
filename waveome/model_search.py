@@ -528,9 +528,14 @@ class GPSearch:
         verbose=False,
         random_seed=None,
         kernel_options=None,
+        grad_clip_norm=1e6,
     ):
         """
         Fit a multi-output model using Linear Coregionalization.
+
+        grad_clip_norm: global gradient clipping threshold applied only in this
+            multi-output optimizer. Not used in single-output PSVGP, which relies
+            on gpflow's Adam.minimize without manual gradient manipulation.
         """
         if random_seed is not None:
             np.random.seed(random_seed)
@@ -563,6 +568,7 @@ class GPSearch:
             adam_learning_rate=adam_learning_rate,
             nat_gradient_gamma=nat_gradient_gamma,
             constraint_weight=constraint_weight,
+            grad_clip_norm=grad_clip_norm,
         )
 
         self.models = {}
@@ -1712,7 +1718,7 @@ class GPSearch:
 
         return array_transformed
 
-    def plot_latent_processes(self, X_df=None, figsize=(12, 4)):
+    def plot_latent_processes(self, X_df=None, figsize=(12, 4), top_n_weights=20):
         """
         Plots latent processes and their mixing weights for a fitted multioutput model.
 
@@ -1837,11 +1843,21 @@ class GPSearch:
                             white=True,
                         )
 
+                        # Reverse-map numeric code to original string label
+                        if cat_feature_name in self.categorical_dict:
+                            _, uniques = self.categorical_dict[cat_feature_name]
+                            display_val = (
+                                str(uniques[int(cat_val)])
+                                if 0 <= int(cat_val) < len(uniques)
+                                else str(cat_val)
+                            )
+                        else:
+                            display_val = str(cat_val)
                         ax_proc.plot(
                             pX_raw_feature,
                             mean_g.numpy().flatten(),
                             color=colors[cat_idx],
-                            label=f"{cat_feature_name}={cat_val}",
+                            label=f"{cat_feature_name}={display_val}",
                         )
 
                     ax_proc.set_xlabel(cont_feature_name)
@@ -1953,7 +1969,15 @@ class GPSearch:
                     )
                     latent_means.append(mean_g.numpy().flatten()[0])
 
-                bar_labels = [str(cat) for cat in unique_categories]
+                # Reverse-map numeric codes to original string labels if available
+                if feature_name in self.categorical_dict:
+                    _, uniques = self.categorical_dict[feature_name]
+                    bar_labels = [
+                        str(uniques[int(cat)]) if 0 <= int(cat) < len(uniques) else str(cat)
+                        for cat in unique_categories
+                    ]
+                else:
+                    bar_labels = [str(cat) for cat in unique_categories]
                 base_pal = sns.color_palette("Set1")
                 bar_colors = [
                     base_pal[i % len(base_pal)] for i in range(len(unique_categories))
@@ -2038,15 +2062,18 @@ class GPSearch:
                 ax_proc.set_xlabel(feature_name)
                 ax_proc.set_ylabel("Latent Value G(x)")
 
-            # --- Plot Mixing Weights (same for all) ---
+            # --- Plot Mixing Weights: top N by absolute value ---
             weights = W[:, i]
-            colors = ["#1f77b4" if w >= 0 else "#d62728" for w in weights]
-            y_pos = np.arange(len(output_names))
-            ax_w.barh(y_pos, weights, align="center", color=colors)
+            top_idx = np.argsort(np.abs(weights))[::-1][:top_n_weights]
+            top_weights = weights[top_idx]
+            top_names = [output_names[j] for j in top_idx]
+            colors = ["#1f77b4" if w >= 0 else "#d62728" for w in top_weights]
+            y_pos = np.arange(len(top_idx))
+            ax_w.barh(y_pos, top_weights, align="center", color=colors)
             ax_w.set_yticks(y_pos)
-            ax_w.set_yticklabels(output_names)
+            ax_w.set_yticklabels(top_names, fontsize=7)
             ax_w.axvline(0, color="black", linewidth=0.8, linestyle="--")
-            ax_w.set_title("Mixing Weights")
+            ax_w.set_title(f"Top {len(top_idx)} Mixing Weights")
             ax_w.set_xlabel("Weight Value")
 
             try:
