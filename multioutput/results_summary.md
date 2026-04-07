@@ -41,6 +41,32 @@ This indicates ~25% shared variance, expected given that `time_from_max` is deri
 
 These are mechanistically distinct patterns. The partial separation achieved by the model, with biologically coherent loadings on each factor, argues in favor of the method's ability to disentangle overlapping clinical measures. This should be noted as a limitation in the paper but does not undermine the core findings.
 
+### Disease Factor Plots
+
+![Disease Factors: SE(hbi) and Mat52(time_from_max)](output/disease_factors.png)
+
+*Top row: SE(hbi) — latent GP mean as a function of Harvey-Bradshaw Index (left) with top 20 metabolite loadings (right). Bottom row: Mat52(time_from_max) — latent GP mean as a function of days from peak HBI event (left) with top 20 metabolite loadings (right). Blue bars = positive loadings (increase with factor); red bars = negative loadings (decrease with factor).*
+
+### Disease Factor Trajectories
+
+![Disease Factor Trajectories](output/disease_factor_trajectories.png)
+
+*Posterior mean trajectories (solid line ± 95% CI shaded band) for top metabolite loaders on each disease factor, overlaid on observed log(1+count) values (open circles). Drug metabolites excluded from loader selection. HBI values jittered ±0.25 for visual clarity.*
+
+**SE(hbi) — top positive loaders (increase with inflammation):**
+- C36:1 PC plasmalogen (W=+0.27), C32:1 PC (W=+0.27), C36:2 PC plasmalogen (W=+0.26) — inflammatory membrane remodeling signal
+
+**SE(hbi) — top negative loaders (decrease with inflammation):**
+- Quinine (W=−0.66), 5α-cholestan-3β-ol (W=−0.35), urobilin (W=−0.31)
+
+**Mat52(time_from_max) — top positive loaders (dip at peak flare):**
+- Quinine (W=+0.56), C50:5 TAG (W=+0.48), C48:4 TAG (W=+0.39) — peri-flare lipid malabsorption and dietary restriction
+
+**Mat52(time_from_max) — top negative loaders (peak at flare):**
+- Taurolithocholate (W=−0.23), tauro-alpha-muricholate (W=−0.16), 4-methylcatechol (W=−0.15)
+
+**Biological note on quinine dual loading:** Quinine loads negatively on SE(hbi) (continuously lower with sustained disease) and positively on Mat52(time_from_max) (U-shaped dip at peak flare with partial recovery after). This is consistent with dietary restriction that is maintained throughout chronic active disease but partially recovered after the acute flare resolves — a biologically coherent distinction that the two-factor decomposition captures but a single disease-activity score could not.
+
 ---
 
 ## Age and Temporal Trends
@@ -102,6 +128,20 @@ The strongest multi-pathway signal of any factor:
 
 ### Absolute vs. Signed Comparison
 14 factor-pathway pairs were significant under both approaches. Signed-only findings (44 pairs) reflect pathways where members load coherently in one direction — these are the biologically interpretable findings. Absolute-only findings (4 pairs) reflect pathways with mixed-direction loading that is nevertheless strong — these warrant closer inspection.
+
+---
+
+## W Loading Heatmap
+
+![W Matrix Heatmap](output/w_heatmap.png)
+
+*Full MOGP mixing weight matrix for top metabolites (those with max |W| above the median across all factors). Rows = metabolites sorted by dominant factor; columns = latent factors. Red = positive loading, blue = negative loading. Reveals the joint factor structure: which metabolites are specific to one factor vs. shared across multiple factors.*
+
+## |W| Loading Distributions per Factor
+
+![W Loading Distributions](output/w_loading_distributions.png)
+
+*Distribution of absolute loading weights |W| per latent factor (2×5 grid). The red dashed line marks the per-factor Otsu threshold used for module membership assignment. Factors with a clear bimodal distribution (e.g., Cat(participant_id), SE(hbi)) have a well-separated signal/noise boundary. Factors with weaker bimodality (e.g., Cat(site_name), SE(age)) have smaller effective modules and broader uncertainty in membership.*
 
 ---
 
@@ -189,23 +229,78 @@ The key argument: rather than discarding 81K unnamed features, the MOGP latent s
 ### 1. No baseline comparison (priority for submission)
 The novelty claim requires a head-to-head comparison against simpler approaches (PCA, NMF, individual metabolite-HBI correlations) on the iHMP dataset itself. The simulation benchmarks in `methods.py` address this in a controlled setting but not on real data. A reviewer will ask whether MOGP factor loadings are more interpretable or more pathway-enriched than PCA components. This comparison should be added before submission.
 
+### Layer 2: Method
+
+For each unlabeled metabolite, pathway membership is predicted by propagating signed GSEA enrichment scores from significantly enriched factor-pathway pairs (FDR < 0.25):
+
+```
+score(metabolite i, pathway P) = Σ_c  W[i,c] × NES[c,P]
+```
+
+where the sum runs over all factors c for which pathway P is significant. The **normalized confidence** is `|score(top pathway)| / Σ_P |score(P)|` — the fraction of total pathway signal mass attributable to the top prediction. Positive scores indicate co-directional association (metabolite increases with enriched pathway members); negative scores indicate counter-directional association.
+
 ### Layer 2 Precision-Recall Validation
 
-The transfer method was validated by applying it to labeled metabolites (treating them as if unlabeled) and comparing predicted pathway to known KEGG membership. A prediction is "correct" if the predicted pathway appears in the metabolite's true pathway list.
+The transfer method was validated by applying it to 328 labeled metabolites (treating them as if unlabeled) and comparing the predicted pathway to known KEGG membership. A prediction is "correct" if the predicted pathway appears in the metabolite's true pathway list.
 
-| Threshold | Precision | N retained |
-|-----------|-----------|------------|
-| 0.00 | 0.31 | 328 |
-| 0.10 | 0.31 | 324 |
-| 0.15 | 0.39 | 232 |
-| 0.20 | 0.61 | 92 |
-| 0.25 | 0.69 | 13 |
+| Threshold | Precision | Recall | N retained |
+|-----------|-----------|--------|------------|
+| 0.00 | 0.31 | 1.00 | 328 |
+| 0.10 | 0.31 | 0.99 | 324 |
+| 0.15 | 0.39 | 0.71 | 232 |
+| 0.20 | 0.61 | 0.28 | 92 |
+| 0.25 | 0.69 | 0.04 | 13 |
 
-Recommended threshold: 0.20 (61% precision, 92 metabolites retained). Assignments above this threshold should be labeled as "probabilistic pathway hypotheses" rather than confirmed annotations.
+**Recommended threshold: 0.20** (61% precision, 92 metabolites retained). Assignments above this threshold should be treated as probabilistic pathway hypotheses rather than confirmed annotations. Below 0.15, precision is near the random baseline (~0.31), meaning the signal is too diffuse to make a reliable single-pathway prediction.
 
 ![Layer 2 Validation](output/layer2_validation.png)
 
 *Precision (blue) and number of retained metabolites (red) at different normalized confidence thresholds. Validated on 328 labeled metabolites with known KEGG pathway membership.*
+
+### Layer 2: Transfer Results (131 unlabeled metabolites)
+
+The transfer was applied to 131 named metabolites lacking direct KEGG pathway annotations. All 131 received an assignment, but confidence is highly variable:
+
+| Confidence range | N metabolites |
+|-----------------|---------------|
+| < 0.10 | 0 |
+| 0.10 – 0.15 | 5 |
+| 0.15 – 0.20 | 52 |
+| 0.20 – 0.25 | 56 |
+| > 0.25 | 18 |
+
+The dominant predicted pathways are glycerophospholipid metabolism (58/131) and glycerolipid metabolism (29/131), predominantly driven by `Cat(participant_id)`. This reflects the strong inter-individual glycerolipid signal rather than a specific disease pathway prediction — these should be interpreted cautiously. The most pathway-informative assignments are those driven by disease factors (`SE(hbi)`, `Mat52(time_from_max)`).
+
+**High-confidence assignments (≥ 0.20), all 18 metabolites:**
+
+| Metabolite | Predicted Pathway | Conf. | Dir. | Top Factor | Notes |
+|-----------|------------------|-------|------|------------|-------|
+| 5alpha-cholestan-3beta-ol | Steroid biosynthesis | 0.344 | − | Cat(general_wellbeing) | Cholesterol intermediate; steroid biosynthesis negatively enriched with wellbeing |
+| palmithoylethanolamide | Glycerolipid | 0.281 | − | Cat(participant_id) | N-acylethanolamide; anti-inflammatory endocannabinoid-like lipid |
+| linoleoylethanolamide | Glycerolipid | 0.262 | − | Cat(participant_id) | N-acylethanolamide; endocannabinoid precursor |
+| piperine | Histidine metabolism | 0.258 | − | Cat(race) | Black pepper alkaloid; race factor drives histidine enrichment |
+| cinnamoylglycine | Glycerolipid | 0.242 | − | Cat(general_wellbeing) | Phenylpropanoid-glycine conjugate; microbial origin |
+| palmitoylethanolamide | Glycerolipid | 0.236 | − | Cat(participant_id) | Anti-inflammatory N-acylethanolamide |
+| linoleoyl ethanolamide | Glycerolipid | 0.232 | − | Cat(participant_id) | N-acylethanolamide; duplicate of linoleoylethanolamide with alternate name |
+| tartarate | Glycerophospholipid | 0.217 | + | Cat(participant_id) | Organic acid; inter-individual variation in absorption |
+| olmesartan | Glycerophospholipid | 0.215 | + | SE(hbi) | ARB drug; medication-disease confound |
+| 3'-O-methyladenosine | Glycerophospholipid | 0.211 | − | Cat(participant_id) | Modified nucleoside; methylation pathway metabolite |
+| homocitrulline | Glycerophospholipid | 0.210 | − | SE(hbi) | Urea cycle intermediate; elevated in inflammatory conditions |
+| 13-cis-retinoic acid | Caffeine metabolism | 0.209 | + | SE(hbi) | Retinoid; SE(hbi)-driven but caffeine pathway assignment likely spurious |
+| metronidazole | Glycerophospholipid | 0.208 | + | Cat(participant_id) | Antibiotic; medication-disease confound |
+| oleanate | Glycerolipid | 0.206 | + | SE(age) | Long-chain fatty acid; age-related lipid accumulation |
+| proline betaine | Glycerolipid | 0.204 | − | Cat(general_wellbeing) | Osmoprotectant; microbial and dietary origin |
+| carboxyibuprofen | Histidine metabolism | 0.204 | − | Cat(sex) | NSAID metabolite; sex-differential drug use |
+| erythronate | Glycerophospholipid | 0.202 | + | SE(hbi) | Sugar acid; consistent with mucosal inflammation signature |
+| 1-methylguanosine | Glycerophospholipid | 0.200 | + | Cat(participant_id) | Modified nucleoside; RNA catabolism product |
+
+**Factor breakdown:** 8 participant-driven, 4 SE(hbi)-driven, 3 Cat(general_wellbeing), 1 each Cat(race)/SE(age)/Cat(sex).
+
+**Key caveats:**
+- 3 of 18 involve drugs (metronidazole, olmesartan, carboxyibuprofen) — medication-disease confounding, not endogenous pathway biology
+- "Caffeine metabolism" assignment for 13-cis-retinoic acid is likely a cross-pathway score artifact (caffeine pathway has very few members)
+- Glycerophospholipid/glycerolipid dominance (14/18) reflects the strength of the participant factor, not disease pathway specificity; the 4 SE(hbi)-driven assignments are the most disease-relevant
+- linoleoyl ethanolamide and linoleoylethanolamide are likely the same compound with alternate naming
 
 ---
 
