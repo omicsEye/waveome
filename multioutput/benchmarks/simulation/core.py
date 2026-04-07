@@ -24,8 +24,9 @@ def simulate_longitudinal_data(
     nuisance_fraction: float = 0.2,
     nuisance_pathway_only: bool = False,
     nuisance_effect_func: Callable[[np.ndarray], np.ndarray] = None,
-    likelihood_func: Callable[[np.ndarray, float], np.ndarray] = negative_binomial_likelihood,
+    likelihood_func: Callable = negative_binomial_likelihood,
     dispersion: float = 10.0,
+    dispersion_spread: float = 0.0,
     annotation_fraction: float = 0.7,
 ) -> Tuple[pd.DataFrame, Dict[str, List[str]], Dict[str, List[str]]]:
     """Generates a realistic, complex longitudinal metabolomics dataset."""
@@ -109,7 +110,15 @@ def simulate_longitudinal_data(
 
     # --- Generate Observations ---
     mu = np.exp(latent_signal)
-    observed_values = likelihood_func(mu, dispersion)
+    if dispersion_spread > 0:
+        # Per-metabolite dispersion from LogNormal with median = dispersion.
+        # LogNormal(mu_ln, sigma) has median = exp(mu_ln).
+        met_dispersion = np.random.lognormal(
+            mean=np.log(dispersion), sigma=dispersion_spread, size=n_metabolites
+        )
+        observed_values = likelihood_func(mu, met_dispersion[np.newaxis, np.newaxis, :])
+    else:
+        observed_values = likelihood_func(mu, dispersion)
 
     # --- Flatten and Construct DataFrame ---
     subj_ids_str = [f"S_{i+1}" for i in range(n_subjects)]

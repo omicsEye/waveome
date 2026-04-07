@@ -1,7 +1,7 @@
 #!/bin/bash
 # Easy: High Signal, Low Noise, No Distractors
 N_RUNS=10
-N_JOBS=2
+N_JOBS=3
 
 # Setup paths
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -25,12 +25,13 @@ for EFFECT in "spike" "linear" "perturbation"; do
         --n_runs $N_RUNS --n_jobs $N_JOBS \
         --n_time_points 10 \
         --effect_type $EFFECT \
-        --effect_magnitude 4.0 \
-        --subject_noise 0.1 \
-        --dispersion 50.0 \
+        --effect_magnitude 8.0 \
+        --subject_noise 0.5 \
+        --dispersion 0.23 \
+        --dispersion_spread 1.24 \
         --nuisance_fraction 0.0 \
         --irregular_sampling_sd 0.5 \
-        --n_subjects 20 \
+        --n_subjects 100 \
         --n_metabolites 200 \
         --condition_label "snr_easy" \
         --output_dir "$BASE_OUTPUT_DIR/$EFFECT"

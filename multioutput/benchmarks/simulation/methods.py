@@ -3,16 +3,44 @@ Analysis methods for benchmarking against simulated longitudinal data.
 """
 
 import os
-import tempfile
 import shutil
+import tempfile
+from typing import Dict, List, Tuple
+
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Dict
-from .utils import suppress_output, ensure_r_dependencies, get_standardized_sample_id
+
+from .utils import ensure_r_dependencies, get_standardized_sample_id, suppress_output
+
+# =============================================================================
+# 0. Internal Utilities
+# =============================================================================
+
+
+def _otsu_threshold(values: np.ndarray) -> float:
+    """Otsu's method: find threshold minimizing within-class variance of |W| column."""
+    vals = values.flatten()
+    candidates = np.unique(vals)
+    best_t, best_var = candidates[0], np.inf
+    total_mean = vals.mean()
+    n = len(vals)
+    for t in candidates[:-1]:
+        below = vals[vals <= t]
+        above = vals[vals > t]
+        if len(below) == 0 or len(above) == 0:
+            continue
+        w0, w1 = len(below) / n, len(above) / n
+        within_var = w0 * below.var() + w1 * above.var()
+        if within_var < best_var:
+            best_var = within_var
+            best_t = t
+    return best_t
+
 
 # =============================================================================
 # 1. Analysis Utilities
 # =============================================================================
+
 
 def calculate_centroid_predictions(
     data: pd.DataFrame, modules: List[Tuple[str, List[str]]]
@@ -54,29 +82,16 @@ def calculate_centroid_predictions(
 # 2. Benchmarking Methods
 # =============================================================================
 
-def _otsu_threshold(values: np.ndarray) -> float:
-    """Otsu's method: find threshold minimizing within-class variance of |W| column."""
-    vals = values.flatten()
-    candidates = np.unique(vals)
-    best_t, best_var = candidates[0], np.inf
-    n = len(vals)
-    for t in candidates[:-1]:
-        below = vals[vals <= t]
-        above = vals[vals > t]
-        if len(below) == 0 or len(above) == 0:
-            continue
-        w0, w1 = len(below) / n, len(above) / n
-        within_var = w0 * below.var() + w1 * above.var()
-        if within_var < best_var:
-            best_var = within_var
-            best_t = t
-    return best_t
-
-
-def analyze_with_mogp(data: pd.DataFrame, weight_threshold: float = 0.2, use_otsu: bool = True, verbose: bool = True) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
+def analyze_with_mogp(
+    data: pd.DataFrame,
+    weight_threshold: float = 0.2,
+    use_otsu: bool = True,
+    verbose: bool = True,
+) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
     if verbose: print("Running MOGP analysis...")
     try:
         import gpflow
+
         from waveome.model_search import GPSearch
     except ImportError:
         return [], pd.DataFrame()
@@ -100,8 +115,16 @@ def analyze_with_mogp(data: pd.DataFrame, weight_threshold: float = 0.2, use_ots
     try:
         with suppress_output(not verbose):
             ms = GPSearch(X, Y, unit_col="subject_num", categorical_vars=["group"] if "group" in covariates else [], outcome_likelihood="negativebinomial")
-            ms.multioutput_penalized_optimization(penalization_factor=1.0, num_opt_iter=10000, verbose=bool(verbose), random_seed=9102)
-            ms.models["multioutput"].prune_latent_factors(threshold=0.2)
+            ms.multioutput_penalized_optimization(
+                penalization_factor=1.0,
+                num_opt_iter=50000,
+                verbose=bool(verbose),
+                random_seed=9102,
+                adam_learning_rate=0.001,
+            )
+            ms.models["multioutput"].prune_latent_factors(
+                loading_threshold=0.1, kl_threshold=0.01
+            )
     except (Exception, SystemExit) as e:
         print(f"  MOGP failed: {e}")
         return [], pd.DataFrame()
@@ -218,7 +241,8 @@ def analyze_with_mefisto(data: pd.DataFrame, weight_threshold: float = 0.5, vari
         # muon >=0.1.5: smooth_covariate and groups_label look in mdata.obs
         mdata.obs["time"] = obs_meta.loc[mdata.obs_names, "time"].values
         mdata.obs["subject_id"] = obs_meta.loc[mdata.obs_names, "subject_id"].values
-        import tempfile, os as _os
+        import os as _os
+        import tempfile
         tmp_h5 = tempfile.mktemp(suffix=".hdf5", prefix="mefisto_")
         try:
             with suppress_output(not verbose):
@@ -312,6 +336,7 @@ def fit_metabolite_lmms(data: pd.DataFrame, verbose: bool = True) -> Tuple[pd.Da
     if verbose: print("Fitting LMMs...")
     try:
         import warnings
+
         from statsmodels.formula.api import mixedlm
         from statsmodels.tools.sm_exceptions import ConvergenceWarning
         data_mod = data.copy()
@@ -388,8 +413,9 @@ def analyze_with_mogp_gsea(
     """Preranked GSEA on MOGP absolute loading weights per factor.
 
     For each factor k, metabolites are ranked by |W_{i,k}| and gseapy.prerank
-    tests enrichment of each annotated pathway.  A pathway is detected if its
-    NOM p-val < pvalue_threshold for any factor (consistent with LMM+GSEA).
+    tests enrichment of each annotated pathway.  The per-pathway p-value is the
+    minimum across all factors, Bonferroni-corrected for the number of factors
+    tested.  A pathway is detected if its corrected p-value < pvalue_threshold.
     """
     try:
         import gseapy as gp
@@ -400,9 +426,9 @@ def analyze_with_mogp_gsea(
     if W_df.empty:
         return []
 
-    pathway_min_p: Dict[str, float] = {
-        pid: 1.0 for pid in annotated_pathways
-    }
+    n_factors = len(W_df.columns)
+    bonferroni_threshold = pvalue_threshold / n_factors
+    pathway_min_p: Dict[str, float] = {pid: 1.0 for pid in annotated_pathways}
     for col in W_df.columns:
         rnk = W_df[col].abs().sort_values(ascending=False)
         rnk_df = rnk.reset_index()
@@ -427,7 +453,7 @@ def analyze_with_mogp_gsea(
         except Exception:
             continue
 
-    return [pid for pid, p in pathway_min_p.items() if p < pvalue_threshold]
+    return [pid for pid, p in pathway_min_p.items() if p < bonferroni_threshold]
 
 
 def analyze_with_lmm_gsea(
@@ -472,7 +498,9 @@ def analyze_with_meba(data: pd.DataFrame, annotated_pathways: Dict[str, List[str
     if verbose: print("Running MEBA analysis...")
     if not ensure_r_dependencies(["Rcpp", "Rserve", "lme4"], github_packages=["xia-lab/MetaboAnalystR"]): return [], pd.DataFrame()
     try:
-        import tempfile, rpy2.robjects as ro
+        import tempfile
+
+        import rpy2.robjects as ro
         from rpy2.robjects import pandas2ri
         from rpy2.robjects.conversion import localconverter
         df_log = data.copy(); df_log["value"] = np.log1p(df_log["value"])
@@ -744,11 +772,18 @@ def analyze_with_pal(
                 if name in annotated_pathways: p_map[name] = v
             significant = [pid for pid, p in p_map.items() if p < p_val_threshold]
 
-        best_pid = significant[0] if significant else (min(p_map, key=p_map.get) if p_map else None)
-        sig_mods = [(f"PAL_{best_pid}", annotated_pathways[best_pid])] if best_pid else []
+        best_pid = (
+            significant[0]
+            if significant
+            else (min(p_map, key=p_map.get) if p_map else None)
+        )
+        sig_mods = (
+            [(f"PAL_{best_pid}", annotated_pathways[best_pid])] if best_pid else []
+        )
         return significant, calculate_centroid_predictions(data, sig_mods)
     except (Exception, SystemExit) as e:
         print(f"  PAL failed: {e}")
     finally:
-        if os.path.exists(pathway_dir): shutil.rmtree(pathway_dir)
+        if os.path.exists(pathway_dir):
+            shutil.rmtree(pathway_dir)
     return [], pd.DataFrame()

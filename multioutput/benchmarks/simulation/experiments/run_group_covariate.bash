@@ -25,13 +25,14 @@ for EFFECT in "spike" "linear" "perturbation"; do
         python3 -m simulation.main \
             --n_runs $N_RUNS --n_jobs $N_JOBS \
             --effect_type $EFFECT \
-            --effect_magnitude 3.0 \
-            --subject_noise 0.3 \
-            --dispersion 10.0 \
+            --effect_magnitude 6.0 \
+            --subject_noise 0.5 \
+            --dispersion 0.23 \
+            --dispersion_spread 1.24 \
             --nuisance_fraction 0.15 \
             --nuisance_amplitude 1.0 \
             --irregular_sampling_sd 1.5 \
-            --n_subjects 20 \
+            --n_subjects 100 \
             --n_metabolites 200 \
             --add_group_covariate \
             --condition_label "group_covariate" \

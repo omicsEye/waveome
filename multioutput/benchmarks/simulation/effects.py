@@ -87,11 +87,16 @@ def gaussian_likelihood(mu: np.ndarray, dispersion: float) -> np.ndarray:
 
 
 def negative_binomial_likelihood(
-    mu: np.ndarray, dispersion: float
+    mu: np.ndarray, dispersion
 ) -> np.ndarray:
     """Samples from a Negative Binomial distribution to model over-dispersed
-    counts. variance = mu + mu^2 / dispersion."""
+    counts. variance = mu + mu^2 / dispersion.
+
+    dispersion can be a scalar or an array broadcastable to mu's shape
+    (e.g. shape (n_metabolites,) for per-metabolite dispersion with
+    mu of shape (n_subjects, n_tp, n_metabolites)).
+    """
     mu = np.maximum(mu, 1e-6)
-    n = dispersion
+    n = np.asarray(dispersion)
     p = n / (n + mu)
-    return np.random.negative_binomial(n, p, size=mu.shape)
+    return np.random.negative_binomial(n, p)

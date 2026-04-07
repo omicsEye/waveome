@@ -6,6 +6,7 @@ import argparse
 import os
 import time
 import concurrent.futures
+import multiprocessing
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -27,6 +28,71 @@ from .methods import (
     analyze_with_mogp_ora, analyze_with_mogp_gsea,
 )
 from .plots import visualize_benchmark_results
+
+def _method_worker(q, func, args, kwargs):
+    """Spawned worker: runs func(*args, **kwargs) and puts (result, elapsed) on queue.
+    Elapsed is measured inside the worker after setup, so spawn/init overhead is excluded
+    from the method's reported runtime and does not count against the timeout budget.
+    """
+    setup_environment()
+    try:
+        t0 = time.time()
+        result = func(*args, **kwargs)
+        q.put(("ok", result, time.time() - t0))
+    except Exception as e:
+        q.put(("err", str(e), 0.0))
+
+
+def _timed_call(func, args=(), kwargs=None, timeout=1800):
+    """Run func(*args, **kwargs) in a fresh spawned process with a hard timeout.
+
+    The timeout applies to the method's own execution time (measured inside the
+    worker after setup_environment()), so spawn/R-init overhead does not count
+    against the budget. The outer process join uses timeout + 120s to absorb
+    that overhead without penalising the method.
+
+    Returns (result, inner_elapsed). result is None on timeout or error.
+    """
+    if kwargs is None:
+        kwargs = {}
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.Queue()
+    p = ctx.Process(target=_method_worker, args=(q, func, args, kwargs))
+    p.start()
+    p.join(timeout=timeout + 120)  # extra 120s for spawn + R init overhead
+    if p.is_alive():
+        p.terminate()
+        p.join(5)
+        if p.is_alive():
+            p.kill()
+        return None, timeout  # report timeout budget as elapsed
+    if p.exitcode != 0:
+        return None, timeout
+    if q.empty():
+        return None, timeout
+    status, *rest = q.get_nowait()
+    if status == "ok":
+        result, inner_elapsed = rest[0], rest[1]
+        # Check if the method itself exceeded the timeout
+        if inner_elapsed > timeout:
+            return None, inner_elapsed
+        return result, inner_elapsed
+    return None, timeout
+
+
+def _record_timeout(results, name, is_pathway, run_id, elapsed):
+    """Write NaN placeholders when a method times out."""
+    print(f"  [run {run_id}] {name} timed out after {elapsed:.0f}s — recording NaN",
+          flush=True)
+    results[f"{name}_Time"] = elapsed
+    if is_pathway:
+        for m in ("Sensitivity", "FPR"):
+            results[f"{name}_{m}"] = float("nan")
+    else:
+        for m in ("ARI", "BestJaccard", "BestPrecision", "UnannotatedRecall", "NumModules"):
+            results[f"{name}_{m}"] = float("nan")
+    results[f"{name}_Reconstruction_MSE"] = float("nan")
+
 
 def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], pd.DataFrame]:
     # Re-run environment setup in each worker process. ProcessPoolExecutor spawns
@@ -60,6 +126,7 @@ def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], 
         subject_random_effect_sd=args.subject_noise,
         pathway_random_effect_sd=args.pathway_noise,
         dispersion=args.dispersion,
+        dispersion_spread=args.dispersion_spread,
         effect_func=effect_func,
         nuisance_fraction=args.nuisance_fraction,
         nuisance_effect_func=nuisance_func,
@@ -103,27 +170,39 @@ def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], 
             results[f"{name}_Reconstruction_MSE"] = calculate_reconstruction_fidelity(baseline, true_mets)
 
     # 3. Run Methods
-    methods = [
-        ("MOGP", analyze_with_mogp, args.skip_mogp, False),
-        ("WGCNA", analyze_with_wgcna, args.skip_wgcna, False),
-        ("MEFISTO", analyze_with_mefisto, args.skip_mefisto, False),
-        ("DPGP", analyze_with_dpgp, args.skip_dpgp, False),
-    ]
+    timeout = getattr(args, "method_timeout", 1800)
 
+    # MOGP, WGCNA, DPGP run inline — they are well-behaved and don't need timeout protection.
     mogp_mods, mogp_fit, mogp_W_df = [], pd.DataFrame(), pd.DataFrame()
-    for name, func, skip, is_path in methods:
-        if not skip:
-            t0 = time.time()
-            if name == "MOGP":
-                mods, fit, mogp_W_df = func(df, verbose=verbose)
-                mogp_mods, mogp_fit = mods, fit
-            else:
-                mods, fit = func(df, verbose=verbose)
-            results[f"{name}_Time"] = time.time() - t0
-            process(name, mods, fit, is_path)
+    for name, func, skip, is_path in [
+        ("MOGP",  analyze_with_mogp,  args.skip_mogp,  False),
+        ("WGCNA", analyze_with_wgcna, args.skip_wgcna, False),
+        ("DPGP",  analyze_with_dpgp,  args.skip_dpgp,  False),
+    ]:
+        if skip:
+            continue
+        t0 = time.time()
+        if name == "MOGP":
+            mods, fit, mogp_W_df = func(df, verbose=verbose)
+            mogp_mods, mogp_fit = mods, fit
+        else:
+            mods, fit = func(df, verbose=verbose)
+        results[f"{name}_Time"] = time.time() - t0
+        process(name, mods, fit, is_path)
+
+    # MEFISTO: times out at n_subjects=100 (~3.5h per replicate at 25 iters).
+    # Wrapped with timeout so DNF is recorded cleanly rather than hanging the run.
+    if not args.skip_mefisto:
+        result, elapsed = _timed_call(
+            analyze_with_mefisto, args=(df,), kwargs={"verbose": verbose},
+            timeout=timeout)
+        if result is None:
+            _record_timeout(results, "MEFISTO", False, run_id, elapsed)
+        else:
+            results["MEFISTO_Time"] = elapsed
+            process("MEFISTO", result[0], result[1], False)
 
     # MOGP_ORA: hypergeometric ORA per MOGP module against each annotated pathway.
-    # Min-p + Bonferroni correction across modules.
     if not args.skip_mogp and mogp_mods:
         t0 = time.time()
         mogp_ora_paths = analyze_with_mogp_ora(mogp_mods, annotated_pathways, all_ids)
@@ -150,13 +229,17 @@ def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], 
         results["PAL_Time"] = time.time() - t0
         process("PAL", paths, fit, True)
 
-    # timeOmics (uses mixOmics::spls via BLAS/Accelerate) runs after all other
-    # R-based methods (MEBA, PAL) to avoid corrupting their threading state on macOS.
+    # timeOmics: times out at n_subjects=100 (bimodal: ~7s or ~4000s).
+    # Wrapped with timeout so runaway lmms fits are killed cleanly.
     if not args.skip_timeomics:
-        t0 = time.time()
-        mods, fit = analyze_with_timeomics(df, verbose=verbose)
-        results["timeOmics_Time"] = time.time() - t0
-        process("timeOmics", mods, fit, False)
+        result, elapsed = _timed_call(
+            analyze_with_timeomics, args=(df,), kwargs={"verbose": verbose},
+            timeout=timeout)
+        if result is None:
+            _record_timeout(results, "timeOmics", False, run_id, elapsed)
+        else:
+            results["timeOmics_Time"] = elapsed
+            process("timeOmics", result[0], result[1], False)
 
     if not args.skip_lmm:
         t0 = time.time()
@@ -215,10 +298,16 @@ def main():
     parser.add_argument("--subject_noise", type=float, default=0.2)
     parser.add_argument("--pathway_noise", type=float, default=0.3)
     parser.add_argument("--irregular_sampling_sd", type=float, default=1.5)
-    parser.add_argument("--dispersion", type=float, default=20.0)
+    parser.add_argument("--dispersion", type=float, default=20.0,
+                        help="NB dispersion r (median when --dispersion_spread > 0)")
+    parser.add_argument("--dispersion_spread", type=float, default=0.0,
+                        help="Sigma of LogNormal for per-metabolite dispersion (0 = shared scalar)")
     parser.add_argument("--nuisance_fraction", type=float, default=0.1)
     parser.add_argument("--nuisance_amplitude", type=float, default=1.5)
     parser.add_argument("--nuisance_period", type=float, default=10.0)
+    parser.add_argument("--method_timeout", type=int, default=1800,
+                        help="Per-method wall-clock timeout in seconds (default 1800). "
+                             "Methods exceeding this are recorded as NaN.")
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)

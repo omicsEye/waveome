@@ -479,7 +479,7 @@ def write_summary_table(df):
     # SNR sweep (excluding group covariate)
     snr_df = df[(df["snr_level"].isin(SNR_ORDER)) & (~df["has_group_covariate"])]
     for snr in SNR_ORDER:
-        for effect in ["linear", "spike"]:
+        for effect in ["linear", "spike", "perturbation"]:
             sub = snr_df[(snr_df["snr_level"] == snr) & (snr_df["effect_type"] == effect)]
             if sub.empty:
                 continue
@@ -516,7 +516,7 @@ def write_summary_table(df):
     medium_df["annotation_fraction"] = 0.7
     sweep_df = pd.concat([df[df["annotation_fraction"].notna()], medium_df], ignore_index=True)
     for frac in sorted(sweep_df["annotation_fraction"].dropna().unique()):
-        for effect in ["linear", "spike"]:
+        for effect in ["linear", "spike", "perturbation"]:
             sub = sweep_df[(sweep_df["annotation_fraction"] == frac) & (sweep_df["effect_type"] == effect)]
             if sub.empty:
                 continue
