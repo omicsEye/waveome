@@ -46,6 +46,9 @@ dependencies = [
     "psutil"
 ]
 
+[tool.setuptools.packages.find]
+include = ["waveome*"]
+
 [project.urls]
 Homepage = "https://github.com/omicsEye/waveome"
 "Bug Tracker" = "https://github.com/omicsEye/waveome/issues"
