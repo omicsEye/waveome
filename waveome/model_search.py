@@ -261,6 +261,7 @@ class GPSearch:
         ):
 
             if random_seed is not None:
+                np.random.seed(random_seed)
                 tf.random.set_seed(random_seed)
 
             # # Add scale if negative binomial
@@ -598,6 +599,7 @@ class GPSearch:
         # Set seed
         if random_seed is not None:
             np.random.seed(random_seed)
+            tf.random.set_seed(random_seed)
 
         # Prepare data
         X_np = self.X.to_numpy()

@@ -2,14 +2,12 @@ import setuptools
 
 setuptools.setup(
     name="waveome",
-    version="0.1.2",
+    version="0.1.3",
     author="Allen Ross",
     author_email="allenross@gwu.edu",
     description="Automated longitudinal data analysis using Gaussian processes.",
     url="https://github.com/omicsEye/waveome",
-    project_urls={
-        "Bug Tracker": "https://github.com/omicsEye/waveome/issues"
-    },
+    project_urls={"Bug Tracker": "https://github.com/omicsEye/waveome/issues"},
     license="MIT",
     packages=["waveome"],
     install_requires=[
@@ -20,13 +18,13 @@ setuptools.setup(
         "pandas>=2.0.0",
         "numpy>=1.24.0",
         "ray[default]",
-        "scipy>=1.11.0",
+        "scipy>=1.11.0,<1.13.0",  # 1.13+ triggers recursion bug with numpy 1.26.x (numpy/issues/24702)
         "joblib",
         "seaborn",
         "matplotlib",
         "tqdm",
         "setuptools>=65.5.1,<66.0.0",  # Add this to prevent pkg_resources deprecation warning
-        "psutil"
+        "psutil",
     ],
     python_requires=">=3.9,<3.12",
 )
