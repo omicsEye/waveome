@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "waveome"
-version = "0.1.2"
+version = "0.1.3"
 description = "Automated longitudinal data analysis using Gaussian processes."
 readme = "README.md"
 requires-python = ">=3.9,<3.12"
@@ -27,18 +27,22 @@ classifiers = [
 ]
 
 dependencies = [
+    # Pinned for tensorflow-probability and gpflow compatibility
     "tensorflow>=2.12.0,<2.16.0",
     "tensorflow_probability>=0.20.0,<0.24.0",
+    # Pin to specific version to avoid pkg_resources warning
     "gpflow==2.9.1",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "ray[default]",
-    "scipy>=1.11.0",
+    # 1.13+ triggers recursion bug with numpy 1.26.x (numpy/issues/24702)
+    "scipy>=1.11.0,<1.13.0",
     "joblib",
     "seaborn",
     "matplotlib",
     "tqdm",
-    "setuptools>=65.5.1,<66.0.0", # Pin to version for gpflow pkg_resources warning
+    # Pin to prevent pkg_resources deprecation warning from gpflow
+    "setuptools>=65.5.1,<66.0.0",
     "psutil"
 ]
 
