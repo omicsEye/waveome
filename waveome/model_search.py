@@ -519,8 +519,8 @@ class GPSearch:
         self,
         latent_kernels=None,
         penalization_factor=1.0,
-        num_opt_iter=2000,
-        adam_learning_rate=0.01,
+        num_opt_iter=50000,
+        adam_learning_rate=0.001,  # More stable learning for MOGP
         nat_gradient_gamma=0.1,
         constraint_weight=1.0,
         sparse_options={},
@@ -1973,7 +1973,11 @@ class GPSearch:
                 if feature_name in self.categorical_dict:
                     _, uniques = self.categorical_dict[feature_name]
                     bar_labels = [
-                        str(uniques[int(cat)]) if 0 <= int(cat) < len(uniques) else str(cat)
+                        (
+                            str(uniques[int(cat)])
+                            if 0 <= int(cat) < len(uniques)
+                            else str(cat)
+                        )
                         for cat in unique_categories
                     ]
                 else:
