@@ -46,11 +46,14 @@ def calculate_centroid_predictions(
     data: pd.DataFrame, modules: List[Tuple[str, List[str]]]
 ) -> pd.DataFrame:
     """Calculates centroid-based predictions for each metabolite based on module assignment."""
-    if not modules: return pd.DataFrame()
+    if not modules:
+        return pd.DataFrame()
     data_copy = data.copy()
     data_copy["log_value"] = np.log1p(data_copy["value"])
-    data_copy["sample_id"] = data_copy.apply(lambda row: get_standardized_sample_id(row["subject_id"], row["time"]), axis=1)
-    
+    data_copy["sample_id"] = data_copy.apply(
+        lambda row: get_standardized_sample_id(row["subject_id"], row["time"]), axis=1
+    )
+
     original_metabolites = sorted(data["metabolite_id"].unique())
     metab_to_mod = {}
     for mod_name, mets in modules:
@@ -59,15 +62,20 @@ def calculate_centroid_predictions(
             if m_str.startswith("X") and m_str[1:].isdigit():
                 try:
                     idx = int(m_str[1:]) - 1
-                    if 0 <= idx < len(original_metabolites): m_str = original_metabolites[idx]
-                except ValueError: pass
+                    if 0 <= idx < len(original_metabolites):
+                        m_str = original_metabolites[idx]
+                except ValueError:
+                    pass
             metab_to_mod[m_str] = mod_name
 
     data_copy["module"] = data_copy["metabolite_id"].map(metab_to_mod)
     module_data = data_copy.dropna(subset=["module"])
-    if module_data.empty: return pd.DataFrame()
+    if module_data.empty:
+        return pd.DataFrame()
 
-    centroids = module_data.groupby(["sample_id", "module"])["log_value"].mean().reset_index()
+    centroids = (
+        module_data.groupby(["sample_id", "module"])["log_value"].mean().reset_index()
+    )
     centroids.rename(columns={"log_value": "fitted_log"}, inplace=True)
 
     preds = data_copy.copy()
@@ -78,9 +86,11 @@ def calculate_centroid_predictions(
 
     return preds[["subject_id", "time", "metabolite_id", "fitted_value"]]
 
+
 # =============================================================================
 # 2. Benchmarking Methods
 # =============================================================================
+
 
 def analyze_with_mogp(
     data: pd.DataFrame,
@@ -88,33 +98,45 @@ def analyze_with_mogp(
     use_otsu: bool = True,
     verbose: bool = True,
 ) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
-    if verbose: print("Running MOGP analysis...")
+    if verbose:
+        print("Running MOGP analysis...")
     try:
         import gpflow
-
         from waveome.model_search import GPSearch
     except ImportError:
         return [], pd.DataFrame()
 
     data_mod = data.copy()
     try:
-        data_mod["subject_num"] = data_mod["subject_id"].astype(str).str.extract(r"(\d+)").astype(float)
+        data_mod["subject_num"] = (
+            data_mod["subject_id"].astype(str).str.extract(r"(\d+)").astype(float)
+        )
     except Exception:
         data_mod["subject_num"] = data_mod["subject_id"].astype("category").cat.codes
 
     covariates = ["subject_num", "time"]
-    if "group" in data.columns: covariates.append("group")
+    if "group" in data.columns:
+        covariates.append("group")
 
-    wide_df = data_mod.pivot_table(index=covariates, columns="metabolite_id", values="value").reset_index()
+    wide_df = data_mod.pivot_table(
+        index=covariates, columns="metabolite_id", values="value"
+    ).reset_index()
     time_mean, time_std = wide_df["time"].mean(), wide_df["time"].std()
-    if time_std > 0: wide_df["time"] = (wide_df["time"] - time_mean) / time_std
+    if time_std > 0:
+        wide_df["time"] = (wide_df["time"] - time_mean) / time_std
 
     metabolite_cols = [c for c in wide_df.columns if c not in covariates]
     X, Y = wide_df[covariates], wide_df[metabolite_cols]
 
     try:
         with suppress_output(not verbose):
-            ms = GPSearch(X, Y, unit_col="subject_num", categorical_vars=["group"] if "group" in covariates else [], outcome_likelihood="negativebinomial")
+            ms = GPSearch(
+                X,
+                Y,
+                unit_col="subject_num",
+                categorical_vars=["group"] if "group" in covariates else [],
+                outcome_likelihood="negativebinomial",
+            )
             ms.multioutput_penalized_optimization(
                 penalization_factor=1.0,
                 num_opt_iter=50000,
@@ -135,11 +157,21 @@ def analyze_with_mogp(
             with suppress_output(not verbose):
                 fitted_mu, _ = ms.models["multioutput"].predict_y(ms.X.to_numpy())
             fitted_df_wide = pd.DataFrame(np.array(fitted_mu), columns=metabolite_cols)
-            full_wide = pd.concat([wide_df[covariates].reset_index(drop=True), fitted_df_wide], axis=1)
-            if time_std > 0: full_wide["time"] = full_wide["time"] * time_std + time_mean
-            fitted_df_long = full_wide.melt(id_vars=covariates, value_vars=metabolite_cols, var_name="metabolite_id", value_name="fitted_value")
+            full_wide = pd.concat(
+                [wide_df[covariates].reset_index(drop=True), fitted_df_wide], axis=1
+            )
+            if time_std > 0:
+                full_wide["time"] = full_wide["time"] * time_std + time_mean
+            fitted_df_long = full_wide.melt(
+                id_vars=covariates,
+                value_vars=metabolite_cols,
+                var_name="metabolite_id",
+                value_name="fitted_value",
+            )
             subject_map = data_mod[["subject_id", "subject_num"]].drop_duplicates()
-            fitted_df_long = fitted_df_long.merge(subject_map, on="subject_num", how="left")[["subject_id", "time", "metabolite_id", "fitted_value"]]
+            fitted_df_long = fitted_df_long.merge(
+                subject_map, on="subject_num", how="left"
+            )[["subject_id", "time", "metabolite_id", "fitted_value"]]
         except (Exception, SystemExit) as e:
             print(f"  MOGP prediction failed: {e}")
 
@@ -170,13 +202,18 @@ def analyze_with_mogp(
 
     return modules, fitted_df_long, W_df
 
+
 _wgcna_patched = False
 
 
-def analyze_with_wgcna(data: pd.DataFrame, verbose: bool = True) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
-    if verbose: print("Running WGCNA analysis...")
+def analyze_with_wgcna(
+    data: pd.DataFrame, verbose: bool = True
+) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
+    if verbose:
+        print("Running WGCNA analysis...")
     try:
         import PyWGCNA
+
         global _wgcna_patched
         if not _wgcna_patched:
             # PyWGCNA.WGCNA.cutreeHybrid() has an early-return path that yields a
@@ -189,9 +226,7 @@ def analyze_with_wgcna(data: pd.DataFrame, verbose: bool = True) -> Tuple[List[T
                 result = _orig_cth(dendro, distM, **kwargs)
                 if isinstance(result, pd.DataFrame) and "Value" not in result.columns:
                     col = result.iloc[:, 0]
-                    result = pd.DataFrame(
-                        {"Name": col.tolist(), "Value": col.tolist()}
-                    )
+                    result = pd.DataFrame({"Name": col.tolist(), "Value": col.tolist()})
                 return result
 
             PyWGCNA.WGCNA.cutreeHybrid = _safe_cutreeHybrid
@@ -199,15 +234,32 @@ def analyze_with_wgcna(data: pd.DataFrame, verbose: bool = True) -> Tuple[List[T
 
         data_copy = data.copy()
         data_copy["value"] = np.log1p(data_copy["value"])
-        data_copy["sample_id"] = data_copy["subject_id"] + "_" + data_copy["time"].round(2).astype(str)
-        wide_data = data_copy.pivot_table(index="sample_id", columns="metabolite_id", values="value", aggfunc="mean").fillna(0)
+        data_copy["sample_id"] = (
+            data_copy["subject_id"] + "_" + data_copy["time"].round(2).astype(str)
+        )
+        wide_data = data_copy.pivot_table(
+            index="sample_id", columns="metabolite_id", values="value", aggfunc="mean"
+        ).fillna(0)
         with suppress_output(not verbose):
-            pyWGCNA_obj = PyWGCNA.WGCNA(name="sim", species="homo sapiens", geneExp=wide_data, save=False, outputPath="", powers=list(range(1, 21)))
+            pyWGCNA_obj = PyWGCNA.WGCNA(
+                name="sim",
+                species="homo sapiens",
+                geneExp=wide_data,
+                save=False,
+                outputPath="",
+                powers=list(range(1, 21)),
+            )
             pyWGCNA_obj.preprocess(show=False)
             pyWGCNA_obj.findModules(kwargs_function={"cutreeHybrid": {"deepSplit": 2}})
         module_assignments = pyWGCNA_obj.datExpr.var.get("dynamicColors")
         if module_assignments is not None:
-            modules = [(name, list(mets)) for name, mets in module_assignments.groupby(module_assignments).groups.items() if name != "grey"]
+            modules = [
+                (name, list(mets))
+                for name, mets in module_assignments.groupby(
+                    module_assignments
+                ).groups.items()
+                if name != "grey"
+            ]
             return modules, calculate_centroid_predictions(data, modules)
     except (Exception, SystemExit):
         # PyWGCNA calls sys.exit() when all genes land in one module.
@@ -216,7 +268,13 @@ def analyze_with_wgcna(data: pd.DataFrame, verbose: bool = True) -> Tuple[List[T
         try:
             module_assignments = pyWGCNA_obj.datExpr.var.get("dynamicColors")
             if module_assignments is not None:
-                modules = [(name, list(mets)) for name, mets in module_assignments.groupby(module_assignments).groups.items() if name != "grey"]
+                modules = [
+                    (name, list(mets))
+                    for name, mets in module_assignments.groupby(
+                        module_assignments
+                    ).groups.items()
+                    if name != "grey"
+                ]
                 if modules:
                     return modules, calculate_centroid_predictions(data, modules)
         except Exception:
@@ -224,17 +282,30 @@ def analyze_with_wgcna(data: pd.DataFrame, verbose: bool = True) -> Tuple[List[T
     return [], pd.DataFrame()
 
 
-def analyze_with_mefisto(data: pd.DataFrame, weight_threshold: float = 0.5, variance_threshold: float = 0.001, verbose: bool = True) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
-    if verbose: print("Running MEFISTO analysis...")
+def analyze_with_mefisto(
+    data: pd.DataFrame,
+    weight_threshold: float = 0.5,
+    variance_threshold: float = 0.001,
+    verbose: bool = True,
+) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
+    if verbose:
+        print("Running MEFISTO analysis (Optimized version)...")
     try:
         import anndata as ad
         import muon as mu
+
         data_copy = data.copy()
         data_copy["value"] = np.log1p(data_copy["value"])
-        sample_meta = data_copy[["subject_id", "time"]].drop_duplicates().reset_index(drop=True)
-        sample_meta["sample_id"] = sample_meta.apply(lambda r: get_standardized_sample_id(r["subject_id"], r["time"]), axis=1)
+        sample_meta = (
+            data_copy[["subject_id", "time"]].drop_duplicates().reset_index(drop=True)
+        )
+        sample_meta["sample_id"] = sample_meta.apply(
+            lambda r: get_standardized_sample_id(r["subject_id"], r["time"]), axis=1
+        )
         data_copy = pd.merge(data_copy, sample_meta, on=["subject_id", "time"])
-        wide_data = data_copy.pivot_table(index="sample_id", columns="metabolite_id", values="value", aggfunc="mean").fillna(0)
+        wide_data = data_copy.pivot_table(
+            index="sample_id", columns="metabolite_id", values="value", aggfunc="mean"
+        ).fillna(0)
         obs_meta = sample_meta.set_index("sample_id").loc[wide_data.index]
         adata = ad.AnnData(X=wide_data.values, obs=obs_meta)
         mdata = mu.MuData({"metabolomics": adata})
@@ -243,15 +314,21 @@ def analyze_with_mefisto(data: pd.DataFrame, weight_threshold: float = 0.5, vari
         mdata.obs["subject_id"] = obs_meta.loc[mdata.obs_names, "subject_id"].values
         import os as _os
         import tempfile
+
         tmp_h5 = tempfile.mktemp(suffix=".hdf5", prefix="mefisto_")
         try:
             with suppress_output(not verbose):
                 mu.tl.mofa(
                     mdata,
-                    n_factors=min(10, wide_data.shape[1] - 1),
-                    groups_label="subject_id",
+                    n_factors=10,
+                    # groups_label="subject_id",  # This shouldn't be used
                     smooth_covariate="time",
-                    smooth_kwargs={"scale_cov": True, "n_grid": 10},
+                    smooth_kwargs={
+                        "scale_cov": True,
+                        "sparseGP": True,
+                        "start_opt": 20,
+                        "opt_freq": 10,
+                    },
                     use_var=None,
                     # Disable spike-and-slab/ARD weight priors: in single-view MOFA these
                     # priors are too aggressive and collapse all factor weights to zero
@@ -259,14 +336,11 @@ def analyze_with_mefisto(data: pd.DataFrame, weight_threshold: float = 0.5, vari
                     # multi-view settings where cross-view constraints stabilise sparsity.
                     spikeslab_weights=False,
                     ard_weights=False,
-                    # Iteration budget: at N=subjects*timepoints=200, each ELBO iteration
-                    # costs ~60s due to O(N^3) slogdet of the N×N variational posterior
-                    # covariance (Z_nodes_GP_mv.calculateELBO_k, lb_q term). Full
-                    # convergence (~200 iterations, ~2h) is impractical per replicate.
-                    # 100 iterations (~100 min) allows more lengthscale optimisation while
-                    # remaining feasible on HPC. Sparse GP does not reduce this bottleneck
-                    # in mofapy2 v0.7.3 (posterior remains N×N). See manuscript.
-                    n_iterations=100,
+                    # sparseGP reduces per-iteration cost from O(N^3) to O(N*M^2),
+                    # making full convergence tractable (<2 min at n_subjects=100).
+                    # 1000 is a generous cap; MOFA+ early-stops via ELBO convergence.
+                    # start_opt=20: warmup before GP kernel hyperparameter optimization.
+                    n_iterations=1000,
                     quiet=True,
                     outfile=tmp_h5,
                 )
@@ -275,7 +349,7 @@ def analyze_with_mefisto(data: pd.DataFrame, weight_threshold: float = 0.5, vari
                 _os.unlink(tmp_h5)
             except OSError:
                 pass
-        
+
         # Factors are at MuData level; loadings may be at modality or MuData level
         # depending on muon version (confirmed by "Saved ... in .obsm['X_mofa']" message)
         factors = np.asarray(mdata.obsm["X_mofa"])
@@ -287,58 +361,88 @@ def analyze_with_mefisto(data: pd.DataFrame, weight_threshold: float = 0.5, vari
         n_factors = weights.shape[1]
         modules = []
         for k in range(n_factors):
-            var_ratio = np.var(np.outer(factors[:, k], weights[:, k])) / total_var if total_var > 0 else 0.0
+            var_ratio = (
+                np.var(np.outer(factors[:, k], weights[:, k])) / total_var
+                if total_var > 0
+                else 0.0
+            )
             if var_ratio >= variance_threshold:
                 max_w = np.max(np.abs(weights[:, k]))
                 active = np.where((np.abs(weights[:, k]) / max_w) > weight_threshold)[0]
                 module_mets = wide_data.columns[active].tolist()
-                if module_mets: modules.append((f"MEFISTO_Factor_{k+1}", module_mets))
-        
+                if module_mets:
+                    modules.append((f"MEFISTO_Factor_{k+1}", module_mets))
+
         Y_hat = np.expm1(factors @ weights.T)
-        recon_wide = pd.DataFrame(Y_hat, index=wide_data.index, columns=wide_data.columns)
-        preds = recon_wide.melt(var_name="metabolite_id", value_name="fitted_value", ignore_index=False).reset_index()
-        preds = preds.merge(sample_meta, on="sample_id", how="left")[["subject_id", "time", "metabolite_id", "fitted_value"]]
+        recon_wide = pd.DataFrame(
+            Y_hat, index=wide_data.index, columns=wide_data.columns
+        )
+        preds = recon_wide.melt(
+            var_name="metabolite_id", value_name="fitted_value", ignore_index=False
+        ).reset_index()
+        preds = preds.merge(sample_meta, on="sample_id", how="left")[
+            ["subject_id", "time", "metabolite_id", "fitted_value"]
+        ]
         return modules, preds
     except (Exception, SystemExit) as e:
         print(f"  MEFISTO failed: {e}")
     return [], pd.DataFrame()
 
 
-def analyze_with_dpgp(data: pd.DataFrame, n_grid_points: int = 20, verbose: bool = True) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
-    if verbose: print("Running DPGP analysis...")
+def analyze_with_dpgp(
+    data: pd.DataFrame, n_grid_points: int = 20, verbose: bool = True
+) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
+    if verbose:
+        print("Running DPGP analysis...")
     try:
         from scipy.interpolate import interp1d
         from sklearn.mixture import BayesianGaussianMixture
+
         data_copy = data.copy()
         data_copy["value"] = np.log1p(data_copy["value"])
-        common_time = np.linspace(data_copy["time"].min(), data_copy["time"].max(), n_grid_points)
+        common_time = np.linspace(
+            data_copy["time"].min(), data_copy["time"].max(), n_grid_points
+        )
         interp_mat, valid_mets = [], []
         for met, sub in data_copy.groupby("metabolite_id"):
             mean_by_time = sub.groupby("time")["value"].mean()
-            if len(mean_by_time) < 2: continue
-            y = interp1d(mean_by_time.index, mean_by_time.values, fill_value="extrapolate")(common_time)
-            if np.std(y) > 0: y = (y - np.mean(y)) / np.std(y)
-            interp_mat.append(y); valid_mets.append(met)
+            if len(mean_by_time) < 2:
+                continue
+            y = interp1d(
+                mean_by_time.index, mean_by_time.values, fill_value="extrapolate"
+            )(common_time)
+            if np.std(y) > 0:
+                y = (y - np.mean(y)) / np.std(y)
+            interp_mat.append(y)
+            valid_mets.append(met)
         X = np.array(interp_mat)
-        if len(X) == 0: return [], pd.DataFrame()
-        labels = BayesianGaussianMixture(n_components=20, random_state=42).fit_predict(X)
+        if len(X) == 0:
+            return [], pd.DataFrame()
+        labels = BayesianGaussianMixture(n_components=20, random_state=42).fit_predict(
+            X
+        )
         modules = []
         for l in np.unique(labels):
             mets = [valid_mets[i] for i in np.where(labels == l)[0]]
-            if len(mets) >= 5: modules.append((f"DPGP_Cluster_{l+1}", mets))
+            if len(mets) >= 5:
+                modules.append((f"DPGP_Cluster_{l+1}", mets))
         return modules, calculate_centroid_predictions(data, modules)
     except (Exception, SystemExit) as e:
         print(f"  DPGP failed: {e}")
     return [], pd.DataFrame()
 
 
-def fit_metabolite_lmms(data: pd.DataFrame, verbose: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    if verbose: print("Fitting LMMs...")
+def fit_metabolite_lmms(
+    data: pd.DataFrame, verbose: bool = True
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if verbose:
+        print("Fitting LMMs...")
     try:
         import warnings
 
         from statsmodels.formula.api import mixedlm
         from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
         data_mod = data.copy()
         data_mod["log_value"] = np.log1p(data_mod["value"])
         results, all_preds = [], []
@@ -347,28 +451,51 @@ def fit_metabolite_lmms(data: pd.DataFrame, verbose: bool = True) -> Tuple[pd.Da
             with suppress_output(not verbose):
                 for mid, mdata in data_mod.groupby("metabolite_id"):
                     try:
-                        fit = mixedlm("log_value ~ time", mdata, groups=mdata["subject_id"]).fit(method="powell", disp=False)
-                        results.append({"metabolite_id": mid, "pvalue": fit.pvalues.get("time", 1.0), "tstat": fit.tvalues.get("time", 0.0)})
+                        fit = mixedlm(
+                            "log_value ~ time", mdata, groups=mdata["subject_id"]
+                        ).fit(method="powell", disp=False)
+                        results.append(
+                            {
+                                "metabolite_id": mid,
+                                "pvalue": fit.pvalues.get("time", 1.0),
+                                "tstat": fit.tvalues.get("time", 0.0),
+                            }
+                        )
                         p = mdata[["subject_id", "time", "metabolite_id"]].copy()
                         p["fitted_value"] = np.expm1(fit.predict(mdata))
                         all_preds.append(p)
                     except Exception:
-                        results.append({"metabolite_id": mid, "pvalue": 1.0, "tstat": 0.0})
-        return pd.DataFrame(results), pd.concat(all_preds) if all_preds else pd.DataFrame()
+                        results.append(
+                            {"metabolite_id": mid, "pvalue": 1.0, "tstat": 0.0}
+                        )
+        return pd.DataFrame(results), (
+            pd.concat(all_preds) if all_preds else pd.DataFrame()
+        )
     except (Exception, SystemExit) as e:
         print(f"  LMM fitting failed: {e}")
     return pd.DataFrame(), pd.DataFrame()
 
-def analyze_with_lmm_ora(lmm_results: pd.DataFrame, annotated_pathways: Dict[str, List[str]], pvalue_threshold: float = 0.05) -> List[str]:
+
+def analyze_with_lmm_ora(
+    lmm_results: pd.DataFrame,
+    annotated_pathways: Dict[str, List[str]],
+    pvalue_threshold: float = 0.05,
+) -> List[str]:
     from scipy.stats import hypergeom
-    if lmm_results.empty: return []
-    sig = lmm_results[lmm_results["pvalue"] < pvalue_threshold]["metabolite_id"].unique()
+
+    if lmm_results.empty:
+        return []
+    sig = lmm_results[lmm_results["pvalue"] < pvalue_threshold][
+        "metabolite_id"
+    ].unique()
     all_mets = lmm_results["metabolite_id"].unique()
     enriched = []
     for pid, p_mets in annotated_pathways.items():
         overlap = len(set(p_mets).intersection(sig))
-        if hypergeom.sf(overlap - 1, len(all_mets), len(p_mets), len(sig)) < 0.05: enriched.append(pid)
+        if hypergeom.sf(overlap - 1, len(all_mets), len(p_mets), len(sig)) < 0.05:
+            enriched.append(pid)
     return enriched
+
 
 def analyze_with_mogp_ora(
     modules: List[Tuple[str, List[str]]],
@@ -494,16 +621,25 @@ def analyze_with_lmm_gsea(
         print(f"  LMM-GSEA failed: {e}")
     return []
 
-def analyze_with_meba(data: pd.DataFrame, annotated_pathways: Dict[str, List[str]], verbose: bool = True) -> Tuple[List[str], pd.DataFrame]:
-    if verbose: print("Running MEBA analysis...")
-    if not ensure_r_dependencies(["Rcpp", "Rserve", "lme4"], github_packages=["xia-lab/MetaboAnalystR"]): return [], pd.DataFrame()
+
+def analyze_with_meba(
+    data: pd.DataFrame, annotated_pathways: Dict[str, List[str]], verbose: bool = True
+) -> Tuple[List[str], pd.DataFrame]:
+    if verbose:
+        print("Running MEBA analysis...")
+    if not ensure_r_dependencies(
+        ["Rcpp", "Rserve", "lme4"], github_packages=["xia-lab/MetaboAnalystR"]
+    ):
+        return [], pd.DataFrame()
     try:
         import tempfile
 
         import rpy2.robjects as ro
         from rpy2.robjects import pandas2ri
         from rpy2.robjects.conversion import localconverter
-        df_log = data.copy(); df_log["value"] = np.log1p(df_log["value"])
+
+        df_log = data.copy()
+        df_log["value"] = np.log1p(df_log["value"])
         # Group variable (real covariate or artificial even split).
         if "group" in data.columns and data["group"].nunique() >= 2:
             df_log["Group"] = data["group"].astype(str)
@@ -517,14 +653,20 @@ def analyze_with_meba(data: pd.DataFrame, annotated_pathways: Dict[str, List[str
         # with one row per (subject, metabolite, time), so a naive groupby-rank
         # would assign distinct ranks to each metabolite row at the same timepoint.
         unique_tp = df_log[["subject_id", "time"]].drop_duplicates().copy()
-        unique_tp["time_rank"] = unique_tp.groupby("subject_id")["time"].rank(method="first").astype(int)
+        unique_tp["time_rank"] = (
+            unique_tp.groupby("subject_id")["time"].rank(method="first").astype(int)
+        )
         df_log = df_log.merge(unique_tp, on=["subject_id", "time"], how="left")
         n_tp = int(df_log["time_rank"].max())
         pad = len(str(n_tp))
-        df_log["time_label"] = "T" + df_log["time_rank"].apply(lambda x: str(int(x)).zfill(pad))
+        df_log["time_label"] = "T" + df_log["time_rank"].apply(
+            lambda x: str(int(x)).zfill(pad)
+        )
         wide = df_log.pivot_table(
-            index=["subject_id", "Group", "time_label"], columns="metabolite_id",
-            values="value", aggfunc="first",
+            index=["subject_id", "Group", "time_label"],
+            columns="metabolite_id",
+            values="value",
+            aggfunc="first",
         ).reset_index()
         wide["Sample"] = wide["subject_id"].astype(str) + "_" + wide["time_label"]
         metab_cols = [c for c in wide.columns if c.startswith("M") and c[1:].isdigit()]
@@ -535,18 +677,27 @@ def analyze_with_meba(data: pd.DataFrame, annotated_pathways: Dict[str, List[str
         data_wide = wide[["Sample", "Group"] + metab_cols]
         # Metadata CSV (for ReadMetaData): Sample, Time (col 1 → time.fac),
         # Group (col 2 → exp.fac).  Column order matters when meta.vec.mb is empty.
-        meta_df = wide[["Sample", "time_label", "Group"]].rename(columns={"time_label": "Time"})
+        meta_df = wide[["Sample", "time_label", "Group"]].rename(
+            columns={"time_label": "Time"}
+        )
         # Create an isolated run directory in Python so each parallel worker
         # and each successive call gets its own scratch space.  MetaboAnalystR
         # writes/reads intermediate .qs files by relative path, so the working
         # directory must be stable and unique for the entire pipeline call.
         run_dir = tempfile.mkdtemp(prefix="meba_run_")
         try:
-            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, dir=run_dir) as tmp:
-                data_wide.to_csv(tmp.name, index=False); tmp_path = tmp.name
-            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, dir=run_dir) as tmeta:
-                meta_df.to_csv(tmeta.name, index=False); meta_path = tmeta.name
-            ro.r("""
+            with tempfile.NamedTemporaryFile(
+                suffix=".csv", delete=False, dir=run_dir
+            ) as tmp:
+                data_wide.to_csv(tmp.name, index=False)
+                tmp_path = tmp.name
+            with tempfile.NamedTemporaryFile(
+                suffix=".csv", delete=False, dir=run_dir
+            ) as tmeta:
+                meta_df.to_csv(tmeta.name, index=False)
+                meta_path = tmeta.name
+            ro.r(
+                """
                 library(MetaboAnalystR)
                 run_meba <- function(p, meta_p, run_dir) {
                     old_wd <- getwd()
@@ -596,21 +747,38 @@ def analyze_with_meba(data: pd.DataFrame, annotated_pathways: Dict[str, List[str
                     if (is.null(mSet) || is.null(mSet$analSet$MB$stats)) return(character(0))
                     rownames(mSet$analSet$MB$stats)[order(mSet$analSet$MB$stats[,1], decreasing=TRUE)]
                 }
-            """)
+            """
+            )
             ranked = list(ro.r(f'run_meba("{tmp_path}", "{meta_path}", "{run_dir}")'))
-            top_mets = ranked[:max(1, int(len(ranked)*0.1))]
-            enriched = [pid for pid, p_mets in annotated_pathways.items() if len(set(top_mets).intersection(p_mets)) >= 2]
-            return enriched, calculate_centroid_predictions(data, [("MEBA_Top", top_mets)])
+            top_mets = ranked[: max(1, int(len(ranked) * 0.1))]
+            enriched = [
+                pid
+                for pid, p_mets in annotated_pathways.items()
+                if len(set(top_mets).intersection(p_mets)) >= 2
+            ]
+            return enriched, calculate_centroid_predictions(
+                data, [("MEBA_Top", top_mets)]
+            )
         finally:
             import shutil
+
             shutil.rmtree(run_dir, ignore_errors=True)
     except (Exception, SystemExit) as e:
         print(f"  MEBA failed: {e}")
     return [], pd.DataFrame()
 
-def analyze_with_timeomics(data: pd.DataFrame, verbose: bool = True) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
-    if verbose: print("Running timeOmics analysis...")
-    if not ensure_r_dependencies(["dplyr"], bioc_packages=["timeOmics", "mixOmics"], github_packages=["cran/lmms"]): return [], pd.DataFrame()
+
+def analyze_with_timeomics(
+    data: pd.DataFrame, verbose: bool = True
+) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
+    if verbose:
+        print("Running timeOmics analysis...")
+    if not ensure_r_dependencies(
+        ["dplyr"],
+        bioc_packages=["timeOmics", "mixOmics"],
+        github_packages=["cran/lmms"],
+    ):
+        return [], pd.DataFrame()
     try:
         import rpy2.robjects as ro
         from rpy2.robjects import pandas2ri
@@ -626,7 +794,8 @@ def analyze_with_timeomics(data: pd.DataFrame, verbose: bool = True) -> Tuple[Li
             ro.globalenv["df_long"] = ro.conversion.py2rpy(data_log)
         ro.globalenv["keepX_val"] = keepX_val
 
-        ro.r("""
+        ro.r(
+            """
             library(timeOmics); library(mixOmics); library(lmms)
             run_timeomics <- function(df, keepX_val) {
                 unique_mets <- unique(df$metabolite_id)
@@ -677,18 +846,24 @@ def analyze_with_timeomics(data: pd.DataFrame, verbose: bool = True) -> Tuple[Li
                 }
                 setNames(as.character(clusters$cluster), clusters$molecule)
             }
-        """)
+        """
+        )
         r_clusters = ro.r("run_timeomics(df_long, keepX_val)")
-        if r_clusters is None or not hasattr(r_clusters, 'names'): return [], pd.DataFrame()
+        if r_clusters is None or not hasattr(r_clusters, "names"):
+            return [], pd.DataFrame()
         cluster_map = dict(zip(r_clusters.names, list(r_clusters)))
         modules = {}
-        for m, c in cluster_map.items(): modules.setdefault(f"timeOmics_Cluster_{c}", []).append(str(m))
+        for m, c in cluster_map.items():
+            modules.setdefault(f"timeOmics_Cluster_{c}", []).append(str(m))
         mod_list = list(modules.items())
-        if verbose: print(f"  timeOmics found {len(mod_list)} clusters.")
+        if verbose:
+            print(f"  timeOmics found {len(mod_list)} clusters.")
         return mod_list, calculate_centroid_predictions(data, mod_list)
     except (Exception, SystemExit) as e:
-        if verbose: print(f"  timeOmics failed: {repr(e)}")
+        if verbose:
+            print(f"  timeOmics failed: {repr(e)}")
     return [], pd.DataFrame()
+
 
 def analyze_with_pal(
     data: pd.DataFrame,
@@ -697,40 +872,60 @@ def analyze_with_pal(
     verbose: bool = True,
 ) -> Tuple[List[str], pd.DataFrame]:
     """Analyzes data with PAL using custom pathway injection."""
-    if verbose: print("Running PAL analysis...")
-    if not ensure_r_dependencies(["PAL", "igraph", "lme4", "PASI"]): return [], pd.DataFrame()
+    if verbose:
+        print("Running PAL analysis...")
+    if not ensure_r_dependencies(["PAL", "igraph", "lme4", "PASI"]):
+        return [], pd.DataFrame()
 
     pathway_dir = tempfile.mkdtemp()
     try:
         import rpy2.robjects as ro
         from rpy2.robjects import pandas2ri
         from rpy2.robjects.conversion import localconverter
-        
+
         data_log = data.copy()
         data_log["value"] = np.log1p(data_log["value"])
-        data_log["sample_id"] = data_log.apply(lambda r: get_standardized_sample_id(r["subject_id"], r["time"]), axis=1)
-        
+        data_log["sample_id"] = data_log.apply(
+            lambda r: get_standardized_sample_id(r["subject_id"], r["time"]), axis=1
+        )
+
         all_mets = data_log["metabolite_id"].unique()
-        metab_to_num = {m: str(i+1000) for i, m in enumerate(all_mets)}
+        metab_to_num = {m: str(i + 1000) for i, m in enumerate(all_mets)}
         data_log["metab_num"] = data_log["metabolite_id"].map(metab_to_num)
-        
-        wide = data_log.pivot(index="metab_num", columns="sample_id", values="value").fillna(0)
-        
+
+        wide = data_log.pivot(
+            index="metab_num", columns="sample_id", values="value"
+        ).fillna(0)
+
         active_p = annotated_pathways.copy()
         if len(active_p) == 1:
-            active_p["Dummy"] = [m for m in all_mets if m not in active_p[list(active_p.keys())[0]]][:5]
+            active_p["Dummy"] = [
+                m for m in all_mets if m not in active_p[list(active_p.keys())[0]]
+            ][:5]
 
         for pid, mets in active_p.items():
             num_mets = [metab_to_num[m] for m in mets if m in metab_to_num]
-            if len(num_mets) < 2: continue
+            if len(num_mets) < 2:
+                continue
             with open(os.path.join(pathway_dir, f"{pid}.txt"), "w") as f:
                 f.write(f"{pid}\n")
-                for m in num_mets: f.write(f"{m}\n")
-                for i in range(len(num_mets)-1): f.write(f"{num_mets[i]} {num_mets[i+1]} +\n")
+                for m in num_mets:
+                    f.write(f"{m}\n")
+                for i in range(len(num_mets) - 1):
+                    f.write(f"{num_mets[i]} {num_mets[i+1]} +\n")
 
-        info = data_log[["sample_id", "subject_id", "time"]].drop_duplicates().set_index("sample_id").reindex(wide.columns)
+        info = (
+            data_log[["sample_id", "subject_id", "time"]]
+            .drop_duplicates()
+            .set_index("sample_id")
+            .reindex(wide.columns)
+        )
         if "group" in data_log.columns:
-            group_map = data_log[["sample_id", "group"]].drop_duplicates().set_index("sample_id")["group"]
+            group_map = (
+                data_log[["sample_id", "group"]]
+                .drop_duplicates()
+                .set_index("sample_id")["group"]
+            )
             info["group"] = info.index.map(group_map).fillna(0).astype(int)
         else:
             info["group"] = 0
@@ -741,7 +936,8 @@ def analyze_with_pal(
             ro.globalenv["path_dir"] = pathway_dir
             ro.globalenv["debug_mode"] = bool(verbose)
 
-        ro.r("""
+        ro.r(
+            """
             library(PAL); library(PASI)
             run_pal <- function(d, i, p_dir, debug) {
                 old_wd <- getwd()
@@ -755,21 +951,23 @@ def analyze_with_pal(
                         userandom="subject_id", useKEGG=FALSE,
                         pathwayadress=p_dir, nodemin=2))
                 }, error = function(e) NULL)
-                
+
                 if (is.null(res) || length(res) < 2) return(NULL)
                 pvals <- res[[2]][, grep("^Pval_", colnames(res[[2]]))[1]]
                 names(pvals) <- rownames(res[[2]])
                 pvals
             }
-        """)
+        """
+        )
         p_vals = ro.r("run_pal(df_pal_data, df_pal_info, path_dir, debug_mode)")
-        
+
         significant, p_map = [], {}
         if p_vals is not None and p_vals != ro.rinterface.NULL:
             p_map_raw = dict(zip(p_vals.names, list(p_vals)))
             for k, v in p_map_raw.items():
                 name = k.split(":")[0]
-                if name in annotated_pathways: p_map[name] = v
+                if name in annotated_pathways:
+                    p_map[name] = v
             significant = [pid for pid, p in p_map.items() if p < p_val_threshold]
 
         best_pid = (

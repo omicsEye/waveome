@@ -36,7 +36,13 @@ def create_fitted_prediction_plot(data_file: str, output_dir: str):
     else:
         active_mets = df[df['is_active'] == 1]['metabolite_id'].unique()
         if len(active_mets) > 0:
-            metabolite_to_plot = active_mets[0]
+            # Pick the active metabolite with the largest true signal range
+            signal_range = (
+                df[df['is_active'] == 1]
+                .groupby('metabolite_id')['true_mu']
+                .agg(lambda x: x.max() - x.min())
+            )
+            metabolite_to_plot = signal_range.idxmax()
         else:
             print("Warning: No active metabolites found. Using first metabolite.")
             metabolite_to_plot = df['metabolite_id'].unique()[0]

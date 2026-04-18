@@ -16,6 +16,7 @@ Usage (from multioutput/benchmarks/):
 """
 
 import argparse
+import os
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -91,7 +92,6 @@ def _plot_trajectories(ax, traj_dict, palette, alpha_obs=0.3, alpha_mu=0.85, lw_
 
 
 def make_figure(output_path: str, seed: int = 42):
-    import os
     rng_state = np.random.get_state()
     np.random.seed(seed)
 
@@ -104,6 +104,8 @@ def make_figure(output_path: str, seed: int = 42):
     NUISANCE_PERIOD = 10.0
     ANNOTATION_FRAC = 0.7
     EFFECT_MAG = 2.5
+    DISPERSION = 0.3        # median per-metabolite NB dispersion (iHMP-calibrated)
+    DISPERSION_SPREAD = 1.0  # sigma of LogNormal for per-metabolite dispersion
 
     nuisance_func = create_periodic_effect(NUISANCE_AMP, NUISANCE_PERIOD)
 
@@ -115,6 +117,7 @@ def make_figure(output_path: str, seed: int = 42):
         effect_func=spike_func, nuisance_fraction=0.2,
         nuisance_effect_func=nuisance_func, annotation_fraction=ANNOTATION_FRAC,
         metabolite_effect_sd=0.5,  # larger scaler SD so individual mets show clear signal
+        dispersion=DISPERSION, dispersion_spread=DISPERSION_SPREAD,
     )
 
     # Ramp (trapezoid) condition
@@ -126,6 +129,7 @@ def make_figure(output_path: str, seed: int = 42):
         effect_func=ramp_func, nuisance_fraction=0.2,
         nuisance_effect_func=nuisance_func, annotation_fraction=ANNOTATION_FRAC,
         metabolite_effect_sd=0.5,
+        dispersion=DISPERSION, dispersion_spread=DISPERSION_SPREAD,
     )
 
     # Perturbation condition
@@ -137,6 +141,7 @@ def make_figure(output_path: str, seed: int = 42):
         effect_func=perturb_func, nuisance_fraction=0.2,
         nuisance_effect_func=nuisance_func, annotation_fraction=ANNOTATION_FRAC,
         metabolite_effect_sd=0.5,
+        dispersion=DISPERSION, dispersion_spread=DISPERSION_SPREAD,
     )
 
     active_pid = list(true_pws_spike.keys())[0]
@@ -157,6 +162,7 @@ def make_figure(output_path: str, seed: int = 42):
         effect_func=spike_func, nuisance_fraction=0.2,
         nuisance_effect_func=nuisance_func, annotation_fraction=ANNOTATION_FRAC,
         metabolite_effect_sd=0.5, add_group_covariate=True,
+        dispersion=DISPERSION, dispersion_spread=DISPERSION_SPREAD,
     )
 
     all_subjects = sorted(df_spike["subject_id"].unique())
