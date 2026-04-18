@@ -115,7 +115,7 @@ def load_all_data():
                 frames.append(_load_csv(p, annotation_fraction=float(frac)))
 
     # Group covariate (medium SNR)
-    for effect in ["spike", "linear"]:
+    for effect in ["spike", "linear", "perturbation"]:
         p = os.path.join(OUTPUT_BASE, "results_group_covariate", effect, "benchmark_results.csv")
         if os.path.exists(p):
             frames.append(_load_csv(p, snr_level="medium", has_group_covariate=True))
@@ -225,6 +225,7 @@ def fig_snr_clustering(df):
 
     clust_methods = ["MOGP", "WGCNA", "DPGP", "MEFISTO", "timeOmics"]
     metrics = [
+        ("ARI",               "ARI",                           None),
         ("BestJaccard",       "Best Jaccard (active pathway)", (0, 1.0)),
         ("BestPrecision",     "Best Precision (active pathway)", (0, 1.0)),
         ("UnannotatedRecall", "Unannotated Metabolite Recall", (0, 1.05)),
@@ -423,21 +424,32 @@ def fig_group_covariate(df):
         return
 
     pathway_methods_gc = ["MOGP_ORA", "MOGP_GSEA", "MEBA", "PAL", "LMM_ORA", "LMM_GSEA"]
-    metrics = [
-        ("Sensitivity",       "Sensitivity (TPR)",   (0, 1.05)),
-        ("FPR",               "False Positive Rate",  (0, 1.05)),
-        ("Reconstruction_MSE","Reconstruction MSE",   None),
+    clustering_methods_gc = ["MOGP", "WGCNA", "DPGP", "MEFISTO", "timeOmics"]
+
+    pathway_metrics = [
+        ("Sensitivity", "Sensitivity (TPR)",  (0, 1.05)),
+        ("FPR",         "False Positive Rate", (0, 1.05)),
     ]
+    clustering_metrics = [
+        ("ARI",         "ARI",         None),
+        ("BestJaccard", "Best Jaccard", (0, 1.0)),
+        ("NumModules",  "Num Modules",  None),
+    ]
+
     effects = [e for e in ["linear", "spike", "perturbation"]
                if e in gc_df["effect_type"].unique()]
     n_effects = len(effects)
+    n_cols = len(pathway_metrics) + len(clustering_metrics)
 
-    fig, axes = plt.subplots(n_effects, 3, figsize=(18, 4.5 * n_effects))
+    fig, axes = plt.subplots(n_effects, n_cols, figsize=(4.5 * n_cols, 4.5 * n_effects))
     if n_effects == 1:
         axes = [axes]
+
     for row, effect in enumerate(effects):
         edf = gc_df[gc_df["effect_type"] == effect]
-        for col, (metric, ylabel, ylim) in enumerate(metrics):
+
+        # Pathway metrics
+        for col, (metric, ylabel, ylim) in enumerate(pathway_metrics):
             ax = axes[row][col]
             ys, yerrs, labels, colors = [], [], [], []
             for m in pathway_methods_gc:
@@ -445,11 +457,9 @@ def fig_group_covariate(df):
                 if mcol not in edf.columns:
                     continue
                 mn, se = agg(edf, mcol)
-                ys.append(mn)
-                yerrs.append(se)
+                ys.append(mn); yerrs.append(se)
                 labels.append(METHOD_LABELS.get(m, m))
                 colors.append(METHOD_COLORS.get(m, "gray"))
-
             ax.bar(range(len(ys)), ys, yerr=yerrs, color=colors, capsize=4,
                    edgecolor="white", error_kw={"elinewidth": 1.5})
             ax.set_xticks(range(len(labels)))
@@ -462,7 +472,35 @@ def fig_group_covariate(df):
                 ax.set_title(ylabel, fontsize=11, fontweight="bold")
             _style_ax(ax, legend=False)
 
-    fig.suptitle("Group Covariate Condition — Pathway Detection Performance\n(Medium SNR, effect_magnitude=3.0)",
+        # Clustering metrics
+        for i, (metric, ylabel, ylim) in enumerate(clustering_metrics):
+            col = len(pathway_metrics) + i
+            ax = axes[row][col]
+            ys, yerrs, labels, colors = [], [], [], []
+            for m in clustering_methods_gc:
+                mcol = f"{m}_{metric}"
+                if mcol not in edf.columns:
+                    continue
+                mn, se = agg(edf, mcol)
+                ys.append(mn); yerrs.append(se)
+                labels.append(METHOD_LABELS.get(m, m))
+                colors.append(METHOD_COLORS.get(m, "gray"))
+            ax.bar(range(len(ys)), ys, yerr=yerrs, color=colors, capsize=4,
+                   edgecolor="white", error_kw={"elinewidth": 1.5})
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels(labels, fontsize=9, rotation=30, ha="right")
+            if ylim:
+                ax.set_ylim(ylim)
+            if row == 0:
+                ax.set_title(ylabel, fontsize=11, fontweight="bold")
+            _style_ax(ax, legend=False)
+
+    # Divider between pathway and clustering sections
+    for row in range(n_effects):
+        axes[row][len(pathway_metrics)].spines["left"].set_linewidth(2.5)
+
+    fig.suptitle("Group Covariate Condition — Pathway Detection & Clustering Performance\n"
+                 "(Medium SNR, effect_magnitude=6.0, group 1 receives 50% of temporal effect)",
                  fontsize=12, fontweight="bold")
     plt.tight_layout()
     path = os.path.join(OUT_DIR, "fig5_group_covariate.png")
@@ -485,7 +523,8 @@ def write_summary_table(df):
                 continue
             n = len(sub)
             for m in CLUSTERING_METHODS:
-                for metric, col in [("BestJaccard", f"{m}_BestJaccard"),
+                for metric, col in [("ARI", f"{m}_ARI"),
+                                     ("BestJaccard", f"{m}_BestJaccard"),
                                      ("BestPrecision", f"{m}_BestPrecision"),
                                      ("UnannotatedRecall", f"{m}_UnannotatedRecall"),
                                      ("NumModules", f"{m}_NumModules"),
@@ -535,7 +574,7 @@ def write_summary_table(df):
 
     # Group covariate
     gc_df = df[df["has_group_covariate"]]
-    for effect in ["linear", "spike"]:
+    for effect in ["linear", "spike", "perturbation"]:
         sub = gc_df[gc_df["effect_type"] == effect]
         if sub.empty:
             continue
@@ -558,6 +597,145 @@ def write_summary_table(df):
     return out
 
 
+# ── Figure: Main manuscript simulation figure ────────────────────────────────
+
+# Publication rcParams applied locally within fig_main_simulation
+_PUB_RC = {
+    "font.size": 9,
+    "axes.titlesize": 9,
+    "axes.labelsize": 9,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 7.5,
+    "lines.linewidth": 1.5,
+    "lines.markersize": 4,
+    "errorbar.capsize": 2.5,
+    "figure.dpi": 300,
+    "savefig.dpi": 300,
+    "savefig.bbox": "tight",
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+}
+
+# Focused method sets for the main figure
+_MAIN_PATHWAY_METHODS = ["MOGP_ORA", "MOGP_GSEA", "LMM_ORA", "LMM_GSEA", "MEBA"]
+_MAIN_CLUST_METHODS   = ["MOGP", "MEFISTO", "DPGP", "WGCNA"]
+
+# Line styles: solid for "our" methods, dashed for baselines
+_MAIN_LS = {
+    "MOGP_ORA":  "-",
+    "MOGP_GSEA": "-",
+    "LMM_ORA":   "--",
+    "LMM_GSEA":  "--",
+    "MEBA":      ":",
+    "MOGP":      "-",
+    "MEFISTO":   "--",
+    "DPGP":      "--",
+    "WGCNA":     ":",
+}
+_MAIN_LW = {
+    "MOGP_ORA":  2.0,
+    "MOGP_GSEA": 2.0,
+    "LMM_ORA":   1.2,
+    "LMM_GSEA":  1.2,
+    "MEBA":      1.2,
+    "MOGP":      2.0,
+    "MEFISTO":   1.2,
+    "DPGP":      1.2,
+    "WGCNA":     1.2,
+}
+
+
+def fig_main_simulation(df):
+    """
+    Publication-quality 4×3 main simulation figure.
+
+    Rows: Sensitivity (pathway) | FPR (pathway) | Best Jaccard (clustering) | Reconstruction MSE
+    Columns: Spike | Linear | Perturbation
+
+    Saved to the summary output directory as PNG (300 DPI).
+    """
+    import matplotlib as mpl
+
+    snr_df = df[(df["snr_level"].isin(SNR_ORDER)) & (~df["has_group_covariate"])].copy()
+    effects = ["spike", "linear", "perturbation"]
+    effect_titles = {"spike": "Spike", "linear": "Linear", "perturbation": "Perturbation"}
+
+    rows = [
+        ("pathway", "Sensitivity",       "Sensitivity (TPR)",   _MAIN_PATHWAY_METHODS),
+        ("pathway", "FPR",               "False Positive Rate", _MAIN_PATHWAY_METHODS),
+        ("clust",   "BestJaccard",       "Best Jaccard",        _MAIN_CLUST_METHODS),
+        ("clust",   "Reconstruction_MSE","Reconstruction MSE",  _MAIN_CLUST_METHODS),
+    ]
+
+    with mpl.rc_context(_PUB_RC):
+        fig, axes = plt.subplots(4, 3, figsize=(8.5, 7.5), sharex=True, sharey="row")
+        xs_num = list(range(len(SNR_ORDER)))
+
+        for row_i, (kind, metric, ylabel, methods) in enumerate(rows):
+            for col_i, effect in enumerate(effects):
+                ax = axes[row_i][col_i]
+                for m in methods:
+                    col = f"{m}_{metric}"
+                    if col not in snr_df.columns:
+                        continue
+                    ys, errs = [], []
+                    for snr in SNR_ORDER:
+                        sub = snr_df[(snr_df["snr_level"] == snr) &
+                                     (snr_df["effect_type"] == effect)]
+                        mn, se = agg(sub, col)
+                        ys.append(mn); errs.append(se)
+                    ax.errorbar(
+                        xs_num, ys, yerr=errs,
+                        label=METHOD_LABELS.get(m, m),
+                        color=METHOD_COLORS.get(m, "gray"),
+                        linestyle=_MAIN_LS.get(m, "--"),
+                        linewidth=_MAIN_LW.get(m, 1.2),
+                        marker=METHOD_MARKER.get(m, "o"),
+                        capthick=1,
+                    )
+                ax.set_xticks(xs_num)
+                ax.grid(axis="y", linestyle=":", alpha=0.35)
+                # Column titles only on top row
+                if row_i == 0:
+                    ax.set_title(effect_titles[effect], fontweight="bold")
+                # Row labels only on leftmost column
+                if col_i == 0:
+                    ax.set_ylabel(ylabel)
+                # X-axis tick labels only on bottom row
+                if row_i == 3:
+                    ax.set_xticklabels([SNR_LABELS[s] for s in SNR_ORDER])
+
+                # Legend: top-right panel for pathway rows, top-right for clustering row
+                show_legend = (col_i == 2) and (row_i in (0, 2))
+                if show_legend:
+                    ax.legend(loc="upper right", framealpha=0.8)
+
+        # Horizontal divider between pathway and clustering row groups
+        for col_i in range(3):
+            axes[2][col_i].spines["top"].set_visible(True)
+            axes[2][col_i].spines["top"].set_linewidth(1.0)
+            axes[2][col_i].spines["top"].set_linestyle("--")
+            axes[2][col_i].spines["top"].set_color("#aaaaaa")
+
+        # Row-group annotations in the figure margin
+        fig.text(0.01, 0.76, "Pathway\ndetection", va="center", ha="left",
+                 fontsize=8, color="#555555", style="italic",
+                 rotation=90)
+        fig.text(0.01, 0.25, "Clustering\nrecovery", va="center", ha="left",
+                 fontsize=8, color="#555555", style="italic",
+                 rotation=90)
+
+        fig.supxlabel("SNR Condition", fontsize=9)
+        plt.tight_layout(rect=[0.04, 0.03, 1, 1])
+
+        os.makedirs(OUT_DIR, exist_ok=True)
+        out_png = os.path.join(OUT_DIR, "fig_sim_main.png")
+        plt.savefig(out_png)
+        plt.close()
+        print(f"Saved {out_png}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -577,6 +755,7 @@ def main():
     fig_annotation_sweep(df)
     fig_timing(df)
     fig_group_covariate(df)
+    fig_main_simulation(df)
 
     print("\nWriting summary table...")
     summary = write_summary_table(df)
