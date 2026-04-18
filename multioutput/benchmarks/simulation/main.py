@@ -13,8 +13,8 @@ from tqdm import tqdm
 from typing import Dict, Any, Tuple
 
 from .utils import (
-    setup_environment, suppress_output, evaluate_module, 
-    evaluate_clustering_performance, calculate_reconstruction_fidelity
+    setup_environment, suppress_output, evaluate_module,
+    evaluate_clustering_performance, calculate_reconstruction_fidelity,
 )
 from .effects import (
     create_spike_effect, create_trapezoid_effect,
@@ -59,18 +59,19 @@ def _timed_call(func, args=(), kwargs=None, timeout=1800):
     q = ctx.Queue()
     p = ctx.Process(target=_method_worker, args=(q, func, args, kwargs))
     p.start()
-    p.join(timeout=timeout + 120)  # extra 120s for spawn + R init overhead
-    if p.is_alive():
-        p.terminate()
+    # Get result BEFORE joining — q.put() in the worker blocks when the pipe
+    # buffer is full, so joining first causes a deadlock with large results.
+    try:
+        status, *rest = q.get(timeout=timeout + 120)
+    except Exception:
+        # Timeout or queue error — kill the process
+        if p.is_alive():
+            p.terminate()
         p.join(5)
         if p.is_alive():
             p.kill()
-        return None, timeout  # report timeout budget as elapsed
-    if p.exitcode != 0:
         return None, timeout
-    if q.empty():
-        return None, timeout
-    status, *rest = q.get_nowait()
+    p.join(10)  # process should exit quickly now that queue is drained
     if status == "ok":
         result, inner_elapsed = rest[0], rest[1]
         # Check if the method itself exceeded the timeout
@@ -206,8 +207,8 @@ def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], 
     if not args.skip_mogp and mogp_mods:
         t0 = time.time()
         mogp_ora_paths = analyze_with_mogp_ora(mogp_mods, annotated_pathways, all_ids)
-        # Total pipeline time = MOGP training + ORA enrichment step
         results["MOGP_ORA_Time"] = results.get("MOGP_Time", 0.0) + (time.time() - t0)
+        # Total pipeline time = MOGP training + ORA enrichment step
         process("MOGP_ORA", mogp_ora_paths, mogp_fit, is_pathway=True)
 
     # MOGP_GSEA: preranked GSEA on |W[:,k]| per factor against annotated pathways.
@@ -249,13 +250,13 @@ def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], 
 
         t0 = time.time()
         process("LMM_ORA", analyze_with_lmm_ora(lmm_res, annotated_pathways), lmm_fit, True)
-        # Total pipeline time = LMM fitting + ORA enrichment step
         results["LMM_ORA_Time"] = lmm_fit_time + (time.time() - t0)
+        # Total pipeline time = LMM fitting + ORA enrichment step
 
         t0 = time.time()
         process("LMM_GSEA", analyze_with_lmm_gsea(lmm_res, annotated_pathways), lmm_fit, True)
-        # Total pipeline time = LMM fitting + GSEA enrichment step
         results["LMM_GSEA_Time"] = lmm_fit_time + (time.time() - t0)
+        # Total pipeline time = LMM fitting + GSEA enrichment step
 
     if getattr(args, "skip_fitted_predictions", False):
         return results, pd.DataFrame()
