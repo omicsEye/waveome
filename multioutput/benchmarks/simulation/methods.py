@@ -96,12 +96,12 @@ def analyze_with_mogp(
     data: pd.DataFrame,
     weight_threshold: float = 0.2,
     use_otsu: bool = True,
+    seed: int = 9102,
     verbose: bool = True,
-) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
+) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame, pd.DataFrame]:
     if verbose:
         print("Running MOGP analysis...")
     try:
-        import gpflow
         from waveome.model_search import GPSearch
     except ImportError:
         return [], pd.DataFrame()
@@ -141,7 +141,7 @@ def analyze_with_mogp(
                 penalization_factor=1.0,
                 num_opt_iter=50000,
                 verbose=bool(verbose),
-                random_seed=9102,
+                random_seed=seed,
                 adam_learning_rate=0.001,
             )
             ms.models["multioutput"].prune_latent_factors(
@@ -207,7 +207,7 @@ _wgcna_patched = False
 
 
 def analyze_with_wgcna(
-    data: pd.DataFrame, verbose: bool = True
+    data: pd.DataFrame, seed: int = 9102, verbose: bool = True
 ) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
     if verbose:
         print("Running WGCNA analysis...")
@@ -240,6 +240,8 @@ def analyze_with_wgcna(
         wide_data = data_copy.pivot_table(
             index="sample_id", columns="metabolite_id", values="value", aggfunc="mean"
         ).fillna(0)
+        import rpy2.robjects as ro
+        ro.r(f"set.seed({seed})")
         with suppress_output(not verbose):
             pyWGCNA_obj = PyWGCNA.WGCNA(
                 name="sim",
@@ -286,6 +288,7 @@ def analyze_with_mefisto(
     data: pd.DataFrame,
     weight_threshold: float = 0.5,
     variance_threshold: float = 0.001,
+    seed: int = 9102,
     verbose: bool = True,
 ) -> Tuple[List[Tuple[str, List[str]]], pd.DataFrame]:
     if verbose:
@@ -321,7 +324,12 @@ def analyze_with_mefisto(
                 mu.tl.mofa(
                     mdata,
                     n_factors=10,
-                    # groups_label="subject_id",  # This shouldn't be used
+                    # groups_label is incompatible with sparseGP=True: the sparse GP
+                    # inducing-point kernel matrix is sized per-group (M×M) but the
+                    # multi-group MEFISTO implementation broadcasts it across the full
+                    # N×N sample covariance, causing:
+                    # "could not broadcast input array from shape (M,M) into shape (N,N)"
+                    # Confirmed by test with 2 groups + sparseGP=True (mofapy2).
                     smooth_covariate="time",
                     smooth_kwargs={
                         "scale_cov": True,

@@ -29,6 +29,36 @@ from .methods import (
 )
 from .plots import visualize_benchmark_results
 
+# Sentinel column used to detect whether a method already has results for a run_id.
+# The _Time column is always written (even on timeout), so a non-NaN value means the
+# method completed (or timed out) and its metric columns are already populated.
+METHOD_RESULT_COLS = {
+    "mogp":      "MOGP_Time",
+    "wgcna":     "WGCNA_Time",
+    "dpgp":      "DPGP_Time",
+    "mefisto":   "MEFISTO_Time",
+    "timeomics": "timeOmics_Time",
+    "meba":      "MEBA_Time",
+    "pal":       "PAL_Time",
+    "lmm":       "LMM_Fit_Time",
+}
+
+
+def _method_done(name, existing_row, rerun_methods):
+    """Return True if this method already has results and is not being force-rerun.
+
+    name: lowercase method key matching METHOD_RESULT_COLS (e.g. 'mogp', 'lmm').
+    Note: 'mogp' covers mogp_ora and mogp_gsea; 'lmm' covers lmm_ora and lmm_gsea.
+    """
+    if existing_row is None or name in rerun_methods:
+        return False
+    col = METHOD_RESULT_COLS.get(name)
+    if col is None:
+        return False
+    val = existing_row.get(col)
+    return val is not None and not (isinstance(val, float) and np.isnan(val))
+
+
 def _method_worker(q, func, args, kwargs):
     """Spawned worker: runs func(*args, **kwargs) and puts (result, elapsed) on queue.
     Elapsed is measured inside the worker after setup, so spawn/init overhead is excluded

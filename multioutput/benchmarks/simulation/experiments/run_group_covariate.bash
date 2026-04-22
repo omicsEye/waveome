@@ -1,7 +1,7 @@
 #!/bin/bash
 # Group Covariate: Medium SNR with Binary Group Effect (50% attenuation in group 1)
 N_RUNS=10
-N_JOBS=1
+N_JOBS=2
 
 # Setup paths
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

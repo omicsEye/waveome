@@ -281,6 +281,7 @@ def fig_annotation_sweep(df):
         ("Reconstruction_MSE","Reconstruction MSE",  None),
     ]
     metrics_clust = [
+        ("ARI",               "ARI",                    None),
         ("BestJaccard",       "Best Jaccard",           (0, 1.0)),
         ("BestPrecision",     "Best Precision",          (0, 1.0)),
         ("UnannotatedRecall", "Unannotated Recall",      (0, 1.05)),
@@ -418,7 +419,7 @@ def fig_timing(df):
 # ── Figure 5: Group covariate with PAL ───────────────────────────────────────
 
 def fig_group_covariate(df):
-    gc_df  = df[df["has_group_covariate"]].copy()
+    gc_df = df[df["has_group_covariate"]].copy()
     if gc_df.empty:
         print("No group covariate data — skipping fig5.")
         return
@@ -648,9 +649,9 @@ _MAIN_LW = {
 
 def fig_main_simulation(df):
     """
-    Publication-quality 4×3 main simulation figure.
+    Publication-quality 3×3 main simulation figure.
 
-    Rows: Sensitivity (pathway) | FPR (pathway) | Best Jaccard (clustering) | Reconstruction MSE
+    Rows: Sensitivity (pathway) | FPR (pathway) | Best Jaccard (clustering)
     Columns: Spike | Linear | Perturbation
 
     Saved to the summary output directory as PNG (300 DPI).

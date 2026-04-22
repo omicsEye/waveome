@@ -81,11 +81,6 @@ def create_periodic_effect(
 # =============================================================================
 
 
-def gaussian_likelihood(mu: np.ndarray, dispersion: float) -> np.ndarray:
-    """Samples from a Gaussian distribution. dispersion = std dev."""
-    return mu + np.random.normal(0, dispersion, size=mu.shape)
-
-
 def negative_binomial_likelihood(
     mu: np.ndarray, dispersion
 ) -> np.ndarray:
