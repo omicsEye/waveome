@@ -93,6 +93,61 @@ def negative_binomial(m, Y, alpha):
 #     )
 
 
+class NegativeBinomialPerOutput(ScalarLikelihood):
+    """
+    Negative binomial with per-output dispersion and offsets.
+
+    For output j:
+        mu_j = exp(F_j + offset_j)
+        Var(Y_j) = mu_j + mu_j^2 * alpha_j
+
+    offset_j: log-scale shift per output, initialized from log(median(Y_j)).
+              Absorbs the per-metabolite scale so the GP latent function stays near 0.
+    alpha_j:  per-output overdispersion (1/r), initialized via method of moments.
+    """
+
+    def __init__(self, alpha=1.0, offset=0.0, invlink=tf.exp, trainable_offset=False, **kwargs):
+        super().__init__(**kwargs)
+        alpha = np.atleast_1d(np.array(alpha, dtype=np.float64))
+        offset = np.atleast_1d(np.array(offset, dtype=np.float64))
+        self.alpha = Parameter(
+            alpha,
+            transform=tfp.bijectors.Exp(),
+            dtype=default_float(),
+        )
+        # Offset is fixed by default (like DESeq2/edgeR size factors)
+        self.offset = Parameter(
+            offset,
+            dtype=default_float(),
+            trainable=trainable_offset,
+        )
+        self.invlink = invlink
+
+    def _scalar_log_prob(self, X, F, Y):
+        return negative_binomial(self.invlink(F + self.offset), Y, self.alpha)
+
+    def _conditional_mean(self, X, F):
+        return self.invlink(F + self.offset)
+
+    def _conditional_variance(self, X, F):
+        m = self.invlink(F + self.offset)
+        return m + m ** 2 * self.alpha
+
+    def predict_mean_and_var(self, X, Fmu, Fvar):
+        return self._conditional_mean(X, Fmu), self._conditional_variance(X, Fmu)
+
+    def _predict_mean_and_var(self, X, Fmu, Fvar):
+        return self._conditional_mean(X, Fmu), self._conditional_variance(X, Fvar)
+
+    def return_p(self, F):
+        m = self.invlink(F + self.offset)
+        r = 1 / self.alpha
+        return r / (m + r)
+
+    def return_r(self):
+        return 1 / self.alpha
+
+
 class ZeroInflatedNegativeBinomial(ScalarLikelihood):
     """
     alpha: dispersion parameter

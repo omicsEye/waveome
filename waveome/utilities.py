@@ -16,7 +16,6 @@ from gpflow.utilities import set_trainable
 from joblib import Parallel, delayed
 from ray.experimental import tqdm_ray
 from tensorflow_probability import distributions as tfd
-from scipy.linalg import svd
 
 from .kernels import Empty
 from .likelihoods import (
@@ -1390,33 +1389,3 @@ def run_ray_process(
     return objs
 
 
-def calculate_rank_estimate(Y, threshold=0.90, transform_counts=True):
-    """
-    Calculate the rank Q that explains 'threshold' variance.
-    Robust to skewed count data.
-    """
-
-    # 1. Log-transform counts, if desired
-    if transform_counts:
-        # Avoid log(0)
-        Y = np.log1p(Y)
-    
-    # 2. Center and scale (standardize)
-    mean = np.mean(Y, axis=0)
-    std = np.std(Y, axis=0) + 1e-6
-    Y_standard = (Y - mean) / std
-
-    # 3. Perform SVD on standardized data
-    _, s, _ = svd(Y_standard, full_matrices=False)
-
-    # 4. Calculate cumulative variance explained
-    eigenvalues = s**2
-    var_explained = eigenvalues / np.sum(eigenvalues)
-    cumulative_var = np.cumsum(var_explained)
-    
-    # 5. Determine rank for cutoff value
-    # If even the first component explains more than threshold, argmax returns 0.
-    # rank must be at least 1.
-    Q = np.argmax(cumulative_var >= threshold) + 1
-
-    return int(Q)

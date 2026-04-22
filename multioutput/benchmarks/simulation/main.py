@@ -1,0 +1,395 @@
+"""
+Main entry point for the longitudinal metabolomics simulation framework.
+"""
+
+import argparse
+import os
+import time
+import concurrent.futures
+import multiprocessing
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from typing import Dict, Any, Tuple
+
+from .utils import (
+    setup_environment, suppress_output, evaluate_module,
+    evaluate_clustering_performance, calculate_reconstruction_fidelity,
+)
+from .effects import (
+    create_spike_effect, create_trapezoid_effect,
+    create_perturbation_effect, create_periodic_effect,
+)
+from .core import simulate_longitudinal_data
+from .methods import (
+    analyze_with_mogp, analyze_with_wgcna, analyze_with_mefisto,
+    analyze_with_dpgp, analyze_with_timeomics, analyze_with_meba,
+    analyze_with_pal, fit_metabolite_lmms, analyze_with_lmm_ora, analyze_with_lmm_gsea,
+    analyze_with_mogp_ora, analyze_with_mogp_gsea,
+)
+from .plots import visualize_benchmark_results
+
+# Sentinel column used to detect whether a method already has results for a run_id.
+# The _Time column is always written (even on timeout), so a non-NaN value means the
+# method completed (or timed out) and its metric columns are already populated.
+METHOD_RESULT_COLS = {
+    "mogp":      "MOGP_Time",
+    "wgcna":     "WGCNA_Time",
+    "dpgp":      "DPGP_Time",
+    "mefisto":   "MEFISTO_Time",
+    "timeomics": "timeOmics_Time",
+    "meba":      "MEBA_Time",
+    "pal":       "PAL_Time",
+    "lmm":       "LMM_Fit_Time",
+}
+
+
+def _method_done(name, existing_row, rerun_methods):
+    """Return True if this method already has results and is not being force-rerun.
+
+    name: lowercase method key matching METHOD_RESULT_COLS (e.g. 'mogp', 'lmm').
+    Note: 'mogp' covers mogp_ora and mogp_gsea; 'lmm' covers lmm_ora and lmm_gsea.
+    """
+    if existing_row is None or name in rerun_methods:
+        return False
+    col = METHOD_RESULT_COLS.get(name)
+    if col is None:
+        return False
+    val = existing_row.get(col)
+    return val is not None and not (isinstance(val, float) and np.isnan(val))
+
+
+def _method_worker(q, func, args, kwargs):
+    """Spawned worker: runs func(*args, **kwargs) and puts (result, elapsed) on queue.
+    Elapsed is measured inside the worker after setup, so spawn/init overhead is excluded
+    from the method's reported runtime and does not count against the timeout budget.
+    """
+    setup_environment()
+    try:
+        t0 = time.time()
+        result = func(*args, **kwargs)
+        q.put(("ok", result, time.time() - t0))
+    except Exception as e:
+        q.put(("err", str(e), 0.0))
+
+
+def _timed_call(func, args=(), kwargs=None, timeout=1800):
+    """Run func(*args, **kwargs) in a fresh spawned process with a hard timeout.
+
+    The timeout applies to the method's own execution time (measured inside the
+    worker after setup_environment()), so spawn/R-init overhead does not count
+    against the budget. The outer process join uses timeout + 120s to absorb
+    that overhead without penalising the method.
+
+    Returns (result, inner_elapsed). result is None on timeout or error.
+    """
+    if kwargs is None:
+        kwargs = {}
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.Queue()
+    p = ctx.Process(target=_method_worker, args=(q, func, args, kwargs))
+    p.start()
+    # Get result BEFORE joining — q.put() in the worker blocks when the pipe
+    # buffer is full, so joining first causes a deadlock with large results.
+    try:
+        status, *rest = q.get(timeout=timeout + 120)
+    except Exception:
+        # Timeout or queue error — kill the process
+        if p.is_alive():
+            p.terminate()
+        p.join(5)
+        if p.is_alive():
+            p.kill()
+        return None, timeout
+    p.join(10)  # process should exit quickly now that queue is drained
+    if status == "ok":
+        result, inner_elapsed = rest[0], rest[1]
+        # Check if the method itself exceeded the timeout
+        if inner_elapsed > timeout:
+            return None, inner_elapsed
+        return result, inner_elapsed
+    return None, timeout
+
+
+def _record_timeout(results, name, is_pathway, run_id, elapsed):
+    """Write NaN placeholders when a method times out."""
+    print(f"  [run {run_id}] {name} timed out after {elapsed:.0f}s — recording NaN",
+          flush=True)
+    results[f"{name}_Time"] = elapsed
+    if is_pathway:
+        for m in ("Sensitivity", "FPR"):
+            results[f"{name}_{m}"] = float("nan")
+    else:
+        for m in ("ARI", "BestJaccard", "BestPrecision", "UnannotatedRecall", "NumModules"):
+            results[f"{name}_{m}"] = float("nan")
+    results[f"{name}_Reconstruction_MSE"] = float("nan")
+
+
+def run_single_replicate(run_id: int, seed: int, args) -> Tuple[Dict[str, Any], pd.DataFrame]:
+    # Re-run environment setup in each worker process. ProcessPoolExecutor spawns
+    # fresh processes that do not inherit os.environ changes made in the parent, so
+    # TF_CPP_MIN_LOG_LEVEL, R_HOME, and rpy2 logging must be configured here too.
+    setup_environment()
+    np.random.seed(seed)
+    verbose = bool(getattr(args, "debug", False)) or (args.n_runs == 1)
+
+    # 1. Setup Effects
+    if args.effect_type == "spike":
+        effect_func = create_spike_effect(8, 12, args.effect_magnitude)
+    elif args.effect_type == "linear":
+        # flat [0,5] -> ramp [5,13] -> plateau [13,20]
+        effect_func = create_trapezoid_effect(5, 13, args.effect_magnitude)
+    else:  # "perturbation"
+        # perturbation at t=4, half-life=4 (~12.5% remaining at t=16)
+        effect_func = create_perturbation_effect(4, 4, args.effect_magnitude)
+
+    nuisance_func = None
+    if args.nuisance_fraction > 0:
+        nuisance_func = create_periodic_effect(args.nuisance_amplitude, args.nuisance_period)
+
+    # 2. Simulate Data
+    df, true_pathways, annotated_pathways = simulate_longitudinal_data(
+        n_subjects=args.n_subjects, n_metabolites=args.n_metabolites,
+        n_pathways=args.n_pathways, metabolites_per_pathway=args.metabolites_per_pathway,
+        time_points=np.linspace(0, 20, args.n_time_points),
+        add_group_covariate=args.add_group_covariate,
+        irregular_sampling_sd=args.irregular_sampling_sd,
+        subject_random_effect_sd=args.subject_noise,
+        pathway_random_effect_sd=args.pathway_noise,
+        dispersion=args.dispersion,
+        dispersion_spread=args.dispersion_spread,
+        effect_func=effect_func,
+        nuisance_fraction=args.nuisance_fraction,
+        nuisance_effect_func=nuisance_func,
+        annotation_fraction=args.annotation_fraction,
+    )
+
+    results = {"run_id": run_id, "seed": seed, "effect_type": args.effect_type,
+               "condition_label": getattr(args, "condition_label", "")}
+    all_fits = []
+    active_pid = list(true_pathways.keys())[0]
+    true_mets = set(true_pathways[active_pid])
+    unannotated = true_mets - set(annotated_pathways[active_pid])
+    all_ids = sorted(df["metabolite_id"].unique())
+
+    def process(name, modules, fit, is_pathway=False):
+        if not is_pathway:
+            results[f"{name}_ARI"] = evaluate_clustering_performance(true_pathways, modules, all_ids, name, verbose=verbose)
+            best_j, best_rec, best_prec = 0.0, 0.0, 0.0
+            for _, mets in modules:
+                m = evaluate_module(mets, true_mets, unannotated, verbose=False)
+                if m["jaccard"] > best_j:
+                    best_j, best_rec, best_prec = m["jaccard"], m["unannotated_recall"], m["precision"]
+            results[f"{name}_BestJaccard"] = best_j
+            results[f"{name}_BestPrecision"] = best_prec
+            results[f"{name}_UnannotatedRecall"] = best_rec
+            results[f"{name}_NumModules"] = len(modules)
+        else:
+            results[f"{name}_Sensitivity"] = 1 if active_pid in modules else 0
+            inactive = set(true_pathways.keys()) - {active_pid}
+            results[f"{name}_FPR"] = len(set(modules).intersection(inactive)) / len(inactive) if inactive else 0
+
+        if not fit.empty:
+            merged = pd.merge(fit, df, on=["subject_id", "time", "metabolite_id"], how="left")
+            results[f"{name}_Reconstruction_MSE"] = calculate_reconstruction_fidelity(merged, true_mets)
+            merged["method"] = name
+            all_fits.append(merged)
+        else:
+            # Baseline: predict per-metabolite mean when no modules found
+            baseline = df[df["metabolite_id"].isin(true_mets)].copy()
+            baseline["fitted_value"] = baseline.groupby("metabolite_id")["true_mu"].transform("mean")
+            results[f"{name}_Reconstruction_MSE"] = calculate_reconstruction_fidelity(baseline, true_mets)
+
+    # 3. Run Methods
+    timeout = getattr(args, "method_timeout", 1800)
+
+    # MOGP, WGCNA, DPGP run inline — they are well-behaved and don't need timeout protection.
+    mogp_mods, mogp_fit, mogp_W_df = [], pd.DataFrame(), pd.DataFrame()
+    for name, func, skip, is_path in [
+        ("MOGP",  analyze_with_mogp,  args.skip_mogp,  False),
+        ("WGCNA", analyze_with_wgcna, args.skip_wgcna, False),
+        ("DPGP",  analyze_with_dpgp,  args.skip_dpgp,  False),
+    ]:
+        if skip:
+            continue
+        t0 = time.time()
+        if name == "MOGP":
+            mods, fit, mogp_W_df = func(df, verbose=verbose)
+            mogp_mods, mogp_fit = mods, fit
+        else:
+            mods, fit = func(df, verbose=verbose)
+        results[f"{name}_Time"] = time.time() - t0
+        process(name, mods, fit, is_path)
+
+    # MEFISTO: times out at n_subjects=100 (~3.5h per replicate at 25 iters).
+    # Wrapped with timeout so DNF is recorded cleanly rather than hanging the run.
+    if not args.skip_mefisto:
+        result, elapsed = _timed_call(
+            analyze_with_mefisto, args=(df,), kwargs={"verbose": verbose},
+            timeout=timeout)
+        if result is None:
+            _record_timeout(results, "MEFISTO", False, run_id, elapsed)
+        else:
+            results["MEFISTO_Time"] = elapsed
+            process("MEFISTO", result[0], result[1], False)
+
+    # MOGP_ORA: hypergeometric ORA per MOGP module against each annotated pathway.
+    if not args.skip_mogp and mogp_mods:
+        t0 = time.time()
+        mogp_ora_paths = analyze_with_mogp_ora(mogp_mods, annotated_pathways, all_ids)
+        results["MOGP_ORA_Time"] = results.get("MOGP_Time", 0.0) + (time.time() - t0)
+        # Total pipeline time = MOGP training + ORA enrichment step
+        process("MOGP_ORA", mogp_ora_paths, mogp_fit, is_pathway=True)
+
+    # MOGP_GSEA: preranked GSEA on |W[:,k]| per factor against annotated pathways.
+    if not args.skip_mogp and not mogp_W_df.empty:
+        t0 = time.time()
+        mogp_gsea_paths = analyze_with_mogp_gsea(mogp_W_df, annotated_pathways)
+        results["MOGP_GSEA_Time"] = results.get("MOGP_Time", 0.0) + (time.time() - t0)
+        process("MOGP_GSEA", mogp_gsea_paths, mogp_fit, is_pathway=True)
+
+    if not args.skip_meba:
+        t0 = time.time()
+        paths, fit = analyze_with_meba(df, annotated_pathways, verbose=verbose)
+        results["MEBA_Time"] = time.time() - t0
+        process("MEBA", paths, fit, True)
+
+    if not args.skip_pal and args.add_group_covariate:
+        t0 = time.time()
+        paths, fit = analyze_with_pal(df, annotated_pathways, verbose=verbose)
+        results["PAL_Time"] = time.time() - t0
+        process("PAL", paths, fit, True)
+
+    # timeOmics: times out at n_subjects=100 (bimodal: ~7s or ~4000s).
+    # Wrapped with timeout so runaway lmms fits are killed cleanly.
+    if not args.skip_timeomics:
+        result, elapsed = _timed_call(
+            analyze_with_timeomics, args=(df,), kwargs={"verbose": verbose},
+            timeout=timeout)
+        if result is None:
+            _record_timeout(results, "timeOmics", False, run_id, elapsed)
+        else:
+            results["timeOmics_Time"] = elapsed
+            process("timeOmics", result[0], result[1], False)
+
+    if not args.skip_lmm:
+        t0 = time.time()
+        lmm_res, lmm_fit = fit_metabolite_lmms(df, verbose=verbose)
+        lmm_fit_time = time.time() - t0
+        results["LMM_Fit_Time"] = lmm_fit_time
+
+        t0 = time.time()
+        process("LMM_ORA", analyze_with_lmm_ora(lmm_res, annotated_pathways), lmm_fit, True)
+        results["LMM_ORA_Time"] = lmm_fit_time + (time.time() - t0)
+        # Total pipeline time = LMM fitting + ORA enrichment step
+
+        t0 = time.time()
+        process("LMM_GSEA", analyze_with_lmm_gsea(lmm_res, annotated_pathways), lmm_fit, True)
+        results["LMM_GSEA_Time"] = lmm_fit_time + (time.time() - t0)
+        # Total pipeline time = LMM fitting + GSEA enrichment step
+
+    if getattr(args, "skip_fitted_predictions", False):
+        return results, pd.DataFrame()
+    final_fit = pd.concat(all_fits, ignore_index=True) if all_fits else pd.DataFrame()
+    if not final_fit.empty: final_fit["run_id"] = run_id
+    return results, final_fit
+
+def main():
+    setup_environment()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_subjects", type=int, default=100)
+    parser.add_argument("--n_metabolites", type=int, default=500)
+    parser.add_argument("--n_pathways", type=int, default=5)
+    parser.add_argument("--metabolites_per_pathway", type=int, default=20)
+    parser.add_argument("--n_time_points", type=int, default=5)
+    parser.add_argument("--annotation_fraction", type=float, default=0.7)
+    parser.add_argument("--n_runs", type=int, default=1)
+    parser.add_argument("--n_jobs", type=int, default=1)
+    parser.add_argument("--output_dir", type=str, default="simulation_results")
+    parser.add_argument("--seed", type=int, default=9102)
+    parser.add_argument("--skip_mogp", action="store_true")
+    parser.add_argument("--skip_wgcna", action="store_true")
+    parser.add_argument("--skip_lmm", action="store_true")
+    parser.add_argument("--skip_mefisto", action="store_true")
+    parser.add_argument("--skip_dpgp", action="store_true")
+    parser.add_argument("--skip_timeomics", action="store_true")
+    parser.add_argument("--skip_pal", action="store_true")
+    parser.add_argument("--skip_meba", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--skip_fitted_predictions", action="store_true",
+                        help="Skip writing fitted_predictions.csv (metrics in benchmark_results.csv are unaffected)")
+    parser.add_argument("--condition_label", type=str, default="",
+                        help="Label written to benchmark_results.csv to identify this condition in aggregate analysis")
+    parser.add_argument("--add_group_covariate", action="store_true")
+    parser.add_argument(
+        "--effect_type", type=str, default="spike",
+        choices=["spike", "linear", "perturbation"],
+    )
+    parser.add_argument("--effect_magnitude", type=float, default=2.5)
+    parser.add_argument("--subject_noise", type=float, default=0.2)
+    parser.add_argument("--pathway_noise", type=float, default=0.3)
+    parser.add_argument("--irregular_sampling_sd", type=float, default=1.5)
+    parser.add_argument("--dispersion", type=float, default=20.0,
+                        help="NB dispersion r (median when --dispersion_spread > 0)")
+    parser.add_argument("--dispersion_spread", type=float, default=0.0,
+                        help="Sigma of LogNormal for per-metabolite dispersion (0 = shared scalar)")
+    parser.add_argument("--nuisance_fraction", type=float, default=0.1)
+    parser.add_argument("--nuisance_amplitude", type=float, default=1.5)
+    parser.add_argument("--nuisance_period", type=float, default=10.0)
+    parser.add_argument("--method_timeout", type=int, default=1800,
+                        help="Per-method wall-clock timeout in seconds (default 1800). "
+                             "Methods exceeding this are recorded as NaN.")
+
+    args = parser.parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
+    results_path = os.path.join(args.output_dir, "benchmark_results.csv")
+    fit_path = os.path.join(args.output_dir, "fitted_predictions.csv")
+    seeds = [args.seed + i for i in range(args.n_runs)]
+    all_res, all_fit = [], []
+
+    # Resume: load any previously completed runs so we can skip their seeds
+    completed_ids = set()
+    if os.path.exists(results_path):
+        existing = pd.read_csv(results_path)
+        all_res = existing.to_dict("records")
+        completed_ids = set(existing["run_id"].tolist())
+        if completed_ids:
+            print(f"Resuming: {len(completed_ids)}/{args.n_runs} runs already done, skipping {sorted(completed_ids)}")
+
+    def _save(r, fit):
+        """Append result row and fit frame; rewrite CSV after every completed run."""
+        all_res.append(r)
+        all_fit.append(fit)
+        pd.DataFrame(all_res).to_csv(results_path, index=False)
+        if not args.skip_fitted_predictions:
+            fit_frames = [f for f in all_fit if isinstance(f, pd.DataFrame) and not f.empty]
+            if fit_frames:
+                pd.concat(fit_frames).to_csv(fit_path, index=False)
+
+    pending = [(i + 1, s) for i, s in enumerate(seeds) if (i + 1) not in completed_ids]
+
+    if args.n_jobs > 1:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=args.n_jobs) as ex:
+            futures = {ex.submit(run_single_replicate, run_id, s, args): run_id for run_id, s in pending}
+            for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+                run_id = futures[f]
+                try:
+                    r, fit = f.result()
+                    _save(r, fit)
+                except Exception as e:
+                    print(f"\n[run {run_id}] FAILED: {type(e).__name__}: {e}", flush=True)
+    else:
+        for run_id, s in pending:
+            try:
+                r, fit = run_single_replicate(run_id, s, args)
+                _save(r, fit)
+            except Exception as e:
+                print(f"\n[run {run_id}] FAILED: {type(e).__name__}: {e}", flush=True)
+
+    if all_res:
+        # Regenerate visualizations once at the end over the full result set
+        print(f"Generating visualizations in {args.output_dir}...")
+        visualize_benchmark_results(results_path, args.output_dir)
+
+if __name__ == "__main__":
+    main()
