@@ -1233,7 +1233,7 @@ class GPSearch:
             # Add models to dictionary and calculate explained values
             for m, feat in zip(out, i):
                 self.models[feat] = m["models"][m["best_model"]]["model"]
-                self.models[feat].get_variance_explained(
+                self.models[feat].get_feature_importances(
                     data=convert_data_to_tensors(
                         self.X.to_numpy(), self.Y[feat].to_numpy().reshape(-1, 1)
                     )
