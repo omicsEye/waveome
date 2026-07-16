@@ -19,6 +19,7 @@ from .utilities import (
     calc_bic,
     calc_feature_importance_components,
     convert_data_to_tensors,
+    feature_importance_detail_to_flat,
     find_variance_components,
     find_variance_components_tf,
     gp_likelihood_crosswalk,
@@ -543,7 +544,13 @@ class BaseGP(gpflow.models.SVGP):
             Xnew, full_cov=full_cov, full_output_cov=full_output_cov
         )
 
-    def get_feature_importances(self, data=None, return_value="log_bf"):
+    def get_feature_importances(
+        self,
+        data=None,
+        return_value="log_bf",
+        refit=True,
+        refit_options=None,
+    ):
         """Calculates feature importance for each additive kernel component.
 
         Arguments
@@ -552,20 +559,46 @@ class BaseGP(gpflow.models.SVGP):
             Tuple of (X, Y) data to use for calculating feature importance.
         return_value: str
             Value to return for each component. Options are:
-            "log_bf" (default - log bayes factor), "statistic" (chi-squared),
-            "de" (deviance explained). See calc_feature_importance_components
-            for more details.
+            "log_bf" (default - log bayes factor, = -0.5 * delta_bic),
+            "statistic" (raw delta_bic = BIC_full - BIC_reduced),
+            anything else (marginal deviance explained). See
+            calc_feature_importance_components for more details.
+        refit: bool
+            If True (default), each reduced (component-dropped) model is
+            re-optimized -- warm-started from the full model's fitted
+            parameters -- before importances are computed. If False,
+            reproduces the legacy no-refit behavior.
+        refit_options: dict
+            Passed through to `optimize_params(...)` for each reduced-model
+            refit. Ignored when refit=False.
 
         Returns
         -------
         None
-            Feature importances in self.feature_importances
+            Feature importances in self.feature_importances. When
+            refit=True, the full per-component detail (delta_bic, log_bf,
+            deviance_explained -- all from the same refit) is also stored in
+            self.feature_importance_detail.
         """
 
         # var_list = calc_rsquare(self, data=data)
-        importance_list = calc_feature_importance_components(
-            model=self, data=data, return_value=return_value
-        )
+        if refit:
+            detail_list = calc_feature_importance_components(
+                model=self,
+                data=data,
+                refit=True,
+                refit_options=refit_options,
+                full_detail=True,
+            )
+            self.feature_importance_detail = detail_list
+            importance_list = feature_importance_detail_to_flat(
+                detail_list, return_value
+            )
+        else:
+            self.feature_importance_detail = None
+            importance_list = calc_feature_importance_components(
+                model=self, data=data, return_value=return_value, refit=False
+            )
 
         # Fix ListWrapper issue with Tensorflow tensors
         self.feature_importances = list(importance_list)

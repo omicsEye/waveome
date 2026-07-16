@@ -1,5 +1,6 @@
 import contextlib
 import time
+import warnings
 from ctypes import ArgumentError
 from xml.etree.ElementInclude import include
 
@@ -614,12 +615,11 @@ def calc_deviance_explained(
         return null_deviance, model_deviance
 
 
-def calc_feature_importance_components(
+def _calc_feature_importance_components_legacy(
     model, data=None, return_value="log_bf"
 ):
-    """Calculate deviance explained for entire model and use 1 - that for
-    residual component. Then for each kernel component calculate the return
-    value [log_bf, statistic, de].
+    """Legacy (pre-refit) no-refit plug-in predictive-log-density behavior.
+    Kept only for `calc_feature_importance_components(..., refit=False)`.
     """
 
     # Save output list
@@ -708,6 +708,181 @@ def calc_feature_importance_components(
     de_list += [np.round(1 - full_de, 3)]
 
     return de_list
+
+
+def feature_importance_detail_to_flat(detail_list, return_value="log_bf"):
+    """Project a `calc_feature_importance_components(..., full_detail=True)`
+    detail list down to the flat scalar-per-component list historically
+    returned by `calc_feature_importance_components`/`get_feature_importances`.
+
+    The trailing "leftover noise" entry is always reported in deviance-
+    explained units, regardless of `return_value` -- matching the pre-refit
+    contract.
+    """
+    key = {"statistic": "delta_bic", "log_bf": "log_bf"}.get(
+        return_value, "deviance_explained"
+    )
+    flat = [d[key] for d in detail_list[:-1]]
+    flat.append(detail_list[-1]["deviance_explained"])
+    return flat
+
+
+def calc_feature_importance_components(
+    model,
+    data=None,
+    return_value="log_bf",
+    refit=True,
+    refit_options=None,
+    full_detail=False,
+):
+    """Calculate an evidence statistic and marginal deviance explained for
+    each additive kernel component, by refitting the model with that
+    component dropped (frozen decision: refit required, warm-started from
+    the full model's fitted parameters).
+
+    Parameters
+    ----------
+    return_value: str
+        "log_bf" (default): log Bayes factor, log_bf = -0.5 * delta_bic.
+        "statistic": raw delta_bic = BIC_full - BIC_reduced. Sign convention:
+            more negative delta_bic (equivalently, larger log_bf) = more
+            evidence the component matters.
+        anything else: marginal (drop-one) deviance explained.
+        Ignored when `full_detail=True`.
+    refit: bool
+        If True (default), each reduced (component-dropped) model is
+        re-optimized -- warm-started from the full model's fitted parameters
+        via deepcopy -- before delta_bic / deviance explained are computed.
+        If False, reproduces the legacy no-refit plug-in predictive-log-
+        density behavior (`_calc_feature_importance_components_legacy`).
+    refit_options: dict
+        Passed through to `model.optimize_params(...)` for each reduced-
+        model refit. Ignored when refit=False.
+    full_detail: bool
+        If True, return a list of dicts (one per component, in the same
+        order as the flat list, plus the trailing leftover-noise entry) with
+        keys "delta_bic", "log_bf", "deviance_explained" -- all computed
+        from the same refit, so callers needing more than one quantity do
+        not have to refit twice. Ignored when refit=False.
+    """
+    if not refit:
+        return _calc_feature_importance_components_legacy(
+            model, data=data, return_value=return_value
+        )
+
+    # adam/gradient avoids a vanishing-gradient trap scipy/L-BFGS-B can hit
+    # when a surviving component's variance has already collapsed near zero.
+    refit_options = {"optimizer": "adam/gradient", **(refit_options or {})}
+    if getattr(model, "optimizer", None) not in (None, "adam/gradient"):
+        warnings.warn(
+            f"Full model was fit with optimizer={model.optimizer!r}, but "
+            "component refits use 'adam/gradient'; delta_bic may partly "
+            "reflect differing optimizer quality, not just the dropped "
+            "component."
+        )
+    k = model.kernel
+
+    def _bic(m):
+        # optimize_params(optimizer="adam/gradient") leaves q_mu/q_sqrt
+        # untrainable afterward, which would otherwise skew calc_metric's
+        # BIC (k = len(trainable_parameters)). Restore before counting.
+        set_trainable(m.q_mu, True)
+        set_trainable(m.q_sqrt, True)
+        return m.calc_metric(data=data, metric="BIC")
+
+    # Full-model deviance decomposition (used as the fixed reference for
+    # marginal deviance explained, and for the leftover-noise entry).
+    full_mu_hat, full_var_hat = model.predict_y(data[0])
+    null_lls, mod_lls, sat_lls = calc_deviance_explained(
+        model=model,
+        data=data,
+        model_mu=full_mu_hat,
+        model_var=full_var_hat,
+        return_deviance_explained=False,
+        aggregate=False,
+        return_loglik=True,
+    )
+    if np.sum(sat_lls) >= np.sum(mod_lls) and np.sum(mod_lls) >= np.sum(
+        null_lls
+    ):
+        full_de = 1 - (
+            -2 * np.sum(mod_lls - sat_lls) / (-2 * np.sum(null_lls - sat_lls))
+        )
+        full_de = max(min(1, full_de), 0)
+    else:
+        full_de = 0
+
+    full_bic = _bic(model)
+
+    def _refit(model_copy):
+        # Warm start: model_copy already holds the full model's fitted
+        # values (from the deepcopy) for every surviving parameter.
+        model_copy.num_trainable_params = np.nan
+        model_copy.optimize_params(data=data, **refit_options)
+        return model_copy
+
+    def _component_result(model_copy):
+        reduced_bic = _bic(model_copy)
+        delta_bic = full_bic - reduced_bic
+        log_bf = -0.5 * delta_bic
+
+        mod_mu_hat, mod_var_hat = model_copy.predict_y(data[0])
+        null_lls_r, sub_mod_lls, _ = calc_deviance_explained(
+            model=model_copy,
+            data=data,
+            model_mu=mod_mu_hat,
+            model_var=mod_var_hat,
+            return_deviance_explained=False,
+            aggregate=False,
+            return_loglik=True,
+        )
+        # Fraction of the full model's gain-over-null attributable to this
+        # component (high = important, ~0 = null).
+        marginal_de = (
+            -2 * np.sum(sub_mod_lls - mod_lls)
+            / (-2 * np.sum(null_lls_r - mod_lls))
+        )
+        marginal_de = np.round(max(min(1, marginal_de), 0), 3)
+
+        return {
+            "delta_bic": np.round(delta_bic, 1),
+            "log_bf": np.round(log_bf, 1),
+            "deviance_explained": marginal_de,
+        }
+
+    detail_list = []
+    if k.name == "sum":
+        for k_idx in range(len(k.kernels)):
+            model_copy = gpflow.utilities.deepcopy(model)
+            _ = model_copy.kernel.kernels.pop(k_idx)
+            detail_list.append(_component_result(_refit(model_copy)))
+
+    else:
+        # If there is just a single term, the reduced model is the
+        # constant-kernel baseline (matches cut_kernel_components).
+        if k.name == "constant":
+            detail_list.append(
+                {"delta_bic": 0.0, "log_bf": 0.0, "deviance_explained": 0.0}
+            )
+        else:
+            model_copy = gpflow.utilities.deepcopy(model)
+            model_copy.kernel = gpflow.kernels.Constant()
+            detail_list.append(_component_result(_refit(model_copy)))
+
+    # Gather the final bit for leftover noise (always deviance-explained
+    # units, matching the pre-refit contract).
+    detail_list.append(
+        {
+            "delta_bic": None,
+            "log_bf": None,
+            "deviance_explained": np.round(1 - full_de, 3),
+        }
+    )
+
+    if full_detail:
+        return detail_list
+
+    return feature_importance_detail_to_flat(detail_list, return_value)
 
 
 def individual_kernel_predictions(
