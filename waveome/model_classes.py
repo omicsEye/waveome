@@ -15,6 +15,7 @@ from .kernels import Categorical, Empty
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import make_folds
 from .utilities import (
+    VAR_CUTOFF_DEFAULT,
     calc_bic,
     calc_feature_importance_components,
     convert_data_to_tensors,
@@ -1025,7 +1026,7 @@ class PenalizedGP(BaseGP):
 
     #     return None
 
-    def cut_kernel_components(self, data=None, var_cutoff: float = 0.1):
+    def cut_kernel_components(self, data=None, var_cutoff: float = VAR_CUTOFF_DEFAULT):
         """Prune out kernel components with small variance parameters and large
         lengthscale parameters (w.r.t. input domain).
 
@@ -1033,6 +1034,7 @@ class PenalizedGP(BaseGP):
         ----------
         model
         var_cutoff
+            Numerical pre-filter threshold.
 
         Returns
         -------

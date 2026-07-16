@@ -29,6 +29,10 @@ from .likelihoods import (
 
 f64 = gpflow.utilities.to_default_float
 
+# Numerical pre-filter for kernel-component pruning (cut_kernel_components in
+# model_classes.py and regularization.py) -- not a significance/selection rule.
+VAR_CUTOFF_DEFAULT = 1e-8
+
 
 def set_precision(precision: str = "float64"):
     """
