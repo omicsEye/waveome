@@ -31,6 +31,18 @@ from .utilities import (
 f64 = gpflow.utilities.to_default_float
 
 
+def _kernel_is_effectively_constant(k):
+    """True if `k` is a bare Constant() kernel, or a Sum/Product combination
+    whose every child is Constant() -- i.e. the kernel has no dependence on
+    input locations, regardless of top-level wrapping.
+    """
+    if k.name == "constant":
+        return True
+    if hasattr(k, "kernels"):
+        return all(kk.name == "constant" for kk in k.kernels)
+    return False
+
+
 class BaseGP(gpflow.models.SVGP):
     """Basic Gaussian process that inherits SVGP gpflow structure.
 
@@ -278,6 +290,21 @@ class BaseGP(gpflow.models.SVGP):
         tf.keras.backend.clear_session()
         gpflow.utilities.reset_cache_bijectors(self)
 
+        # Make sure we freeze inducing points if the kernel is effectively
+        # Constant() (no dependence on input locations), otherwise we get an
+        # unconnected gradient error, regardless of optimizer.
+        # issue: https://github.com/GPflow/GPflow/issues/1600
+        if _kernel_is_effectively_constant(self.kernel):
+            gpflow.utilities.set_trainable(self.inducing_variable, False)
+
+            # A Constant() kernel gives a rank-deficient prior covariance,
+            # which makes adam/gradient's NaturalGradient step on q_mu/q_sqrt
+            # hit a CheckNumerics/VerifyFinite failure. scipy doesn't use
+            # natural gradients, so fall back to it whenever adam/gradient
+            # would otherwise run (explicitly requested, or auto-selected).
+            if optimizer in (None, "adam/gradient"):
+                optimizer = "scipy"
+
         # Can we just use BFGS for "smaller" models? Exclude variational params
         # tot_params = 0
         # for var_set in [
@@ -314,12 +341,6 @@ class BaseGP(gpflow.models.SVGP):
                 #     "ftol": convergence_threshold,
                 #     "maxcor": 100
             }
-
-            # Make sure we freeze inducing points if the kernel is Constant()
-            # otherwise we get unconnected gradient error
-            # issue: https://github.com/GPflow/GPflow/issues/1600
-            if self.kernel.name == "constant":
-                gpflow.utilities.set_trainable(self.inducing_variable, False)
 
             for attempt in range(5):
                 try:

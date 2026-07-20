@@ -34,6 +34,13 @@ f64 = gpflow.utilities.to_default_float
 # model_classes.py and regularization.py) -- not a significance/selection rule.
 VAR_CUTOFF_DEFAULT = 1e-8
 
+# calc_feature_importance_components: value used to evaluate a component's
+# counterfactual "removed" state without refitting, for components already
+# below VAR_CUTOFF_DEFAULT (see _clamp_result). Far more extreme than any
+# naturally-collapsed fitted variance observed (~1e-20 to ~1e-90), but not so
+# extreme it destabilizes the Cholesky decomposition in log_posterior_density.
+COMPONENT_CLAMP_VALUE = 1e-150
+
 
 def set_precision(precision: str = "float64"):
     """
@@ -740,6 +747,16 @@ def calc_feature_importance_components(
     component dropped (frozen decision: refit required, warm-started from
     the full model's fitted parameters).
 
+    Exception: a component whose fitted variance is already below
+    VAR_CUTOFF_DEFAULT skips the refit and instead evaluates the same
+    fitted model's likelihood with that component's variance clamped to an
+    extreme near-zero value (COMPONENT_CLAMP_VALUE), using k_full - 1 for
+    the comparison's parameter count. This is safe specifically because the
+    component is already collapsed: the full model's other parameters were
+    already optimized as if it contributed nothing, so a refit would barely
+    move them -- but it is not used above the floor, where a refit-free
+    comparison would be a biased comparison.
+
     Parameters
     ----------
     return_value: str
@@ -813,6 +830,7 @@ def calc_feature_importance_components(
         full_de = 0
 
     full_bic = _bic(model)
+    k_full = len(model.trainable_parameters)
 
     def _refit(model_copy):
         # Warm start: model_copy already holds the full model's fitted
@@ -838,11 +856,61 @@ def calc_feature_importance_components(
         )
         # Fraction of the full model's gain-over-null attributable to this
         # component (high = important, ~0 = null).
-        marginal_de = (
-            -2 * np.sum(sub_mod_lls - mod_lls)
-            / (-2 * np.sum(null_lls_r - mod_lls))
+        denom = -2 * np.sum(null_lls_r - mod_lls)
+        if denom != 0:
+            marginal_de = (-2 * np.sum(sub_mod_lls - mod_lls)) / denom
+            marginal_de = np.round(max(min(1, marginal_de), 0), 3)
+        else:
+            marginal_de = 0.0
+
+        return {
+            "delta_bic": np.round(delta_bic, 1),
+            "log_bf": np.round(log_bf, 1),
+            "deviance_explained": marginal_de,
+        }
+
+    def _needs_clamp(kernel_obj):
+        # Only for components already below the numerical pre-filter: the
+        # full model's other parameters are already effectively optimized
+        # as if this component didn't exist, so a refit would barely move
+        # them -- skip it and evaluate the counterfactual directly.
+        try:
+            return float(kernel_obj.variance.numpy()) < VAR_CUTOFF_DEFAULT
+        except (AttributeError, TypeError):
+            return False
+
+    def _clamp_result(kernel_obj):
+        original_value = kernel_obj.variance.numpy()
+        try:
+            kernel_obj.variance.assign(COMPONENT_CLAMP_VALUE)
+            ll_clamped = model.log_posterior_density(data).numpy()
+            mu_c, var_c = model.predict_y(data[0])
+            null_lls_c, sub_mod_lls, _ = calc_deviance_explained(
+                model=model,
+                data=data,
+                model_mu=mu_c,
+                model_var=var_c,
+                return_deviance_explained=False,
+                aggregate=False,
+                return_loglik=True,
+            )
+        finally:
+            kernel_obj.variance.assign(original_value)
+
+        # The clamped component is fixed, not free: k_full - 1, matching
+        # the same BIC formula the refit path uses, just without refitting.
+        reduced_bic = calc_bic(
+            loglik=ll_clamped, n=data[0].shape[0], k=k_full - 1
         )
-        marginal_de = np.round(max(min(1, marginal_de), 0), 3)
+        delta_bic = full_bic - reduced_bic
+        log_bf = -0.5 * delta_bic
+
+        denom = -2 * np.sum(null_lls_c - mod_lls)
+        if denom != 0:
+            marginal_de = (-2 * np.sum(sub_mod_lls - mod_lls)) / denom
+            marginal_de = np.round(max(min(1, marginal_de), 0), 3)
+        else:
+            marginal_de = 0.0
 
         return {
             "delta_bic": np.round(delta_bic, 1),
@@ -853,9 +921,13 @@ def calc_feature_importance_components(
     detail_list = []
     if k.name == "sum":
         for k_idx in range(len(k.kernels)):
-            model_copy = gpflow.utilities.deepcopy(model)
-            _ = model_copy.kernel.kernels.pop(k_idx)
-            detail_list.append(_component_result(_refit(model_copy)))
+            target = k.kernels[k_idx]
+            if _needs_clamp(target):
+                detail_list.append(_clamp_result(target))
+            else:
+                model_copy = gpflow.utilities.deepcopy(model)
+                _ = model_copy.kernel.kernels.pop(k_idx)
+                detail_list.append(_component_result(_refit(model_copy)))
 
     else:
         # If there is just a single term, the reduced model is the
@@ -864,6 +936,8 @@ def calc_feature_importance_components(
             detail_list.append(
                 {"delta_bic": 0.0, "log_bf": 0.0, "deviance_explained": 0.0}
             )
+        elif _needs_clamp(k):
+            detail_list.append(_clamp_result(k))
         else:
             model_copy = gpflow.utilities.deepcopy(model)
             model_copy.kernel = gpflow.kernels.Constant()
