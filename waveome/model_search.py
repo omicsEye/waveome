@@ -247,6 +247,14 @@ class GPSearch:
         variational_options["likelihood"] = self.likelihood
 
         # Parallel model building function
+        # max_calls=1: recycle the worker process after every metabolite --
+        # long sequential GPflow/TF model fits in one process have been
+        # observed to accumulate an unbounded resource leak, eventually
+        # causing a fatal crash or a silent non-finite result. max_retries=5
+        # recovers from the rare case where a worker dies mid-task. Do not
+        # remove/relax either without re-validating against that failure
+        # mode (confirmed via subprocess isolation: zero failures across
+        # 150 isolated fits vs. frequent failures in one long-lived process).
         @ray.remote(max_calls=1, max_retries=5)
         def model_build_steps_remote(
             self_X,
