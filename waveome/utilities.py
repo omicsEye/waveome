@@ -830,6 +830,14 @@ def calc_feature_importance_components(
         full_de = 0
 
     full_bic = _bic(model)
+    if not np.isfinite(full_bic):
+        raise ValueError(
+            "calc_feature_importance_components: the full model's own BIC "
+            "is non-finite (fitted model appears degenerate); cannot "
+            "compute component importances. Re-fit the full model and "
+            "retry -- this has been observed as a rare, non-reproducible "
+            "numerical fault, not a deterministic property of the data."
+        )
     k_full = len(model.trainable_parameters)
 
     def _refit(model_copy):
@@ -880,7 +888,13 @@ def calc_feature_importance_components(
             return False
 
     def _clamp_result(kernel_obj):
-        original_value = kernel_obj.variance.numpy()
+        # Save/restore the underlying *unconstrained* variable directly,
+        # not the constrained value via .assign(): round-tripping an
+        # already-extreme constrained value back through the bijector's
+        # inverse transform can overflow to +-Inf and fail Parameter.assign's
+        # finiteness check, even though the value was valid before we
+        # touched it.
+        original_unconstrained = kernel_obj.variance.unconstrained_variable.numpy()
         try:
             kernel_obj.variance.assign(COMPONENT_CLAMP_VALUE)
             ll_clamped = model.log_posterior_density(data).numpy()
@@ -895,7 +909,7 @@ def calc_feature_importance_components(
                 return_loglik=True,
             )
         finally:
-            kernel_obj.variance.assign(original_value)
+            kernel_obj.variance.unconstrained_variable.assign(original_unconstrained)
 
         # The clamped component is fixed, not free: k_full - 1, matching
         # the same BIC formula the refit path uses, just without refitting.
@@ -918,16 +932,44 @@ def calc_feature_importance_components(
             "deviance_explained": marginal_de,
         }
 
+    def _refit_result_with_retry(make_reduced_kernel, max_attempts=2):
+        # The refit itself can occasionally return a non-finite result --
+        # observed to be a rare, non-reproducible numerical fault (not a
+        # deterministic function of the data or of how many prior fits
+        # happened in this process), so retrying with a fresh deepcopy can
+        # succeed even though nothing about the inputs changed. If every
+        # attempt is non-finite, return the last one anyway (with a
+        # warning) rather than raise, so one bad component doesn't stop
+        # every other component from being reported.
+        result = None
+        for _attempt in range(max_attempts):
+            model_copy = gpflow.utilities.deepcopy(model)
+            make_reduced_kernel(model_copy)
+            result = _component_result(_refit(model_copy))
+            if np.isfinite(result["log_bf"]):
+                return result
+        warnings.warn(
+            "calc_feature_importance_components: refit produced a "
+            f"non-finite log_bf after {max_attempts} attempts; returning "
+            "it as-is. This component's result should be treated as "
+            "unreliable."
+        )
+        return result
+
     detail_list = []
     if k.name == "sum":
         for k_idx in range(len(k.kernels)):
             target = k.kernels[k_idx]
-            if _needs_clamp(target):
-                detail_list.append(_clamp_result(target))
-            else:
-                model_copy = gpflow.utilities.deepcopy(model)
-                _ = model_copy.kernel.kernels.pop(k_idx)
-                detail_list.append(_component_result(_refit(model_copy)))
+            result = _clamp_result(target) if _needs_clamp(target) else None
+            # Rare numerical edge case: the clamp evaluation itself can
+            # produce a non-finite likelihood for some fitted states. Fall
+            # back to the (more expensive but more robust) refit path
+            # rather than propagate a NaN/Inf result.
+            if result is None or not np.isfinite(result["log_bf"]):
+                result = _refit_result_with_retry(
+                    lambda m, idx=k_idx: m.kernel.kernels.pop(idx)
+                )
+            detail_list.append(result)
 
     else:
         # If there is just a single term, the reduced model is the
@@ -936,12 +978,13 @@ def calc_feature_importance_components(
             detail_list.append(
                 {"delta_bic": 0.0, "log_bf": 0.0, "deviance_explained": 0.0}
             )
-        elif _needs_clamp(k):
-            detail_list.append(_clamp_result(k))
         else:
-            model_copy = gpflow.utilities.deepcopy(model)
-            model_copy.kernel = gpflow.kernels.Constant()
-            detail_list.append(_component_result(_refit(model_copy)))
+            result = _clamp_result(k) if _needs_clamp(k) else None
+            if result is None or not np.isfinite(result["log_bf"]):
+                result = _refit_result_with_retry(
+                    lambda m: setattr(m, "kernel", gpflow.kernels.Constant())
+                )
+            detail_list.append(result)
 
     # Gather the final bit for leftover noise (always deviance-explained
     # units, matching the pre-refit contract).
