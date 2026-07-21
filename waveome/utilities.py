@@ -1002,6 +1002,96 @@ def calc_feature_importance_components(
     return feature_importance_detail_to_flat(detail_list, return_value)
 
 
+def calc_empirical_pvalue(obs, null):
+    """Empirical p-value(s) against a null pool.
+
+    p = (1 + #{null >= obs}) / (1 + B) -- frozen decision (revision plan,
+    item 4). Larger values of the statistic mean more evidence (matches the
+    log_bf sign convention), so the tail counted is the upper tail.
+
+    Parameters
+    ----------
+    obs : scalar or array-like
+        Observed evidence statistic(s) (e.g. log_bf).
+    null : array-like
+        Pool of B null-distribution draws of the same statistic.
+
+    Returns
+    -------
+    A scalar p-value if `obs` is scalar, else an np.ndarray aligned to
+    `obs`.
+    """
+    obs_arr = np.atleast_1d(np.asarray(obs, dtype=float))
+    null_arr = np.asarray(null, dtype=float)
+    if null_arr.size == 0:
+        raise ValueError("calc_empirical_pvalue: null pool is empty.")
+    counts = (null_arr[None, :] >= obs_arr[:, None]).sum(axis=1)
+    pvals = (1 + counts) / (1 + null_arr.size)
+    return pvals.item() if np.ndim(obs) == 0 else pvals
+
+
+def calc_bh_qvalues(pvalues):
+    """Benjamini-Hochberg q-values (adjusted p-values).
+
+    Standard step-up procedure: sort ascending, scale by n / rank, then
+    take the cumulative minimum from the largest p-value down so q-values
+    are monotone non-decreasing in the sorted p-value order.
+    """
+    pvals = np.asarray(pvalues, dtype=float)
+    n = pvals.size
+    order = np.argsort(pvals)
+    ranked = pvals[order] * n / (np.arange(n) + 1)
+    q_sorted = np.clip(np.minimum.accumulate(ranked[::-1])[::-1], 0, 1)
+    qvals = np.empty(n)
+    qvals[order] = q_sorted
+    return qvals
+
+
+def empirical_null_bh(obs_values, null_values, obs_groups=None, null_groups=None):
+    """Empirical-null p-values + BH q-values for a set of observed evidence
+    statistics (e.g. per-(kernel, covariate) log_bf), against a pool of
+    known-null draws of the same statistic.
+
+    Frozen decision (revision plan, item 4): significance = empirical-null +
+    BH, stratified per (kernel, covariate) pair. Pass `obs_groups`/
+    `null_groups` (parallel arrays of group labels, e.g. "kernel:covariate"
+    strings, one per entry in `obs_values`/`null_values`) to stratify: each
+    group gets its own null pool and its own BH pass. Omitting them pools
+    everything into one null distribution and one BH pass -- the plan's
+    acceptance check uses this only as the contrast case, since pooling
+    across strata that differ systematically over-rejects.
+
+    Returns
+    -------
+    (pvalues, qvalues) : np.ndarray pair, aligned to `obs_values`.
+    """
+    obs_values = np.asarray(obs_values, dtype=float)
+    null_values = np.asarray(null_values, dtype=float)
+
+    if obs_groups is None:
+        pvalues = calc_empirical_pvalue(obs_values, null_values)
+        qvalues = calc_bh_qvalues(pvalues)
+        return pvalues, qvalues
+
+    obs_groups = np.asarray(obs_groups)
+    null_groups = np.asarray(null_groups)
+    pvalues = np.full(obs_values.shape, np.nan)
+    qvalues = np.full(obs_values.shape, np.nan)
+
+    for g in np.unique(obs_groups):
+        obs_mask = obs_groups == g
+        null_mask = null_groups == g
+        if not np.any(null_mask):
+            raise ValueError(
+                f"empirical_null_bh: no null values found for group {g!r}."
+            )
+        p_g = calc_empirical_pvalue(obs_values[obs_mask], null_values[null_mask])
+        pvalues[obs_mask] = p_g
+        qvalues[obs_mask] = calc_bh_qvalues(p_g)
+
+    return pvalues, qvalues
+
+
 def individual_kernel_predictions(
     model,
     kernel_idx,
