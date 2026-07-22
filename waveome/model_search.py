@@ -43,6 +43,43 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["RAY_FUNCTION_SIZE_ERROR_THRESHOLD"] = "30000000"
 f64 = gpflow.utilities.to_default_float
 
+# Tiered thresholds for the within-unit collinearity input check: moderate
+# collinearity only warns, strong collinearity halts unless explicitly
+# acknowledged.
+COLLINEARITY_WARN_CUTOFF = 0.8
+COLLINEARITY_HALT_CUTOFF = 0.95
+
+
+def _within_unit_correlations(X_df, cont_idx, unit_idx):
+    """Pairwise Pearson correlation among continuous covariates.
+
+    Each covariate is centered by its own unit-level mean first (if
+    `unit_idx` is given), so between-unit differences don't mask or
+    manufacture a within-unit relationship. A pair is skipped if either
+    covariate has no within-unit variation (e.g. a baseline covariate
+    that's constant per unit) -- there is no within-unit collinearity to
+    detect when one side never varies within a unit.
+
+    Returns a dict {(i, j): r} keyed by original column index pairs
+    (i < j), for every finite, computable pair.
+    """
+    cont_df = X_df.iloc[:, cont_idx]
+    if unit_idx is not None:
+        unit_vals = X_df.iloc[:, unit_idx]
+        cont_df = cont_df - cont_df.groupby(unit_vals).transform("mean")
+
+    corr_out = {}
+    n = len(cont_idx)
+    for a in range(n):
+        for b in range(a + 1, n):
+            col_a, col_b = cont_df.iloc[:, a], cont_df.iloc[:, b]
+            if col_a.std() < 1e-12 or col_b.std() < 1e-12:
+                continue
+            r = np.corrcoef(col_a, col_b)[0, 1]
+            if np.isfinite(r):
+                corr_out[(cont_idx[a], cont_idx[b])] = r
+    return corr_out
+
 
 class GPSearch:
     """Gaussian process model search class.
@@ -66,6 +103,12 @@ class GPSearch:
         currently only supports 'gaussian', 'bernoulli',
         or 'poisson' (experimental)
 
+    acknowledge_collinearity: bool
+        If any two continuous covariates are strongly collinear within a
+        unit (correlation, after centering by unit, above
+        COLLINEARITY_HALT_CUTOFF), initialization raises a ValueError
+        unless this is set to True. Default False.
+
     Attributes
     ----------
     """
@@ -79,6 +122,7 @@ class GPSearch:
         Y_transform=None,
         categorical_vars=[],
         outcome_likelihood="gaussian",
+        acknowledge_collinearity=False,
     ):
         X = X.copy()
 
@@ -150,6 +194,45 @@ class GPSearch:
         self.cont_idx = np.where(~np.in1d(np.arange(X.shape[1]), self.cat_idx))[
             0
         ].tolist()
+
+        # Within-unit collinearity input check: moderate collinearity
+        # warns, strong collinearity halts unless the caller explicitly
+        # acknowledges it -- no input() prompts, so this is safe inside a
+        # batch/HPC job.
+        if len(self.cont_idx) > 1:
+            corr_pairs = _within_unit_correlations(X, self.cont_idx, self.unit_idx)
+            halt_pairs = {
+                p: r for p, r in corr_pairs.items() if abs(r) > COLLINEARITY_HALT_CUTOFF
+            }
+            warn_pairs = {
+                p: r
+                for p, r in corr_pairs.items()
+                if COLLINEARITY_WARN_CUTOFF < abs(r) <= COLLINEARITY_HALT_CUTOFF
+            }
+
+            def _pair_str(pairs):
+                return ", ".join(
+                    f"{self.feat_names[i]}~{self.feat_names[j]} (r={r:.2f})"
+                    for (i, j), r in pairs.items()
+                )
+
+            if warn_pairs:
+                warnings.warn(
+                    "Moderate within-unit collinearity detected between: "
+                    f"{_pair_str(warn_pairs)}"
+                )
+            if halt_pairs:
+                if not acknowledge_collinearity:
+                    raise ValueError(
+                        "Strong within-unit collinearity detected between: "
+                        f"{_pair_str(halt_pairs)}. Pass "
+                        "acknowledge_collinearity=True to GPSearch(...) to "
+                        "proceed anyway."
+                    )
+                warnings.warn(
+                    "Proceeding despite strong within-unit collinearity "
+                    f"(acknowledge_collinearity=True): {_pair_str(halt_pairs)}"
+                )
 
         # Standardize continuous X columns
         if standardize_X:
