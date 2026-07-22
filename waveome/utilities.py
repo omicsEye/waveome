@@ -16,6 +16,7 @@ import tqdm
 from gpflow.utilities import set_trainable
 from joblib import Parallel, delayed
 from ray.experimental import tqdm_ray
+from scipy.stats import norm
 from tensorflow_probability import distributions as tfd
 
 from .kernels import Empty
@@ -1090,6 +1091,90 @@ def empirical_null_bh(obs_values, null_values, obs_groups=None, null_groups=None
         qvalues[obs_mask] = calc_bh_qvalues(p_g)
 
     return pvalues, qvalues
+
+
+def calc_hardened_eb_qvalues(log_bf, groups=None, storey_lambda=0.5):
+    """Hardened empirical-Bayes (Efron two-groups) significance fallback.
+
+    Used in place of `empirical_null_bh` when a formal null (known-null
+    simulation components, or permutation replicates) is too expensive to
+    obtain: estimates the null distribution of log_bf directly from its
+    own negative side (a real signal should only push log_bf positive, so
+    the negative side is assumed pure null), rather than requiring
+    external null draws.
+
+    Procedure:
+    1. Fold every negative log_bf value to positive and take its standard
+       deviation (ddof=1).
+    2. Correct for the fact that a folded half-normal's SD underestimates
+       the full normal's SD, by the factor 1 / sqrt(1 - 2/pi).
+    3. One-sided p-value under log_bf ~ Normal(0, sigma_null).
+    4. Storey's pi0 estimator (tuning parameter `storey_lambda`), capped
+       at 1.
+    5. pi0-weighted BH-style q-values (cumulative minimum from the largest
+       p-value down).
+
+    Parameters
+    ----------
+    log_bf : array-like
+        One evidence statistic per observation (e.g. per metabolite, for a
+        single (kernel, covariate) pair).
+    groups : array-like, optional
+        Parallel array of group labels (e.g. "kernel:covariate" strings).
+        Pass to stratify: each group gets its own sigma_null, pi0, and
+        q-value pass. Omit to run once over all of `log_bf`.
+    storey_lambda : float
+        Storey pi0 estimator tuning parameter. Default 0.5.
+
+    Returns
+    -------
+    (pvalues, qvalues, diagnostics) : np.ndarray pair aligned to `log_bf`,
+        plus a dict {group: {"sigma_null":..., "pi0_hat":...}} (group key
+        is None if `groups` was not given).
+    """
+    log_bf = np.asarray(log_bf, dtype=float)
+
+    def _one_group(vals):
+        neg_vals = -vals[vals < 0]
+        if neg_vals.size < 2:
+            raise ValueError(
+                "calc_hardened_eb_qvalues: fewer than 2 negative log_bf "
+                "values available to estimate the null SD."
+            )
+        sigma_folded = neg_vals.std(ddof=1)
+        sigma_null = sigma_folded / np.sqrt(1 - 2 / np.pi)
+
+        p = 1 - norm.cdf(vals / sigma_null)
+        p = np.clip(p, 1e-12, 1.0)
+
+        pi0_hat = min(np.mean(p > storey_lambda) / (1 - storey_lambda), 1.0)
+
+        n = len(p)
+        order = np.argsort(p)
+        sorted_p = p[order]
+        raw_q = pi0_hat * sorted_p * n / (np.arange(n) + 1)
+        q_sorted = np.clip(np.minimum.accumulate(raw_q[::-1])[::-1], 0, 1)
+        q = np.empty(n)
+        q[order] = q_sorted
+
+        return p, q, {"sigma_null": sigma_null, "pi0_hat": pi0_hat}
+
+    if groups is None:
+        p, q, diag = _one_group(log_bf)
+        return p, q, {None: diag}
+
+    groups = np.asarray(groups)
+    pvalues = np.full(log_bf.shape, np.nan)
+    qvalues = np.full(log_bf.shape, np.nan)
+    diagnostics = {}
+    for g in np.unique(groups):
+        mask = groups == g
+        p_g, q_g, diag_g = _one_group(log_bf[mask])
+        pvalues[mask] = p_g
+        qvalues[mask] = q_g
+        diagnostics[g] = diag_g
+
+    return pvalues, qvalues, diagnostics
 
 
 def individual_kernel_predictions(
