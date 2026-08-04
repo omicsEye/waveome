@@ -103,8 +103,7 @@ def calc_bic(loglik: float, n: int, k: int):
     float
         BIC
     """
-    # return k*np.log(n)-2*loglik
-    return 2 * k - 2 * loglik
+    return k * np.log(n) - 2 * loglik
 
 
 def coregion_freeze(k):
@@ -788,25 +787,50 @@ def calc_feature_importance_components(
             model, data=data, return_value=return_value
         )
 
-    # adam/gradient avoids a vanishing-gradient trap scipy/L-BFGS-B can hit
-    # when a surviving component's variance has already collapsed near zero.
-    refit_options = {"optimizer": "adam/gradient", **(refit_options or {})}
-    if getattr(model, "optimizer", None) not in (None, "adam/gradient"):
+    # Default the refit optimizer to whatever the full model itself was fit
+    # with, so delta_bic reflects only the dropped component, not an
+    # optimizer-quality mismatch between the two sides of the comparison.
+    # Previously hardcoded to 'adam/gradient' regardless of the full
+    # model's optimizer -- confirmed via a 7332-component real-data check
+    # (fit_penalized_models_revision_full_scipy_no_prune.pkl) that this
+    # mismatch only affects ~1.6% of components, but by up to several
+    # thousand log_bf units when it does (e.g. one component: 10130.2 with
+    # a mismatched adam/gradient refit vs 10.4 once refit with the full
+    # model's own scipy optimizer). See docs/revision/FINDINGS.md, "T2
+    # (continued)". Caveat carried over from the prior default:
+    # scipy/L-BFGS-B can hit a vanishing-gradient trap when a component's
+    # variance has already collapsed near zero -- the _needs_clamp branch
+    # below routes genuinely-collapsed components away from a refit
+    # entirely, which should catch most of that risk, but it's worth
+    # watching for if scipy refits start failing to converge.
+    default_optimizer = getattr(model, "optimizer", None) or "adam/gradient"
+    refit_options = {"optimizer": default_optimizer, **(refit_options or {})}
+    actual_optimizer = refit_options["optimizer"]
+    if getattr(model, "optimizer", None) not in (None, actual_optimizer):
         warnings.warn(
             f"Full model was fit with optimizer={model.optimizer!r}, but "
-            "component refits use 'adam/gradient'; delta_bic may partly "
-            "reflect differing optimizer quality, not just the dropped "
-            "component."
+            f"component refits use {actual_optimizer!r}; delta_bic may "
+            "partly reflect differing optimizer quality, not just the "
+            "dropped component."
         )
     k = model.kernel
 
     def _bic(m):
         # optimize_params(optimizer="adam/gradient") leaves q_mu/q_sqrt
         # untrainable afterward, which would otherwise skew calc_metric's
-        # BIC (k = len(trainable_parameters)). Restore before counting.
+        # BIC (k = len(trainable_parameters)). Restore before counting,
+        # then put the original trainable state back -- m may be the
+        # caller's live model, not a deepcopy, so this must not
+        # permanently flip its trainable flags as a side effect.
+        q_mu_trainable = m.q_mu.trainable
+        q_sqrt_trainable = m.q_sqrt.trainable
         set_trainable(m.q_mu, True)
         set_trainable(m.q_sqrt, True)
-        return m.calc_metric(data=data, metric="BIC")
+        try:
+            return m.calc_metric(data=data, metric="BIC")
+        finally:
+            set_trainable(m.q_mu, q_mu_trainable)
+            set_trainable(m.q_sqrt, q_sqrt_trainable)
 
     # Full-model deviance decomposition (used as the fixed reference for
     # marginal deviance explained, and for the leftover-noise entry).
@@ -1093,7 +1117,7 @@ def empirical_null_bh(obs_values, null_values, obs_groups=None, null_groups=None
     return pvalues, qvalues
 
 
-def calc_hardened_eb_qvalues(log_bf, groups=None, storey_lambda=0.5):
+def calc_hardened_eb_qvalues(log_bf, groups=None, storey_lambda=0.5, null_offset=0.0):
     """Hardened empirical-Bayes (Efron two-groups) significance fallback.
 
     Used in place of `empirical_null_bh` when a formal null (known-null
@@ -1104,11 +1128,13 @@ def calc_hardened_eb_qvalues(log_bf, groups=None, storey_lambda=0.5):
     external null draws.
 
     Procedure:
-    1. Fold every negative log_bf value to positive and take its standard
-       deviation (ddof=1).
+    1. Fold every value below `null_offset` around `null_offset` and take
+       the folded deviations' standard deviation (ddof=1).
     2. Correct for the fact that a folded half-normal's SD underestimates
-       the full normal's SD, by the factor 1 / sqrt(1 - 2/pi).
-    3. One-sided p-value under log_bf ~ Normal(0, sigma_null).
+       the full normal's SD, by the factor 1 / sqrt(1 - 2/pi) -- only
+       valid if the fold point equals the true null mean, which is why
+       `null_offset` matters for the scale estimate too, not just location.
+    3. One-sided p-value under log_bf ~ Normal(null_offset, sigma_null).
     4. Storey's pi0 estimator (tuning parameter `storey_lambda`), capped
        at 1.
     5. pi0-weighted BH-style q-values (cumulative minimum from the largest
@@ -1125,6 +1151,19 @@ def calc_hardened_eb_qvalues(log_bf, groups=None, storey_lambda=0.5):
         q-value pass. Omit to run once over all of `log_bf`.
     storey_lambda : float
         Storey pi0 estimator tuning parameter. Default 0.5.
+    null_offset : float or array-like, default 0.0
+        Assumed mean of the null distribution of `log_bf`, one value per
+        observation (broadcast if scalar). Defaults to 0 (the original,
+        biased behavior). `log_bf = ΔLL - p` (p = parameters lost when a
+        component is dropped: 2 for squared_exponential, 1 for
+        lin/categorical) is not actually centered at 0 under the null --
+        see docs/revision/FINDINGS.md, "T2 (continued)". Folding at the
+        wrong point also invalidates the sqrt(1-2/pi) correction above
+        (derived assuming the fold point is the true mean), so passing
+        the right offset (e.g. `-p` per component) corrects sigma_null's
+        scale, not just where p-values are centered. Pass per-component
+        (not per-group) since kernel type -- and thus p -- can vary
+        within a stratification group.
 
     Returns
     -------
@@ -1133,18 +1172,28 @@ def calc_hardened_eb_qvalues(log_bf, groups=None, storey_lambda=0.5):
         is None if `groups` was not given).
     """
     log_bf = np.asarray(log_bf, dtype=float)
+    null_offset = np.broadcast_to(
+        np.asarray(null_offset, dtype=float), log_bf.shape
+    )
 
-    def _one_group(vals):
-        neg_vals = -vals[vals < 0]
+    def _one_group(vals, offset):
+        centered = vals - offset
+        neg_vals = -centered[centered < 0]
         if neg_vals.size < 2:
             raise ValueError(
                 "calc_hardened_eb_qvalues: fewer than 2 negative log_bf "
                 "values available to estimate the null SD."
             )
         sigma_folded = neg_vals.std(ddof=1)
+        if sigma_folded == 0:
+            raise ValueError(
+                "calc_hardened_eb_qvalues: negative log_bf values in this "
+                "group are degenerate (zero spread, e.g. all tied after "
+                "rounding) -- cannot estimate a null SD from them."
+            )
         sigma_null = sigma_folded / np.sqrt(1 - 2 / np.pi)
 
-        p = 1 - norm.cdf(vals / sigma_null)
+        p = 1 - norm.cdf(centered / sigma_null)
         p = np.clip(p, 1e-12, 1.0)
 
         pi0_hat = min(np.mean(p > storey_lambda) / (1 - storey_lambda), 1.0)
@@ -1160,7 +1209,7 @@ def calc_hardened_eb_qvalues(log_bf, groups=None, storey_lambda=0.5):
         return p, q, {"sigma_null": sigma_null, "pi0_hat": pi0_hat}
 
     if groups is None:
-        p, q, diag = _one_group(log_bf)
+        p, q, diag = _one_group(log_bf, null_offset)
         return p, q, {None: diag}
 
     groups = np.asarray(groups)
@@ -1169,7 +1218,7 @@ def calc_hardened_eb_qvalues(log_bf, groups=None, storey_lambda=0.5):
     diagnostics = {}
     for g in np.unique(groups):
         mask = groups == g
-        p_g, q_g, diag_g = _one_group(log_bf[mask])
+        p_g, q_g, diag_g = _one_group(log_bf[mask], null_offset[mask])
         pvalues[mask] = p_g
         qvalues[mask] = q_g
         diagnostics[g] = diag_g
