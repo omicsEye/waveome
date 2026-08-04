@@ -156,6 +156,10 @@ class BaseGP(gpflow.models.SVGP):
         self.kernel_name = ""
         self.verbose = verbose
         self.optimizer = None
+        self.n_iterations = None
+        self.converged = None
+        self.opt_status = None
+        self.opt_message = None
         self.num_trainable_params = np.nan
         self.num_latent_gps = num_latent_gps
 
@@ -192,7 +196,11 @@ class BaseGP(gpflow.models.SVGP):
         return None
 
     def randomize_params(
-        self, loc: float = 0.0, scale: float = 1.0, random_seed: int = None
+        self,
+        loc: float = 0.0,
+        scale: float = 1.0,
+        random_seed: int = None,
+        smart_init: bool = True,
     ) -> None:
         """Randomize model parameters from sampled normal distribution.
 
@@ -204,6 +212,23 @@ class BaseGP(gpflow.models.SVGP):
             Standard deviation of normal distribution to sample from.
         random_seed: int
             Random seed for reproducibility.
+        smart_init: bool
+            If True (default), kernel lengthscales and kernel variances are
+            redrawn afterward from distributions matched to their role,
+            instead of being left at the generic N(0,1)-unconstrained draw.
+            The generic scheme treats a lengthscale, a horseshoe-penalized
+            variance, and every other positive-constrained parameter
+            identically, which concentrates restarts around a short,
+            "rough function" lengthscale unsuited to standardized
+            covariates. Validated on 20 randomly-sampled iHMP metabolites at
+            the default penalization_factor=1.0: cuts the typical
+            (median) log-likelihood disagreement between independent
+            restarts-of-5 fits by ~6x, with no observed downside (see
+            docs/revision/FINDINGS.md, "Full-model fit stability"). Sampling
+            variance from its own attached horseshoe prior directly was
+            tried and rejected -- Cauchy-like tails make it a bad
+            initialization distribution even though it is a fine belief
+            about the converged value.
 
         Returns
         -------
@@ -244,6 +269,20 @@ class BaseGP(gpflow.models.SVGP):
 
                 # Assign those values to the trainable variable
                 p.assign(p.transform_fn(unconstrain_vals))
+
+        if smart_init:
+            rng = np.random.default_rng(random_seed)
+
+            def _smart_randomize_kernel(k):
+                if hasattr(k, "lengthscales"):
+                    k.lengthscales.assign(rng.lognormal(mean=1.0, sigma=0.5))
+                if hasattr(k, "variance") and k.variance.prior is not None:
+                    k.variance.assign(rng.lognormal(mean=0.0, sigma=1.0))
+                if hasattr(k, "kernels"):
+                    for sub_k in k.kernels:
+                        _smart_randomize_kernel(sub_k)
+
+            _smart_randomize_kernel(self.kernel)
         return None
 
     def optimize_params(
@@ -333,6 +372,12 @@ class BaseGP(gpflow.models.SVGP):
                     " using Scipy optimizer",
                 )
             self.optimizer = "scipy"
+            # Set here so a run where every attempt raises still leaves
+            # these defined, rather than stale from a previous call.
+            self.n_iterations = None
+            self.converged = False
+            self.opt_status = None
+            self.opt_message = None
 
             optimizer = gpflow.optimizers.Scipy()
             opt_options = {
@@ -344,7 +389,7 @@ class BaseGP(gpflow.models.SVGP):
 
             for attempt in range(5):
                 try:
-                    optimizer.minimize(
+                    opt_result = optimizer.minimize(
                         closure=self.training_loss_closure(
                             data=data,
                             # compile=False
@@ -354,6 +399,14 @@ class BaseGP(gpflow.models.SVGP):
                         method="L-BFGS-B",
                         options=opt_options,
                     )
+                    self.n_iterations = int(opt_result.nit)
+                    self.converged = bool(opt_result.success)
+                    # status/message identify *why* L-BFGS-B stopped when
+                    # converged=False (e.g. line-search/precision failure
+                    # vs genuinely hitting maxiter/maxfun) -- diagnostic
+                    # only, not currently used to change behavior.
+                    self.opt_status = int(opt_result.status)
+                    self.opt_message = str(opt_result.message)
                     break
                 except Exception as e:
                     if self.verbose:
@@ -368,6 +421,10 @@ class BaseGP(gpflow.models.SVGP):
         ) or optimizer == "adam/gradient":
             # Set optimizer otherwise
             self.optimizer = "adam/gradient"
+            # opt_status/opt_message are scipy L-BFGS-B diagnostics --
+            # clear them so a prior scipy call's values don't linger.
+            self.opt_status = None
+            self.opt_message = None
 
             # Stop Adam from optimizing the variational parameters
             gpflow.set_trainable(self.q_mu, False)
@@ -387,6 +444,9 @@ class BaseGP(gpflow.models.SVGP):
 
         elif optimizer == "adam":
             self.optimizer = "adam"
+            # See the adam/gradient branch above for why these are reset.
+            self.opt_status = None
+            self.opt_message = None
             adam_opt = Adam(learning_rate=adam_learning_rate)
 
             @tf.function
@@ -418,6 +478,7 @@ class BaseGP(gpflow.models.SVGP):
             compiled_loss = self.training_loss_closure(data=data, compile=True)
 
         loss_list = []
+        converged = False
 
         # Save initial values
         previous_values = gpflow.utilities.deepcopy(
@@ -479,15 +540,19 @@ class BaseGP(gpflow.models.SVGP):
                     len(loss_list) > 1
                     and loss_list[-2] - loss_list[-1] < convergence_threshold
                 ):
+                    converged = True
                     if self.verbose:
                         print(f"Optimization converged - stopping early (round {i})")
                     break
 
         # If we have reached the end of iterations and still
         # not converged then...
-        if i == (num_opt_iter - 1):
+        if i == (num_opt_iter - 1) and not converged:
             if self.verbose:
                 print(f"Optimization not converged after {i+1} rounds")
+
+        self.n_iterations = i + 1
+        self.converged = converged
 
         return None
 
@@ -512,6 +577,10 @@ class BaseGP(gpflow.models.SVGP):
         # Set initial log likelihood to track during restarts
         max_ll = -np.inf
         best_variables = {}
+        best_n_iterations = None
+        best_converged = False
+        best_opt_status = None
+        best_opt_message = None
 
         for i in range(num_restart):
             if self.verbose:
@@ -537,11 +606,23 @@ class BaseGP(gpflow.models.SVGP):
                 best_variables = gpflow.utilities.deepcopy(
                     gpflow.utilities.parameter_dict(self)
                 )
+                # optimize_params sets these on self as plain Python
+                # attributes, not gpflow Parameters, so multiple_assign
+                # below won't restore them -- track them alongside
+                # best_variables instead.
+                best_n_iterations = self.n_iterations
+                best_converged = self.converged
+                best_opt_status = self.opt_status
+                best_opt_message = self.opt_message
                 if self.verbose:
                     print("Found better parameters!")
 
         # Set trainable variables to the best found
         gpflow.utilities.multiple_assign(self, best_variables)
+        self.n_iterations = best_n_iterations
+        self.converged = best_converged
+        self.opt_status = best_opt_status
+        self.opt_message = best_opt_message
 
         return None
 
@@ -654,7 +735,10 @@ class BaseGP(gpflow.models.SVGP):
             self,
             x_idx=x_idx,
             col_names=col_names,
-            var_explained=self.feature_importances,
+            # None (e.g. feature_importances was computed with refit=False)
+            # falls back to a fresh full_detail=True refit inside
+            # pred_kernel_parts.
+            var_explained=self.feature_importance_detail,
             lik=lik,
             data=data,
             unit_idx=unit_idx,
@@ -863,6 +947,7 @@ class PenalizedGP(BaseGP):
 
         # Set initial factor given
         self.set_penalization_factor(penalization_factor)
+        self.set_lengthscale_prior()
 
         # Set unit col as none for now
         self.unit_col = None
@@ -916,6 +1001,34 @@ class PenalizedGP(BaseGP):
             for key, val in gpflow.utilities.parameter_dict(self).items():
                 if "kernel" in key and "variance" in key:
                     val.prior = prior
+
+    def set_lengthscale_prior(self, use_prior=True):
+        """Set a LogNormal(1.0, 0.5) prior on kernel lengthscale parameters
+        (median ~2.7, 90% CI ~[1.1, 6.6] in standardized input units --
+        matches MultiOutputPSVGP's existing lengthscale prior).
+
+        Without this, a lengthscale is free to collapse arbitrarily close
+        to zero -- letting a squared-exponential term fit per-observation
+        noise while BIC still only charges it 2 parameters (variance +
+        lengthscale), regardless of how much effective flexibility that
+        actually costs. Confirmed on real iHMP components: 3 of 4
+        "significant" SE-kernel hits had lengthscales far below the
+        typical spacing between adjacent observed covariate values (one
+        by a factor of >1000x) and flipped to non-significant once this
+        prior was added and the model refit; the fourth (a genuine
+        smooth effect) was essentially unchanged. See docs/revision/
+        FINDINGS.md, "T2 (continued)" for the full investigation.
+        """
+        if use_prior:
+            prior = tfd.LogNormal(
+                loc=gpflow.utilities.to_default_float(1.0),
+                scale=gpflow.utilities.to_default_float(0.5),
+            )
+        else:
+            prior = None
+        for key, val in gpflow.utilities.parameter_dict(self).items():
+            if "kernel" in key and "lengthscales" in key:
+                val.prior = prior
 
     def penalization_search(
         self,
