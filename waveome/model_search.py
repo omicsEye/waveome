@@ -29,6 +29,7 @@ from .model_classes import PSVGP, MultiOutputPSVGP
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import full_kernel_build, make_folds
 from .utilities import (
+    VAR_CUTOFF_DEFAULT,
     calc_bic,
     calc_rsquare,
     check_if_model_exists,
@@ -43,30 +44,24 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["RAY_FUNCTION_SIZE_ERROR_THRESHOLD"] = "30000000"
 f64 = gpflow.utilities.to_default_float
 
-# Tiered thresholds for the within-unit collinearity input check: moderate
-# collinearity only warns, strong collinearity halts unless explicitly
-# acknowledged.
+# Tiered thresholds for the collinearity input check: moderate collinearity
+# only warns, strong collinearity halts unless explicitly acknowledged.
 COLLINEARITY_WARN_CUTOFF = 0.8
 COLLINEARITY_HALT_CUTOFF = 0.95
 
 
-def _within_unit_correlations(X_df, cont_idx, unit_idx):
-    """Pairwise Pearson correlation among continuous covariates.
-
-    Each covariate is centered by its own unit-level mean first (if
-    `unit_idx` is given), so between-unit differences don't mask or
-    manufacture a within-unit relationship. A pair is skipped if either
-    covariate has no within-unit variation (e.g. a baseline covariate
-    that's constant per unit) -- there is no within-unit collinearity to
-    detect when one side never varies within a unit.
+def _pooled_correlations(X_df, cont_idx):
+    """Pairwise Pearson correlation among continuous covariates, computed
+    across the whole dataset (not per-unit): two covariates that are only
+    collinear within a unit but have enough spread *between* units are not
+    flagged here, since that between-unit variation is real, usable
+    information for telling them apart. A pair is skipped if either
+    covariate has no variation at all (correlation undefined).
 
     Returns a dict {(i, j): r} keyed by original column index pairs
     (i < j), for every finite, computable pair.
     """
     cont_df = X_df.iloc[:, cont_idx]
-    if unit_idx is not None:
-        unit_vals = X_df.iloc[:, unit_idx]
-        cont_df = cont_df - cont_df.groupby(unit_vals).transform("mean")
 
     corr_out = {}
     n = len(cont_idx)
@@ -79,6 +74,54 @@ def _within_unit_correlations(X_df, cont_idx, unit_idx):
             if np.isfinite(r):
                 corr_out[(cont_idx[a], cont_idx[b])] = r
     return corr_out
+
+
+def _component_param_count(kernel, term_idx, is_sum):
+    """Number of parameters lost when the term at `term_idx` is dropped
+    from `kernel` and the reduced model refit -- used by
+    GPSearch.get_significance_table to correct calc_hardened_eb_qvalues's
+    null-centering assumption (log_bf is centered near -p*log(n)/2 under
+    the null, not 0 -- see docs/revision/FINDINGS.md, "T2 (continued)").
+
+    Mirrors calc_feature_importance_components's four branches exactly,
+    rather than guessing from kernel type name (which can't distinguish
+    them, and silently drifts if a new kernel type is added):
+      1. Normal sum-kernel refit: the term's own trainable parameters are
+         removed outright -- p = len(term.trainable_parameters).
+      2. Clamp shortcut (term's fitted variance already below
+         VAR_CUTOFF_DEFAULT): hardcoded to k_full-1 there regardless of
+         the term's own parameter count, since only variance is fixed in
+         place, not truly removed -- p = 1.
+      3. Lone (non-sum) kernel: the reduced model substitutes Constant()
+         (1 parameter) rather than removing the term outright -- p = the
+         term's own count minus 1.
+      4. Lone kernel that is already Constant(): hardcoded to delta_bic=0
+         there (nothing left to drop) -- p = 0.
+    """
+    term = kernel.kernels[term_idx] if is_sum else kernel
+    if not is_sum and term.name == "constant":
+        return 0
+    try:
+        if float(term.variance.numpy()) < VAR_CUTOFF_DEFAULT:
+            return 1  # clamp branch, regardless of term's own param count
+    except (AttributeError, TypeError):
+        pass
+    own_count = len(term.trainable_parameters)
+    return own_count if is_sum else max(own_count - 1, 0)
+
+
+def _component_covariate_names(kernel_name, feat_names):
+    """Map each '+'-joined additive kernel component to its (kernel_type,
+    covariate) label pair (product terms keep all factors, joined with
+    '*')."""
+    kernel_types, cov_names = [], []
+    for term in kernel_name.split("+"):
+        idxs = [int(x) for x in re.findall(r"\[(\d+)\]", term)]
+        kernel_types.append(re.sub(r"\[\d+\]", "", term))
+        cov_names.append(
+            "*".join(feat_names[i] for i in idxs) if idxs else term
+        )
+    return kernel_types, cov_names
 
 
 class GPSearch:
@@ -104,10 +147,10 @@ class GPSearch:
         or 'poisson' (experimental)
 
     acknowledge_collinearity: bool
-        If any two continuous covariates are strongly collinear within a
-        unit (correlation, after centering by unit, above
-        COLLINEARITY_HALT_CUTOFF), initialization raises a ValueError
-        unless this is set to True. Default False.
+        If any two continuous covariates are strongly collinear across the
+        whole dataset (correlation above COLLINEARITY_HALT_CUTOFF),
+        initialization raises a ValueError unless this is set to True.
+        Default False.
 
     Attributes
     ----------
@@ -195,12 +238,17 @@ class GPSearch:
             0
         ].tolist()
 
-        # Within-unit collinearity input check: moderate collinearity
-        # warns, strong collinearity halts unless the caller explicitly
-        # acknowledges it -- no input() prompts, so this is safe inside a
-        # batch/HPC job.
+        # Collinearity input check, computed across the whole dataset (not
+        # per-unit): moderate collinearity warns, strong collinearity halts
+        # unless the caller explicitly acknowledges it -- no input()
+        # prompts, so this is safe inside a batch/HPC job. Deliberately not
+        # unit-centered: two covariates can be perfectly collinear within a
+        # single unit's own timeline (e.g. elapsed time measured three
+        # different ways) while still being genuinely distinguishable once
+        # units with different offsets are compared -- that between-unit
+        # spread is real, usable information, not noise to strip out.
         if len(self.cont_idx) > 1:
-            corr_pairs = _within_unit_correlations(X, self.cont_idx, self.unit_idx)
+            corr_pairs = _pooled_correlations(X, self.cont_idx)
             halt_pairs = {
                 p: r for p, r in corr_pairs.items() if abs(r) > COLLINEARITY_HALT_CUTOFF
             }
@@ -218,19 +266,19 @@ class GPSearch:
 
             if warn_pairs:
                 warnings.warn(
-                    "Moderate within-unit collinearity detected between: "
+                    "Moderate collinearity detected between: "
                     f"{_pair_str(warn_pairs)}"
                 )
             if halt_pairs:
                 if not acknowledge_collinearity:
                     raise ValueError(
-                        "Strong within-unit collinearity detected between: "
+                        "Strong collinearity detected between: "
                         f"{_pair_str(halt_pairs)}. Pass "
                         "acknowledge_collinearity=True to GPSearch(...) to "
                         "proceed anyway."
                     )
                 warnings.warn(
-                    "Proceeding despite strong within-unit collinearity "
+                    "Proceeding despite strong collinearity "
                     f"(acknowledge_collinearity=True): {_pair_str(halt_pairs)}"
                 )
 
@@ -298,6 +346,7 @@ class GPSearch:
         random_seed=None,
         ray_dashboard=False,
         ray_logging=False,
+        prune_components=True,
     ):
         # Set model selection type
         self.model_selection_type = "penalized"
@@ -465,8 +514,19 @@ class GPSearch:
                         ),
                     )
 
-            # Clean up final model
-            mod.cut_kernel_components(data=convert_data_to_tensors(self_X, self_Y))
+            # Clean up final model. cut_kernel_components does no
+            # refitting -- it only discards components below the variance/
+            # lengthscale cutoffs from the already-converged fit -- so
+            # skipping it does not change the fitted model, only whether
+            # near-zero components remain present for get_feature_importances
+            # below to compute a log_bf for (via its existing clamp/refit
+            # logic) instead of never seeing them at all. Set False to get
+            # a log_bf for every originally-specified component on every
+            # metabolite, not just the ones that survive pruning -- needed
+            # to test significance against the full candidate population
+            # rather than only the (pruning-selected) survivors.
+            if prune_components:
+                mod.cut_kernel_components(data=convert_data_to_tensors(self_X, self_Y))
 
             # TODO: Prune kernel (specifically interactions)
 
@@ -1327,7 +1387,12 @@ class GPSearch:
                 self.models[feat].get_feature_importances(
                     data=convert_data_to_tensors(
                         self.X.to_numpy(), self.Y[feat].to_numpy().reshape(-1, 1)
-                    )
+                    ),
+                    # This legacy stepwise path predates the refit-based
+                    # significance work and isn't Ray-parallelized here --
+                    # keep it on the pre-existing cheap plug-in behavior
+                    # rather than silently inheriting refit=True's cost.
+                    refit=False,
                 )
 
             ray.shutdown()
@@ -1691,6 +1756,62 @@ class GPSearch:
             # Plot
             p = sns.barplot(data=metric_df, y="name", x="metric")
             return p
+
+    def get_significance_table(self):
+        """Flatten every metabolite's per-component log_bf and marginal
+        deviance-explained into one long DataFrame, with the kernel type,
+        covariate name, and the two columns calc_hardened_eb_qvalues needs
+        to stratify and center its empirical null correctly:
+          - `stratum` (= "kernel_type:covariate"): pass as `groups=` --
+            squared_exponential and lin components for the same covariate
+            have different null spreads, so pooling them into one
+            sigma_null is wrong for both (frozen decision 4).
+          - `null_offset` (= -p*log(n)/2, p from _component_param_count,
+            n = that metabolite's own observation count): pass as
+            `null_offset=` -- log_bf is not centered at 0 under the null.
+        See docs/revision/FINDINGS.md, "T2 (continued)" for the derivation
+        of both corrections.
+
+        Returns
+        -------
+        pd.DataFrame with columns: metabolite, kernel_type, covariate,
+        log_bf, deviance_explained, null_offset, stratum. One row per
+        additive kernel component per metabolite (the trailing leftover-
+        noise entry in feature_importance_detail, which has no covariate
+        label, is excluded).
+        """
+        rows = []
+        for name, model in self.models.items():
+            kernel_types, cov_names = _component_covariate_names(
+                model.kernel_name, self.feat_names
+            )
+            detail = getattr(model, "feature_importance_detail", None)
+            if detail is None:
+                raise ValueError(
+                    f"get_significance_table: model {name!r} has no "
+                    "feature_importance_detail -- call "
+                    "get_feature_importances(refit=True) on it first "
+                    "(refit=False and never-called models don't populate "
+                    "the per-component detail this method needs)."
+                )
+            n_obs = model.data[0].shape[0]
+            is_sum = model.kernel.name == "sum"
+            for idx, (kernel_type, cov_name, comp) in enumerate(
+                zip(kernel_types, cov_names, detail[:-1])
+            ):
+                if comp["log_bf"] is None or not np.isfinite(comp["log_bf"]):
+                    continue
+                p = _component_param_count(model.kernel, idx, is_sum)
+                rows.append({
+                    "metabolite": name,
+                    "kernel_type": kernel_type,
+                    "covariate": cov_name,
+                    "log_bf": comp["log_bf"],
+                    "deviance_explained": comp["deviance_explained"],
+                    "null_offset": -p * np.log(n_obs) / 2,
+                    "stratum": f"{kernel_type}:{cov_name}",
+                })
+        return pd.DataFrame(rows)
 
     def plot_marginal(
         self,
