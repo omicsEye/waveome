@@ -727,18 +727,38 @@ class BaseGP(gpflow.models.SVGP):
         )
 
     def plot_parts(
-        self, x_idx, col_names, data=None, lik=None, unit_idx=None, **kwargs
+        self, x_idx, col_names, data=None, lik=None, unit_idx=None,
+        prune_before_plot=True, **kwargs
     ):
         if lik is None:
             lik = self.likelihood
+
+        model_to_plot = self
+        # None (e.g. feature_importances was computed with refit=False)
+        # falls back to a fresh full_detail=True refit inside
+        # pred_kernel_parts.
+        var_explained = self.feature_importance_detail
+        if prune_before_plot:
+            # Significance testing runs on the full (unpruned) candidate
+            # kernel, so a no-prune model can have a dozen+ terms per
+            # metabolite, most of them horseshoe-shrunk noise. Prune a
+            # copy just for display -- reuses the same variance-threshold
+            # logic already used elsewhere, doesn't touch self.
+            plot_data = (
+                convert_data_to_tensors(*data) if data is not None else self.data
+            )
+            model_to_plot = gpflow.utilities.deepcopy(self)
+            model_to_plot.cut_kernel_components(data=plot_data)
+            # Pruning changes which terms exist, so the original
+            # feature_importance_detail's indices no longer line up --
+            # let pred_kernel_parts recompute fresh for the pruned kernel.
+            var_explained = None
+
         return pred_kernel_parts(
-            self,
+            model_to_plot,
             x_idx=x_idx,
             col_names=col_names,
-            # None (e.g. feature_importances was computed with refit=False)
-            # falls back to a fresh full_detail=True refit inside
-            # pred_kernel_parts.
-            var_explained=self.feature_importance_detail,
+            var_explained=var_explained,
             lik=lik,
             data=data,
             unit_idx=unit_idx,
