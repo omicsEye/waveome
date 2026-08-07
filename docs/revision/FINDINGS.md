@@ -674,3 +674,166 @@ into one null | High | Stratify FDR by kernel type"). That's the same gap
 noted two paragraphs up (the notebook stratifies by `covariate` alone, not
 `(kernel, covariate)`) — independently corroborated as a real, high-priority
 item, not just an incidental observation from this investigation.
+
+## T3'' — the significance null, rebuilt (2026-08-05 → 08-07)
+
+Continues the section above. Everything below was driven by a crash in
+`calc_hardened_eb_qvalues` on the first no-prune fit, which turned out to
+be the visible end of two separate numerical faults and then of a
+methodological dead end. Recording the arc because most of it is
+negative results that a reviewer response can cite.
+
+### 1. Root cause of the non-converged fits: a Horseshoe gradient underflow
+
+74% of no-prune full-model fits (417/564) reported
+`ABNORMAL_TERMINATION_IN_LNSRCH` with 0 iterations. Root cause: once a
+constrained kernel variance falls below ~8e-78, `tfp.Horseshoe.log_prob`'s
+**gradient** underflows to exactly `-inf` while its *value* stays finite,
+so nothing raises — the whole gradient vector is poisoned and L-BFGS-B
+fails its first line search. Perfectly separating: every non-converged
+model had a variance in that zone, every converged model did not. It
+produced `log_bf` values up to 26 million.
+
+Not GP- or kernel-specific — a pure float64 limitation of the TFP
+distribution. **Fixed** by flooring every positive-constrained parameter
+(`set_variance_floor`, `VARIANCE_FLOOR = 1e-10`, via
+`gpflow.config.set_default_positive_minimum`). A full re-run took
+convergence from 26% → 98.2%.
+
+### 2. The clamp shortcut was manufacturing a point mass
+
+With the floor in place the `calc_hardened_eb_qvalues` crash persisted,
+for a different reason. The clamp shortcut (skip the refit for components
+already below `VAR_CUTOFF_DEFAULT`, evaluate a clamped variance instead)
+returned a near-deterministic `log_bf` — it was reading back a fixed
+constant, not an optimization result. Measured spread across metabolites:
+**sd 0.00004 (SE), 0.00034 (lin)**. That artificial atom is what broke
+every downstream null-distribution assumption.
+
+It also charged `k_full - 1` parameters regardless of kernel type —
+correct for lin (p=1), wrong for squared_exponential (p=2) — so every
+near-floor SE component sat at the lin-appropriate value (−2.6) instead of
+its own (−4.80). Testing SE strata against a correctly-computed anchor
+gave a spurious **564/564 "significant"**. **Removed**; all components are
+now genuinely refit.
+
+### 3. The empirical-Bayes null cannot be rescued (rejected)
+
+With clean data, a synthesis was tried: take the null's *location* from
+the near-floor population (near noise-free) and its *spread* by folding
+the non-floor population's below-anchor tail. It produced defensible
+counts (lin:hbi 137, SE:hbi 2, SE:time_from_max 0) but does not survive
+diagnostics:
+
+- The theoretical anchor `-p·log(n)/2` is **biased by +1.736 (p=1) and
+  +0.672 (p=2)** — a null component still yields that much ΔLL because the
+  reduced-model refit doesn't reproduce the full model's fit. The
+  floor-derived anchor measures this directly and lands on the mode of an
+  *independent* population, which is real validation of the location.
+- But the **shape fails**: Shapiro rejects half-normality in **6/12
+  strata**, from two opposed causes — depletion near the anchor (the
+  near-floor/non-floor split removes exactly the values closest to it) and
+  impossible outliers 4–5 units below it (ELBO/optimizer inversions).
+- **Scale is not identified.** Three defensible estimators span up to **3×**
+  (SE:study_days 0.55 / 0.68 / 1.48) and move hit counts ±25%. The
+  best-*fitting* estimator is also the one yielding most discoveries — an
+  unacceptable researcher degree of freedom.
+- Storey's π₀ is **structurally incompatible**: the floor atom sits at
+  exactly p=0.5 and `p > λ` excludes it, collapsing π̂₀ to 0.03–0.17 where
+  the truth is ~0.95 and inflating hits 10–30× (547, 564, 549). Tie-aware
+  π₀ saturates at 1.0, i.e. plain BH.
+
+**Decision: abandon the parametric null.** Diagnostics in
+`examples/iHMP/validate_null_visually.py`.
+
+### 4. G1 revisited — permutation is affordable after all
+
+G1 rejected permutation at "5 covariates × 200 perms × ~32-min full run ≈
+530+ core-hours". That costed a **full run including kernel search**. But
+the no-prune analysis fits **one identical kernel structure to all 564
+metabolites** (verified: 1 distinct structure) — there is no per-metabolite
+search, so a null draw costs one fixed-structure refit (~4s) plus
+drop-one refits (~3.5s), measured. It also means there is no
+post-selection-inference problem.
+
+Measured throughput is **2.98 s/draw** (parallelism only ~3.7× on 10
+cores; TF threads contend with Ray, and pinning barely helped), so the
+full B=20 two-covariate run is **~19.6 h** — a maintainer HPC job, not the
+530 core-hours that killed it.
+
+### 5. Which permutation scheme (four rejected)
+
+Tested rather than argued, on `HILp_QI2874` (participant_id log_bf 20.6,
+SE[hbi] 36.6 — where subject-proxying should be maximal):
+
+| scheme | between-frac | invented values | verdict |
+|---|---|---|---|
+| real data | 0.413 | — | reference |
+| **within-subject shuffle** | **0.413** | 0.0% | **kept** — exact, preserves structure |
+| global shuffle | 0.199 | 0.0% | rejected — anti-conservative |
+| Normal (μ,σ) swap | 0.525 | 93.8% | rejected |
+| empirical donor resample | 0.569 | 0.0% | rejected |
+
+- **Global shuffle** destroys HBI's clustering (0.199 is exactly the
+  chance baseline 48/237). Because an SE kernel on a *clustered* covariate
+  partially proxies the subject intercept, that gain is a real feature of
+  the null — deleting it made a 4.1-SD result look like **28.6 SD**.
+  Kernel-specific: for `lin` the two schemes are identical (`k = σ²·xᵢxⱼ`
+  builds no within-subject blocks).
+- **Whole-trajectory swap** is exact but needs matched block sizes
+  (this cohort happens to have n=4/5/6 groups of 16/10/14, ~10³¹
+  permutations — but a library cannot assume that).
+- **Normal (μ,σ) swap** — HBI is a bounded discrete score (14 distinct
+  values, skew +2.03, Shapiro p=1e-16); 93.8% of sampled values are HBI
+  scores that cannot exist.
+- **Donor resample** (non-parametric form of the same idea) invents
+  nothing, but its null went **degenerate (sd 0.00)** — more degenerate
+  than the global shuffle it was meant to improve on.
+
+Also rejected: a **within-between (Mundlak) decomposition** of hbi into
+two covariates. It is well-conditioned (r = −0.000 between the parts) and
+informative — C18n_QI41's `lin[hbi]`=18.0 becomes `lin_within`=5.3 with
+participant_id rising −1.0 → 4.0, i.e. two-thirds of an apparent HBI
+effect was subject structure — but it changes the *model* rather than the
+test, doubles components per time-varying covariate, and pushes
+statistical vocabulary onto users. Not adopted.
+
+### 6. Where it landed
+
+**Within-subject free shuffle** (free, not circular: the additive kernel
+never uses hbi's time-ordering, and free gives 86 configurations/subject
+vs 4.8). The observed statistic is **recomputed through the identical code
+path** (zero shuffle), so optimizer/ELBO artifacts appear on both sides
+and cancel — verified: 25.3→25.31, 18.0→18.03, 36.6→36.60. Empirical p
+with **tie tolerance** (two components at one collapsed state, −0.9681 vs
+−0.9675, otherwise got p=0.90 and p=0.31).
+
+This tests the **within-subject** association; between-subject structure
+stays in the null on both sides, so it can neither create nor be credited
+as a hit. A separate subject-level permutation (49 scalars, exact, one
+extra fit per metabolite, no refits under permutation) covers the
+between-subject question. Both are general — neither needs matched block
+sizes.
+
+`age` is a warning case: between-fraction **1.000** yet it "varies within
+subject" (age ticks up during follow-up), so a naive varies-within rule
+would silently give it a meaningless within-subject test.
+
+### 7. Open
+
+- **Pooling.** Per-metabolite nulls differ in *scale*, not just location
+  (SE:hbi per-outcome SD 0.00–18.43). Centring fixes location only, so
+  pooling a shared tail is anti-conservative for wide-null metabolites.
+  But per-metabolite p-values are **structurally impossible** here: BH
+  rank-1 at m=564 needs p ≤ 8.9e-5, i.e. B ≥ 11,240 *per metabolite*.
+  Pooling across features is standard (SAM, Storey–Tibshirani) — what
+  certifies it is calibration, not theory.
+- **T2 has never been run** and is now load-bearing. Staged: Stage 1 =
+  p-value uniformity under a complete null (~1.5–2.5 h,
+  `examples/simulations/sim_fdr_stage1_uniformity.py`); Stage 2 = the full
+  realized-FDR-vs-nominal table. The simulation must reproduce unequal
+  visits, a covariate with ~41% between-subject variance, horseshoe
+  collapse-to-floor, and both SE and lin components, or it passes
+  trivially.
+- Nothing here is wired into the library; `calc_hardened_eb_qvalues`
+  remains the shipped path.
