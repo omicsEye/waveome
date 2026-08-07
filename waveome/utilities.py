@@ -35,12 +35,12 @@ f64 = gpflow.utilities.to_default_float
 # model_classes.py and regularization.py) -- not a significance/selection rule.
 VAR_CUTOFF_DEFAULT = 1e-8
 
-# calc_feature_importance_components: value used to evaluate a component's
-# counterfactual "removed" state without refitting, for components already
-# below VAR_CUTOFF_DEFAULT (see _clamp_result). Far more extreme than any
-# naturally-collapsed fitted variance observed (~1e-20 to ~1e-90), but not so
-# extreme it destabilizes the Cholesky decomposition in log_posterior_density.
-COMPONENT_CLAMP_VALUE = 1e-150
+# Floor on how small a kernel variance parameter's transform can go (see
+# set_variance_floor below). A horseshoe-shrunk variance pushed past ~8e-78
+# makes Horseshoe.log_prob's *gradient* underflow to -inf, poisoning the
+# whole gradient vector; this floor keeps every variance parameter far
+# enough from that danger zone that it can never be reached.
+VARIANCE_FLOOR = 1e-10
 
 
 def set_precision(precision: str = "float64"):
@@ -74,6 +74,36 @@ def get_precision():
 
 # Set default precision to float64
 set_precision("float64")
+
+
+def set_variance_floor(floor: float = VARIANCE_FLOOR):
+    """
+    Floor how small any positive-constrained (softplus-transformed)
+    parameter can numerically become -- in particular, kernel variances.
+
+    Without this, a horseshoe-shrunk kernel variance can be pushed by the
+    optimizer past a numerical danger zone (empirically, below ~8e-78):
+    Horseshoe.log_prob's *gradient* underflows to exactly -inf there (its
+    value stays finite), poisoning the whole gradient vector and causing
+    scipy's L-BFGS-B to fail its line search on the very first step (0
+    iterations) instead of converging or even failing informatively.
+    Confirmed as the root cause of every one of 417/564 non-converged
+    full-model fits in a real no-prune run -- every non-converged model had
+    a variance collapsed into this zone, every converged model didn't --
+    producing log_bf values up to 26 million as a result.
+
+    The default (VARIANCE_FLOOR = 1e-10) sits two orders of magnitude below
+    VAR_CUTOFF_DEFAULT (1e-8, the numerical pre-filter used elsewhere to
+    decide a term has collapsed, see cut_kernel_components), preserving
+    that threshold's meaning, and is far below any real fitted variance in
+    this analysis -- it only ever binds in cases that are already
+    numerically meaningless.
+    """
+    gpflow.config.set_default_positive_minimum(floor)
+
+
+# Floor kernel variance parameters away from the Horseshoe-gradient danger zone
+set_variance_floor()
 
 
 def convert_data_to_tensors(X: np.array, Y: np.array):
@@ -745,17 +775,14 @@ def calc_feature_importance_components(
     """Calculate an evidence statistic and marginal deviance explained for
     each additive kernel component, by refitting the model with that
     component dropped (frozen decision: refit required, warm-started from
-    the full model's fitted parameters).
-
-    Exception: a component whose fitted variance is already below
-    VAR_CUTOFF_DEFAULT skips the refit and instead evaluates the same
-    fitted model's likelihood with that component's variance clamped to an
-    extreme near-zero value (COMPONENT_CLAMP_VALUE), using k_full - 1 for
-    the comparison's parameter count. This is safe specifically because the
-    component is already collapsed: the full model's other parameters were
-    already optimized as if it contributed nothing, so a refit would barely
-    move them -- but it is not used above the floor, where a refit-free
-    comparison would be a biased comparison.
+    the full model's fitted parameters). Every component is refit for real,
+    including already-collapsed ones -- an earlier shortcut that clamped a
+    collapsed component's variance and evaluated without refitting was
+    removed: it produced a near-deterministic log_bf regardless of
+    metabolite (evaluating a fixed clamped value, not a genuine
+    optimization result), creating an artificial point mass that broke
+    every downstream null-distribution assumption. See docs/revision/
+    FINDINGS.md for the investigation.
 
     Parameters
     ----------
@@ -797,12 +824,10 @@ def calc_feature_importance_components(
     # thousand log_bf units when it does (e.g. one component: 10130.2 with
     # a mismatched adam/gradient refit vs 10.4 once refit with the full
     # model's own scipy optimizer). See docs/revision/FINDINGS.md, "T2
-    # (continued)". Caveat carried over from the prior default:
-    # scipy/L-BFGS-B can hit a vanishing-gradient trap when a component's
-    # variance has already collapsed near zero -- the _needs_clamp branch
-    # below routes genuinely-collapsed components away from a refit
-    # entirely, which should catch most of that risk, but it's worth
-    # watching for if scipy refits start failing to converge.
+    # (continued)". A collapsed component's variance is floored well away
+    # from zero (see VARIANCE_FLOOR / set_variance_floor), which is what
+    # actually keeps its refit's gradient well-behaved -- not an avoided
+    # refit.
     default_optimizer = getattr(model, "optimizer", None) or "adam/gradient"
     refit_options = {"optimizer": default_optimizer, **(refit_options or {})}
     actual_optimizer = refit_options["optimizer"]
@@ -863,7 +888,6 @@ def calc_feature_importance_components(
             "retry -- this has been observed as a rare, non-reproducible "
             "numerical fault, not a deterministic property of the data."
         )
-    k_full = len(model.trainable_parameters)
 
     def _refit(model_copy):
         # Warm start: model_copy already holds the full model's fitted
@@ -890,61 +914,6 @@ def calc_feature_importance_components(
         # Fraction of the full model's gain-over-null attributable to this
         # component (high = important, ~0 = null).
         denom = -2 * np.sum(null_lls_r - mod_lls)
-        if denom != 0:
-            marginal_de = (-2 * np.sum(sub_mod_lls - mod_lls)) / denom
-            marginal_de = np.round(max(min(1, marginal_de), 0), 3)
-        else:
-            marginal_de = 0.0
-
-        return {
-            "delta_bic": np.round(delta_bic, 1),
-            "log_bf": np.round(log_bf, 1),
-            "deviance_explained": marginal_de,
-        }
-
-    def _needs_clamp(kernel_obj):
-        # Only for components already below the numerical pre-filter: the
-        # full model's other parameters are already effectively optimized
-        # as if this component didn't exist, so a refit would barely move
-        # them -- skip it and evaluate the counterfactual directly.
-        try:
-            return float(kernel_obj.variance.numpy()) < VAR_CUTOFF_DEFAULT
-        except (AttributeError, TypeError):
-            return False
-
-    def _clamp_result(kernel_obj):
-        # Save/restore the underlying *unconstrained* variable directly,
-        # not the constrained value via .assign(): round-tripping an
-        # already-extreme constrained value back through the bijector's
-        # inverse transform can overflow to +-Inf and fail Parameter.assign's
-        # finiteness check, even though the value was valid before we
-        # touched it.
-        original_unconstrained = kernel_obj.variance.unconstrained_variable.numpy()
-        try:
-            kernel_obj.variance.assign(COMPONENT_CLAMP_VALUE)
-            ll_clamped = model.log_posterior_density(data).numpy()
-            mu_c, var_c = model.predict_y(data[0])
-            null_lls_c, sub_mod_lls, _ = calc_deviance_explained(
-                model=model,
-                data=data,
-                model_mu=mu_c,
-                model_var=var_c,
-                return_deviance_explained=False,
-                aggregate=False,
-                return_loglik=True,
-            )
-        finally:
-            kernel_obj.variance.unconstrained_variable.assign(original_unconstrained)
-
-        # The clamped component is fixed, not free: k_full - 1, matching
-        # the same BIC formula the refit path uses, just without refitting.
-        reduced_bic = calc_bic(
-            loglik=ll_clamped, n=data[0].shape[0], k=k_full - 1
-        )
-        delta_bic = full_bic - reduced_bic
-        log_bf = -0.5 * delta_bic
-
-        denom = -2 * np.sum(null_lls_c - mod_lls)
         if denom != 0:
             marginal_de = (-2 * np.sum(sub_mod_lls - mod_lls)) / denom
             marginal_de = np.round(max(min(1, marginal_de), 0), 3)
@@ -984,16 +953,9 @@ def calc_feature_importance_components(
     detail_list = []
     if k.name == "sum":
         for k_idx in range(len(k.kernels)):
-            target = k.kernels[k_idx]
-            result = _clamp_result(target) if _needs_clamp(target) else None
-            # Rare numerical edge case: the clamp evaluation itself can
-            # produce a non-finite likelihood for some fitted states. Fall
-            # back to the (more expensive but more robust) refit path
-            # rather than propagate a NaN/Inf result.
-            if result is None or not np.isfinite(result["log_bf"]):
-                result = _refit_result_with_retry(
-                    lambda m, idx=k_idx: m.kernel.kernels.pop(idx)
-                )
+            result = _refit_result_with_retry(
+                lambda m, idx=k_idx: m.kernel.kernels.pop(idx)
+            )
             detail_list.append(result)
 
     else:
@@ -1004,11 +966,9 @@ def calc_feature_importance_components(
                 {"delta_bic": 0.0, "log_bf": 0.0, "deviance_explained": 0.0}
             )
         else:
-            result = _clamp_result(k) if _needs_clamp(k) else None
-            if result is None or not np.isfinite(result["log_bf"]):
-                result = _refit_result_with_retry(
-                    lambda m: setattr(m, "kernel", gpflow.kernels.Constant())
-                )
+            result = _refit_result_with_retry(
+                lambda m: setattr(m, "kernel", gpflow.kernels.Constant())
+            )
             detail_list.append(result)
 
     # Gather the final bit for leftover noise (always deviance-explained

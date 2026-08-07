@@ -29,7 +29,6 @@ from .model_classes import PSVGP, MultiOutputPSVGP
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import full_kernel_build, make_folds
 from .utilities import (
-    VAR_CUTOFF_DEFAULT,
     calc_bic,
     calc_rsquare,
     check_if_model_exists,
@@ -83,29 +82,20 @@ def _component_param_count(kernel, term_idx, is_sum):
     null-centering assumption (log_bf is centered near -p*log(n)/2 under
     the null, not 0 -- see docs/revision/FINDINGS.md, "T2 (continued)").
 
-    Mirrors calc_feature_importance_components's four branches exactly,
-    rather than guessing from kernel type name (which can't distinguish
-    them, and silently drifts if a new kernel type is added):
+    Mirrors calc_feature_importance_components's branches exactly, rather
+    than guessing from kernel type name (which can't distinguish them, and
+    silently drifts if a new kernel type is added):
       1. Normal sum-kernel refit: the term's own trainable parameters are
          removed outright -- p = len(term.trainable_parameters).
-      2. Clamp shortcut (term's fitted variance already below
-         VAR_CUTOFF_DEFAULT): hardcoded to k_full-1 there regardless of
-         the term's own parameter count, since only variance is fixed in
-         place, not truly removed -- p = 1.
-      3. Lone (non-sum) kernel: the reduced model substitutes Constant()
+      2. Lone (non-sum) kernel: the reduced model substitutes Constant()
          (1 parameter) rather than removing the term outright -- p = the
          term's own count minus 1.
-      4. Lone kernel that is already Constant(): hardcoded to delta_bic=0
+      3. Lone kernel that is already Constant(): hardcoded to delta_bic=0
          there (nothing left to drop) -- p = 0.
     """
     term = kernel.kernels[term_idx] if is_sum else kernel
     if not is_sum and term.name == "constant":
         return 0
-    try:
-        if float(term.variance.numpy()) < VAR_CUTOFF_DEFAULT:
-            return 1  # clamp branch, regardless of term's own param count
-    except (AttributeError, TypeError):
-        pass
     own_count = len(term.trainable_parameters)
     return own_count if is_sum else max(own_count - 1, 0)
 
