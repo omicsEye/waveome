@@ -837,3 +837,134 @@ would silently give it a meaningless within-subject test.
   trivially.
 - Nothing here is wired into the library; `calc_hardened_eb_qvalues`
   remains the shipped path.
+
+### 8. Why the mixed-model variance-component literature doesn't transfer
+
+Raised as a reviewer-anticipating question: testing `variance = 0` is a
+standard problem in mixed models, so why not use that machinery? The chain
+is Self & Liang (1987) → Stram & Lee (1994) → **Crainiceanu & Ruppert
+(2004)**, who showed the asymptotic mixture is badly wrong in finite
+samples and derived the *exact* finite-sample null of the restricted LRT →
+**Greven, Crainiceanu, Küchenhoff & Peters (2008)** for zero variance
+components → implemented in **RLRsim**. Penalized splines are close
+cousins of GPs, so the instinct is right.
+
+Four independent blockers:
+
+1. **Conditionally Gaussian responses.** RLRsim states this as a scope
+   condition. We fit a negative binomial to counts.
+2. **A single variance component.** The exact distribution is derived for
+   one component under test; our kernel carries 13, all penalized at once.
+3. **It needs an exact restricted likelihood; we optimize an ELBO.** A
+   variational bound's tightness differs between full and reduced models
+   and need not respect nesting -- which is why `ΔLL < 0` occurs in real
+   fits, structurally impossible under exact nested likelihoods.
+4. **The horseshoe changes the null.** These tests assume (RE)ML. Under a
+   shrinkage prior the null is governed by the prior driving variances to
+   zero, which is why we measure a point mass at the collapse floor in
+   ~2/3 of outcomes rather than `0.5·δ₀ + 0.5·χ²₁`.
+
+Plus the Davies (1977, 1987) problem for SE kernels (lengthscale
+unidentified under H0), which plain Self-Liang does not cover. And this is
+not speculative: section 4 Attempt B tested plain Self-Liang on `lin×hbi`,
+where it should be *exact*, and found theory implies `SD(ΔLL) ≈ 0.558`
+against an empirical `≈2.295` -- **4x too narrow**, 23 hits vs 7.
+
+**What we did take from it:** RLRsim's contribution is less the algebra
+than the philosophy -- when the asymptotic null is wrong, simulate it
+under the fitted null rather than deriving it. Generalized, that is a
+parametric bootstrap (simulate from the fitted reduced model, refit both,
+difference), and it is worth running on a subset as a **cross-check**: two
+nulls resting on entirely different assumptions (exchangeability vs
+correct specification) agreeing is much stronger evidence than either
+alone. Not adopted as the primary, because it assumes the reduced model is
+correctly specified where permutation needs only exchangeability, and it
+plugs in MAP estimates so it understates parameter uncertainty.
+
+### 9. Why not posterior sampling → Bayesian FDR
+
+The model is already Bayesian, so the coherent answer would be posterior
+inclusion probabilities + Bayesian FDR (tracker option C). It does not
+work as posed:
+
+- **The horseshoe places no mass at zero.** Bayesian FDR consumes
+  `P(H0ᵢ | data)`; a continuous shrinkage prior gives `P(variance=0) = 0`
+  exactly, so that quantity does not exist. Carvalho-Polson-Scott's
+  shrinkage weight κ is a *decision heuristic* (from the posterior mean
+  being `(1−κ)·y`), not a probability, so feeding it to a cumulative-mean
+  FDR rule is invalid. Genuine inclusion probabilities need a
+  spike-and-slab prior -- a different model.
+- **There is no working sampler.** `hmc_sampling` exists in `utilities.py`
+  but is never called (only a commented-out reference at
+  `model_classes.py:2136`), and as written samples *every* trainable
+  parameter including `q_mu`/`q_sqrt`, conflating the variational
+  approximation with posterior sampling. Horseshoe posteriors also need a
+  non-centered reparameterization for HMC that isn't there.
+- **Cost is likely worse.** ~15,000 gradient evaluations per metabolite vs
+  a few hundred for L-BFGS -- ≥60 core-hours optimistically, before funnel
+  divergences, against ~72 for permutation with far less convergence risk.
+- **It inherits an uncalibrated τ.** Decision 10 leaves
+  `penalization_factor = 1.0` fixed and explicitly not frozen. κ and any
+  inclusion probability depend directly on τ, so the verdict would be a
+  function of an arbitrary constant. **Permutation is immune** -- τ is
+  applied identically to observed and permuted data and cancels.
+- **It doesn't answer the reviewers.** R1.M5/R2.5 asked for realized
+  FDR/FWER vs nominal. Bayesian FDR controls a posterior expected
+  proportion -- a different, prior-dependent guarantee -- so T2 would
+  still be required on top of the modelling change.
+
+From scratch, with a spike-and-slab prior, a working sampler and a
+calibrated τ, this would be cleaner than anything in sections 5-7. Getting
+there from here is a research project, not a revision task -- the same
+verdict reached on the Davies correction.
+
+### 10. T2 Stage 1: pooling fails, and the fix
+
+Three attempts, the first two vacuous, recorded because the failure mode
+is instructive.
+
+**Attempts 1-2 tested the wrong null.** Both simulated a COMPLETE null
+(no `cindex` effect at all). Under two tunings -- `categorical[id]`
+collapsing in 83% then 10% of outcomes -- SE nulls stayed degenerate
+(max SD 0.208, then 0.548, against 18.43 in the real cohort), and both
+reported clean results (0/150 false discoveries, `frac<0.05 = 0.040`)
+that meant nothing. **The wide nulls exist precisely because a
+within-subject shuffle preserves the between-subject association**, so
+removing that association makes the regime unreachable at any tuning. The
+complete null is also stricter than the hypothesis under test: H0-within
+permits a between-subject effect.
+
+**Attempt 3 used the correct null** (`beta·cindex_between`, never a
+within-subject effect) and reproduced the regime: max null SD 19.2 (lin)
+and 13.5 (SE), `categorical[id]` collapsed 0.33. A **regime gate** now
+prints these before any p-value so the check cannot pass vacuously again.
+
+**Pooling a shared tail is badly anti-conservative**, and the aggregate
+hides it:
+
+| | degenerate | narrow | WIDE | overall |
+|---|---|---|---|---|
+| lin | 0.000 (n=99) | 0.000 (n=32) | **0.368** (n=19) | 0.047 |
+| SE | 0.000 (n=102) | 0.000 (n=35) | **0.385** (n=13) | 0.033 |
+
+7-8x nominal for wide-null outcomes, invisible in the aggregate because
+the degenerate two-thirds contribute zero and dilute it. Mechanism: an
+outcome whose own null has SD ~19 compared against a tail built mostly
+from point masses.
+
+**Fix, scored side by side** (adaptive B: only 52/150 outcomes needed
+topping up B=20→60, since degenerate ones are self-resolving -- 2,080
+extra draws instead of 6,000):
+
+| WIDE subgroup | lin (n=19) | SE (n=13) |
+|---|---|---|
+| pooled | 0.368 | 0.385 |
+| (a) scale-stratified | 0.000 | 0.000 |
+| (b) standardised | **0.053** | **0.077** |
+
+Both remove the inflation. (a) is conservative (0/19, 0/13, and 0.000
+across every SE subgroup) and would cost real power; **(b) standardised
+targets nominal** and is adopted. **Caveat: n=19 and n=13 give ±0.05 on a
+0.05 proportion**, so both are *consistent with* nominal and neither is
+*demonstrated* correct. Settling it needs ~M=800 outcomes (~100 in the
+wide bin), roughly 14 core-hours.
