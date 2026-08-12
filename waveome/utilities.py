@@ -7,6 +7,7 @@ from xml.etree.ElementInclude import include
 import gpflow
 import joblib
 import numpy as np
+import pandas as pd
 import psutil
 import ray
 import scipy
@@ -1013,6 +1014,176 @@ def calc_empirical_pvalue(obs, null):
     counts = (null_arr[None, :] >= obs_arr[:, None]).sum(axis=1)
     pvals = (1 + counts) / (1 + null_arr.size)
     return pvals.item() if np.ndim(obs) == 0 else pvals
+
+
+def calc_between_unit_fraction(values, unit_ids):
+    """Fraction of a covariate's variance that lies BETWEEN units.
+
+    Determines which permutation scheme a covariate needs, and warns when a
+    within-unit test leaves a large share of its variation untested. In the
+    iHMP cohort: hbi 0.41, time_from_max 0.47, study_days 0.74, age 1.00.
+    `age` is the cautionary case -- it technically varies within subject
+    (patients age during follow-up) while carrying essentially none of its
+    variance there, so "does it vary?" is the wrong question to ask.
+    """
+    values = np.asarray(values, dtype=float)
+    unit_ids = np.asarray(unit_ids)
+    grand = values.mean()
+    between = within = 0.0
+    for u in np.unique(unit_ids):
+        v = values[unit_ids == u]
+        between += v.size * (v.mean() - grand) ** 2
+        within += np.sum((v - v.mean()) ** 2)
+    total = between + within
+    return float(between / total) if total > 0 else np.nan
+
+
+def permute_covariate(values, unit_ids, rng, scheme="auto"):
+    """Permute one covariate under the null, preserving unit structure.
+
+    scheme="within": free shuffle of each unit's own values among its own
+    observations. Every unit keeps its own multiset, so ALL between-unit
+    structure survives untouched -- the null then targets "no within-unit
+    association", and any between-unit contribution appears identically in
+    the observed and permuted statistics and cancels.
+
+    scheme="across": permute the unit-level value across units (for
+    covariates that are constant within a unit, where a within-unit shuffle
+    is a no-op).
+
+    scheme="auto" picks "across" when the covariate is constant within every
+    unit, else "within".
+
+    A free shuffle is used rather than a circular shift: an additive kernel
+    never uses the covariate's time-ordering, only which value is attached to
+    which observation, so the extra restriction buys nothing and costs a much
+    smaller permutation space (n_i! vs n_i, and ties shrink the latter
+    further).
+
+    NOT used: a global shuffle across all observations. That destroys the
+    covariate's clustering by unit, and an SE kernel on a clustered covariate
+    partially proxies the unit random effect -- a real source of likelihood
+    gain that belongs in the null. Removing it made a 4.1-SD result look like
+    28.6 SD on real data. See docs/revision/FINDINGS.md.
+    """
+    values = np.asarray(values, dtype=float)
+    unit_ids = np.asarray(unit_ids)
+    units = np.unique(unit_ids)
+    if scheme == "auto":
+        scheme = ("across"
+                  if all(np.ptp(values[unit_ids == u]) == 0 for u in units)
+                  else "within")
+    out = values.copy()
+    if scheme == "across":
+        unit_vals = np.array([values[unit_ids == u][0] for u in units])
+        for u, v in zip(units, rng.permutation(unit_vals)):
+            out[unit_ids == u] = v
+    else:
+        for u in units:
+            idx = np.where(unit_ids == u)[0]
+            out[idx] = rng.permutation(values[idx])
+    return out
+
+
+def calc_permutation_pvalues(
+    observed,
+    null_draws,
+    tie_tol=1e-3,
+    degenerate_tol=1e-6,
+    n_tau=80,
+    min_p=1e-6,
+):
+    """Permutation p-values via conditional quantile regression on scale.
+
+    Each test's null is centred on its own median, because a within-unit
+    permutation deliberately leaves that test's between-unit structure in the
+    null, so every test's null sits at its own level.
+
+    The scales then differ by orders of magnitude -- measured null SDs run
+    from exactly 0 (the component collapses under every permutation) to ~21.
+    Pooling one shared tail across all tests is badly anti-conservative for
+    the wide-null minority: 37-38% false positives at nominal 5% in
+    simulation, invisible in the aggregate because the degenerate majority
+    dilutes it.
+
+    Rather than binning the scale (which works, but needs an arbitrary
+    cutpoint and over/under-shoots either side of it), the conditional
+    quantile function Q_tau(centred draw | null SD) is fit by quantile
+    regression over a grid of tau, and each test's p-value is read off as
+    1 - tau at the point where its own fitted conditional quantile reaches
+    its observed excess. No bins, smooth in scale, and every draw informs
+    every test. Validated in simulation: false-positive rates 0.047 / 0.048
+    against nominal 0.05, versus 0.070 / 0.032 for binning.
+
+    Parameters
+    ----------
+    observed : dict or pd.Series
+        key -> observed statistic.
+    null_draws : dict
+        key -> array of permutation draws for that key.
+    tie_tol : float
+        Statistics differing by less than this are the same value. Optimizer
+        noise puts genuinely-identical collapsed components a few 1e-4 apart;
+        without this, a null atom straddling the observed flips the p-value
+        (measured: 0.90 vs 0.31 for one collapsed state).
+    degenerate_tol : float
+        Null SD below this is treated as a point mass.
+
+    Returns
+    -------
+    pd.DataFrame indexed by key with columns p_value, null_centre, null_sd,
+    n_draws.
+    """
+    import statsmodels.api as sm
+
+    keys = [k for k in observed.keys() if k in null_draws]
+    centre, spread, excess = {}, {}, {}
+    for k in keys:
+        d = np.asarray(null_draws[k], dtype=float)
+        centre[k] = float(np.median(d))
+        spread[k] = float(np.std(d, ddof=1)) if d.size > 1 else 0.0
+        excess[k] = float(observed[k]) - centre[k]
+
+    y = np.concatenate([np.asarray(null_draws[k], float) - centre[k]
+                        for k in keys])
+    x = np.concatenate([np.full(len(null_draws[k]), spread[k]) for k in keys])
+    # Extend the tau grid only as far as the pooled draws actually support:
+    # the finest empirically-backed upper quantile is ~1/N, and asking a
+    # quantile regression for anything beyond that is extrapolation. A fixed
+    # floor here is a trap -- it silently caps every p-value, and if that cap
+    # sits above BH's q/m threshold the top-ranked test in a stratum can
+    # never be rejected no matter how extreme it is.
+    tail_floor = max(1.0 / max(y.size, 2), min_p)
+    taus = 1 - np.concatenate([
+        np.linspace(0.5, 0.02, n_tau // 2),
+        np.logspace(np.log10(0.02), np.log10(tail_floor),
+                    n_tau - n_tau // 2),
+    ])
+    model = sm.QuantReg(y, sm.add_constant(x))
+    coefs = []
+    for t in taus:
+        try:
+            coefs.append(model.fit(q=t, max_iter=2000).params)
+        except Exception:
+            coefs.append(coefs[-1] if coefs else np.zeros(2))
+    coefs = np.asarray(coefs)
+
+    rows = []
+    for k in keys:
+        if spread[k] < degenerate_tol:
+            # Point-mass null: the component collapses under every
+            # permutation, so the only statements available are "the
+            # observed sits on it" or the permutation floor.
+            n = len(null_draws[k])
+            p = 1.0 if excess[k] <= tie_tol else 1.0 / (1 + n)
+        else:
+            q = np.maximum.accumulate(coefs[:, 0] + coefs[:, 1] * spread[k])
+            idx = int(np.searchsorted(q, excess[k] - tie_tol))
+            p = (1.0 - taus[-1]) if idx >= len(taus) else float(1.0 - taus[idx])
+            p = max(p, min_p)
+        rows.append({"key": k, "p_value": p, "null_centre": centre[k],
+                     "null_sd": spread[k], "n_draws": len(null_draws[k])})
+    return pd.DataFrame(rows).set_index("key")
 
 
 def calc_bh_qvalues(pvalues):

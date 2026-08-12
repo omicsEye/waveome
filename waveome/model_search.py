@@ -29,11 +29,15 @@ from .model_classes import PSVGP, MultiOutputPSVGP
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import full_kernel_build, make_folds
 from .utilities import (
+    calc_between_unit_fraction,
+    calc_bh_qvalues,
     calc_bic,
     calc_rsquare,
     check_if_model_exists,
+    calc_permutation_pvalues,
     convert_data_to_tensors,
     find_variance_components,
+    permute_covariate,
     print_kernel_names,
     replace_kernel_variables,
     run_ray_process,
@@ -98,6 +102,62 @@ def _component_param_count(kernel, term_idx, is_sum):
         return 0
     own_count = len(term.trainable_parameters)
     return own_count if is_sum else max(own_count - 1, 0)
+
+
+# max_calls=1, max_retries=5: same rationale as penalized_optimization's own
+# worker -- long sequences of GPflow/TF fits in one process accumulate an
+# unbounded resource leak, and recycling per task avoids it.
+@ray.remote(max_calls=1, max_retries=5)
+def _permutation_draw_remote(model, X, y, unit_ids, col, targets, seed):
+    """One permutation draw (seed=None -> the observed statistic).
+
+    Refits the full model on the permuted data, then drops each target
+    component and refits again, exactly mirroring
+    calc_feature_importance_components. The observed statistic goes through
+    this same path so optimizer/ELBO noise is common to both sides and
+    cancels in the ranking.
+
+    Returns ({kernel_index: log_bf}, error_string_or_None) -- one failed
+    component must not abort a batch of tens of thousands of draws.
+    """
+    try:
+        Xp = X
+        if seed is not None:
+            Xp = X.copy()
+            Xp[:, col] = permute_covariate(
+                X[:, col], unit_ids, np.random.default_rng(seed)
+            )
+        data = convert_data_to_tensors(Xp, y.reshape(-1, 1))
+        optimizer = getattr(model, "optimizer", None) or "scipy"
+
+        def _bic(m):
+            # optimize_params(adam/gradient) leaves q_mu/q_sqrt untrainable,
+            # which would skew calc_metric's parameter count; restore for the
+            # measurement, then put the flags back.
+            flags = (m.q_mu.trainable, m.q_sqrt.trainable)
+            set_trainable(m.q_mu, True)
+            set_trainable(m.q_sqrt, True)
+            try:
+                return m.calc_metric(data=data, metric="BIC")
+            finally:
+                set_trainable(m.q_mu, flags[0])
+                set_trainable(m.q_sqrt, flags[1])
+
+        full = gpflow.utilities.deepcopy(model)
+        full.num_trainable_params = np.nan
+        full.optimize_params(data=data, optimizer=optimizer)
+        bic_full = _bic(full)
+
+        out = {}
+        for idx in targets:
+            reduced = gpflow.utilities.deepcopy(full)
+            reduced.kernel.kernels.pop(idx)
+            reduced.num_trainable_params = np.nan
+            reduced.optimize_params(data=data, optimizer=optimizer)
+            out[idx] = float(-0.5 * (bic_full - _bic(reduced)))
+        return out, None
+    except Exception as exc:  # noqa: BLE001 - reported per draw, not raised
+        return None, str(exc)
 
 
 def _component_covariate_names(kernel_name, feat_names):
@@ -1802,6 +1862,187 @@ class GPSearch:
                     "stratum": f"{kernel_type}:{cov_name}",
                 })
         return pd.DataFrame(rows)
+
+    def permutation_significance(
+        self,
+        covariates,
+        B0=10,
+        B1=100,
+        random_seed=9102,
+        num_processes=None,
+        ray_dashboard=False,
+        ray_logging=False,
+        verbose=True,
+    ):
+        """Permutation significance for each kernel component of `covariates`.
+
+        Each covariate is permuted at the level its variance lives at (see
+        `permute_covariate`): values shuffled inside each unit for a
+        covariate that varies within units, or the unit-level value shuffled
+        across units for one that is constant within them. The drop-one
+        `log_bf` is then recomputed on the permuted data exactly as on the
+        real data -- the observed statistic is itself recomputed through this
+        same path rather than read from `feature_importance_detail`, so
+        optimizer and ELBO idiosyncrasies occur on both sides and cancel in
+        the ranking.
+
+        For a covariate that varies within units this tests the WITHIN-unit
+        association. Between-unit structure is preserved by the shuffle, so
+        it sits in the observed statistic and in every null draw alike: it
+        can neither manufacture a hit nor be credited as one. A covariate
+        holding much of its variance between units is therefore only
+        partially covered, and a warning is emitted.
+
+        Draws are allocated adaptively. Every component gets `B0` screening
+        draws; only those whose null is non-degenerate are topped up to `B1`.
+        A component that collapses under every permutation has a point-mass
+        null and an observed value sitting on it, so more draws cannot change
+        its p-value -- in simulation that was ~60% of components, and skipping
+        them cut the work by roughly the same fraction.
+
+        Parameters
+        ----------
+        covariates : list of str
+            Covariate names (columns of X) to test.
+        B0, B1 : int
+            Screening and topped-up permutation counts.
+        random_seed : int
+            Base seed; each (component, draw) gets a deterministic offset.
+
+        Returns
+        -------
+        pd.DataFrame with one row per (metabolite, kernel_type, covariate):
+        log_bf, null_centre, null_sd, n_draws, p_value, q_value, stratum.
+        Also stored as `self.permutation_results`, and the raw draws as
+        `self.permutation_draws` so diagnostics never need a re-run.
+        """
+        names = list(self.models.keys())
+        if not names:
+            raise ValueError("permutation_significance: no fitted models")
+        kernel_types, cov_names = _component_covariate_names(
+            self.models[names[0]].kernel_name, self.feat_names
+        )
+        unit_ids = self.X.iloc[:, self.unit_idx].to_numpy()
+
+        targets = {}
+        for cov in covariates:
+            if cov not in self.feat_names:
+                raise ValueError(f"unknown covariate {cov!r}")
+            idxs = [i for i, c in enumerate(cov_names) if c == cov]
+            if not idxs:
+                raise ValueError(f"covariate {cov!r} has no kernel components")
+            targets[cov] = idxs
+            frac = calc_between_unit_fraction(
+                self.X[cov].to_numpy(), unit_ids
+            )
+            varies = any(
+                np.ptp(self.X[cov].to_numpy()[unit_ids == u]) > 0
+                for u in np.unique(unit_ids)
+            )
+            if verbose:
+                print(f"{cov}: components {idxs} "
+                      f"({[kernel_types[i] for i in idxs]}), "
+                      f"between-unit variance fraction {frac:.2f}")
+            if varies and frac > 1 / 3:
+                warnings.warn(
+                    f"{cov}: {frac:.0%} of its variance is between-unit, but "
+                    "it varies within units so the within-unit test is used. "
+                    "That component of its variation is NOT covered -- a "
+                    "non-significant result understates the covariate. "
+                    "(At ~100% between-unit, e.g. baseline age recorded at "
+                    "each visit, the within-unit test is uninformative.)"
+                )
+
+        try:
+            ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
+                     configure_logging=ray_logging)
+        except RuntimeError:
+            ray.shutdown()
+            ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
+                     configure_logging=ray_logging)
+
+        X_ref = ray.put(self.X.to_numpy())
+        unit_ref = ray.put(unit_ids)
+        model_refs = {n: ray.put(self.models[n]) for n in names}
+        y_refs = {n: ray.put(self.Y[n].to_numpy()) for n in names}
+
+        def _launch(items):
+            futs = []
+            for name, cov, b in items:
+                mi = names.index(name)
+                seed = (None if b < 0 else
+                        random_seed + 100003 * mi
+                        + 7919 * covariates.index(cov) + b)
+                futs.append((name, cov, b, _permutation_draw_remote.remote(
+                    model_refs[name], X_ref, y_refs[name], unit_ref,
+                    self.feat_names.index(cov), targets[cov], seed)))
+            return futs
+
+        def _collect(futs, label):
+            if verbose:
+                print(f"{len(futs)} {label} draws queued")
+            rows, n_fail, done_n = [], 0, 0
+            pending = [f[3] for f in futs]
+            meta = {f[3]: f[:3] for f in futs}
+            t0 = time.time()
+            while pending:
+                done, pending = ray.wait(
+                    pending, num_returns=min(100, len(pending)))
+                for ref in done:
+                    name, cov, b = meta[ref]
+                    res, err = ray.get(ref)
+                    done_n += 1
+                    if err is not None:
+                        n_fail += 1
+                        continue
+                    for idx, val in res.items():
+                        rows.append({
+                            "metabolite": name, "covariate": cov,
+                            "kernel_type": kernel_types[idx],
+                            "kernel_idx": idx, "draw": b, "log_bf": val,
+                        })
+                if verbose:
+                    el = time.time() - t0
+                    print(f"  {done_n}/{len(futs)} ({el/60:.1f} min, "
+                          f"{el/max(done_n,1):.2f} s/draw, {n_fail} failed)",
+                          flush=True)
+            return pd.DataFrame(rows)
+
+        screen = [(n, c, b) for c in covariates for n in names
+                  for b in range(-1, B0)]
+        draws = _collect(_launch(screen), "screening")
+
+        sd = (draws[draws.draw >= 0]
+              .groupby(["metabolite", "covariate", "kernel_type"])["log_bf"]
+              .std())
+        need = sorted({(m, c) for (m, c, _), v in sd.items()
+                       if pd.notna(v) and v >= 1e-6})
+        if verbose:
+            print(f"topping up {len(need)} of {len(names)*len(covariates)} "
+                  f"components with a non-degenerate null to B={B1}")
+        if need and B1 > B0:
+            top = [(m, c, b) for (m, c) in need for b in range(B0, B1)]
+            draws = pd.concat([draws, _collect(_launch(top), "top-up")],
+                              ignore_index=True)
+        ray.shutdown()
+        self.permutation_draws = draws
+
+        out = []
+        for (cov, kt), g in draws.groupby(["covariate", "kernel_type"]):
+            obs = g[g.draw == -1].set_index("metabolite")["log_bf"].to_dict()
+            nul = {m: v["log_bf"].to_numpy()
+                   for m, v in g[g.draw >= 0].groupby("metabolite")}
+            res = calc_permutation_pvalues(obs, nul)
+            res["q_value"] = calc_bh_qvalues(res["p_value"].to_numpy())
+            res = res.reset_index().rename(columns={"key": "metabolite"})
+            res["covariate"], res["kernel_type"] = cov, kt
+            res["stratum"] = f"{kt}:{cov}"
+            res["log_bf"] = res["metabolite"].map(obs)
+            out.append(res)
+
+        results = pd.concat(out, ignore_index=True)
+        self.permutation_results = results
+        return results
 
     def plot_marginal(
         self,
