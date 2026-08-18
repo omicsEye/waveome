@@ -1869,6 +1869,8 @@ class GPSearch:
         B0=10,
         B1=100,
         random_seed=9102,
+        checkpoint_path=None,
+        resume=True,
         num_processes=None,
         ray_dashboard=False,
         ray_logging=False,
@@ -1908,6 +1910,17 @@ class GPSearch:
             Screening and topped-up permutation counts.
         random_seed : int
             Base seed; each (component, draw) gets a deterministic offset.
+        checkpoint_path : str, optional
+            Append completed draws here as they land, rather than only at the
+            end. Strongly recommended: a full run takes tens of hours, and
+            without this an interruption forfeits all of it.
+        resume : bool
+            If True (default) and `checkpoint_path` exists, reload it and
+            queue only the draws it is missing. Seeds are a deterministic
+            function of (metabolite, covariate, draw) and `random_seed`, so a
+            resumed draw is identical to the one it replaces -- resuming does
+            not perturb the null. Screening draws in particular are reusable
+            across runs over the same covariates and seed.
 
         Returns
         -------
@@ -1919,6 +1932,29 @@ class GPSearch:
         names = list(self.models.keys())
         if not names:
             raise ValueError("permutation_significance: no fitted models")
+
+        prior = pd.DataFrame(columns=["metabolite", "covariate", "kernel_type",
+                                      "kernel_idx", "draw", "log_bf"])
+        done_keys = set()
+        if resume and checkpoint_path and os.path.exists(checkpoint_path):
+            prior = pd.read_csv(checkpoint_path)
+            # A kill during the final append can leave a truncated line, which
+            # parses as a row with NaNs. Drop those outright -- otherwise they
+            # enter done_keys as bogus entries and (because groupby drops NaN
+            # keys) slip past the completeness check below.
+            n_raw = len(prior)
+            prior = prior.dropna(
+                subset=["metabolite", "covariate", "draw", "log_bf"]
+            ).reset_index(drop=True)
+            prior["draw"] = prior["draw"].astype(int)
+            done_keys = set(
+                zip(prior["metabolite"], prior["covariate"], prior["draw"])
+            )
+            if verbose:
+                torn = n_raw - len(prior)
+                print(f"resuming from {checkpoint_path}: {len(prior)} rows, "
+                      f"{len(done_keys)} draws already complete"
+                      + (f" ({torn} truncated row(s) dropped)" if torn else ""))
         kernel_types, cov_names = _component_covariate_names(
             self.models[names[0]].kernel_name, self.feat_names
         )
@@ -1952,6 +1988,22 @@ class GPSearch:
                     "(At ~100% between-unit, e.g. baseline age recorded at "
                     "each visit, the within-unit test is uninformative.)"
                 )
+
+        if done_keys:
+            # A draw writes one row per kernel component of its covariate, and
+            # a kill mid-append can leave a group short. Re-queue any such
+            # group rather than resuming on a truncated draw.
+            counts = prior.groupby(["metabolite", "covariate", "draw"]).size()
+            partial = {k for k, n in counts.items()
+                       if n < len(targets[k[1]])}
+            if partial:
+                keep = ~prior.set_index(
+                    ["metabolite", "covariate", "draw"]).index.isin(partial)
+                prior = prior[keep].reset_index(drop=True)
+                done_keys -= partial
+                if verbose:
+                    print(f"  discarded {len(partial)} incomplete draw(s) "
+                          "from the checkpoint")
 
         try:
             ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
@@ -1988,6 +2040,7 @@ class GPSearch:
             while pending:
                 done, pending = ray.wait(
                     pending, num_returns=min(100, len(pending)))
+                batch = []
                 for ref in done:
                     name, cov, b = meta[ref]
                     res, err = ray.get(ref)
@@ -1996,11 +2049,19 @@ class GPSearch:
                         n_fail += 1
                         continue
                     for idx, val in res.items():
-                        rows.append({
+                        batch.append({
                             "metabolite": name, "covariate": cov,
                             "kernel_type": kernel_types[idx],
                             "kernel_idx": idx, "draw": b, "log_bf": val,
                         })
+                rows.extend(batch)
+                if checkpoint_path and batch:
+                    # Flush every batch: a run of this length that persists
+                    # nothing until the end forfeits everything if it is
+                    # interrupted, and re-screening alone costs ~10 hours.
+                    header = not os.path.exists(checkpoint_path)
+                    pd.DataFrame(batch).to_csv(
+                        checkpoint_path, mode="a", header=header, index=False)
                 if verbose:
                     el = time.time() - t0
                     print(f"  {done_n}/{len(futs)} ({el/60:.1f} min, "
@@ -2008,9 +2069,19 @@ class GPSearch:
                           flush=True)
             return pd.DataFrame(rows)
 
+        def _todo(items):
+            """Drop (metabolite, covariate, draw) triples already on disk."""
+            return [it for it in items if it not in done_keys]
+
         screen = [(n, c, b) for c in covariates for n in names
                   for b in range(-1, B0)]
-        draws = _collect(_launch(screen), "screening")
+        todo = _todo(screen)
+        if verbose and len(todo) < len(screen):
+            print(f"resuming: {len(screen) - len(todo)} of {len(screen)} "
+                  "screening draws already done")
+        new = _collect(_launch(todo), "screening") if todo else None
+        parts = [d for d in (prior, new) if d is not None and len(d)]
+        draws = pd.concat(parts, ignore_index=True) if parts else prior
 
         sd = (draws[draws.draw >= 0]
               .groupby(["metabolite", "covariate", "kernel_type"])["log_bf"]
@@ -2021,9 +2092,13 @@ class GPSearch:
             print(f"topping up {len(need)} of {len(names)*len(covariates)} "
                   f"components with a non-degenerate null to B={B1}")
         if need and B1 > B0:
-            top = [(m, c, b) for (m, c) in need for b in range(B0, B1)]
-            draws = pd.concat([draws, _collect(_launch(top), "top-up")],
-                              ignore_index=True)
+            top = _todo([(m, c, b) for (m, c) in need
+                         for b in range(B0, B1)])
+            if verbose and not top:
+                print("resuming: all top-up draws already done")
+            if top:
+                draws = pd.concat([draws, _collect(_launch(top), "top-up")],
+                                  ignore_index=True)
         ray.shutdown()
         self.permutation_draws = draws
 
