@@ -108,7 +108,7 @@ conventions. Default (no roles) = permute each covariate in turn, rest held fixe
   known-null per (kernel, covariate) in simulation. If a stratum diverges (e.g., circular
   shift insufficient for a low-`nᵢ` covariate), **flag it**; do not silently switch schemes.
 
-### T3' — Hardened-EB fallback (SUPERSEDED by T3; retained as documented fallback)
+### T3' — Hardened-EB fallback (SUPERSEDED by T3; code REMOVED 2026-08-20)
 Efron two-groups local-fdr **hardened**: half-normal SD factor `1/√(1−2/π)`, Storey π₀,
 stratified per (kernel, covariate), cumulative-mean → global FDR.
 - **Acceptance:** realized FDR ≈ nominal on the known-null simulation (same check as T2).

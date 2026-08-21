@@ -79,87 +79,6 @@ def _pooled_correlations(X_df, cont_idx):
     return corr_out
 
 
-def _component_param_count(kernel, term_idx, is_sum):
-    """Number of parameters lost when the term at `term_idx` is dropped
-    from `kernel` and the reduced model refit -- used by
-    GPSearch.get_significance_table to correct calc_hardened_eb_qvalues's
-    null-centering assumption (log_bf is centered near -p*log(n)/2 under
-    the null, not 0 -- see docs/revision/FINDINGS.md, "T2 (continued)").
-
-    Mirrors calc_feature_importance_components's branches exactly, rather
-    than guessing from kernel type name (which can't distinguish them, and
-    silently drifts if a new kernel type is added):
-      1. Normal sum-kernel refit: the term's own trainable parameters are
-         removed outright -- p = len(term.trainable_parameters).
-      2. Lone (non-sum) kernel: the reduced model substitutes Constant()
-         (1 parameter) rather than removing the term outright -- p = the
-         term's own count minus 1.
-      3. Lone kernel that is already Constant(): hardcoded to delta_bic=0
-         there (nothing left to drop) -- p = 0.
-    """
-    term = kernel.kernels[term_idx] if is_sum else kernel
-    if not is_sum and term.name == "constant":
-        return 0
-    own_count = len(term.trainable_parameters)
-    return own_count if is_sum else max(own_count - 1, 0)
-
-
-# max_calls=1, max_retries=5: same rationale as penalized_optimization's own
-# worker -- long sequences of GPflow/TF fits in one process accumulate an
-# unbounded resource leak, and recycling per task avoids it.
-@ray.remote(max_calls=1, max_retries=5)
-def _permutation_draw_remote(model, X, y, unit_ids, col, targets, seed):
-    """One permutation draw (seed=None -> the observed statistic).
-
-    Refits the full model on the permuted data, then drops each target
-    component and refits again, exactly mirroring
-    calc_feature_importance_components. The observed statistic goes through
-    this same path so optimizer/ELBO noise is common to both sides and
-    cancels in the ranking.
-
-    Returns ({kernel_index: log_bf}, error_string_or_None) -- one failed
-    component must not abort a batch of tens of thousands of draws.
-    """
-    try:
-        Xp = X
-        if seed is not None:
-            Xp = X.copy()
-            Xp[:, col] = permute_covariate(
-                X[:, col], unit_ids, np.random.default_rng(seed)
-            )
-        data = convert_data_to_tensors(Xp, y.reshape(-1, 1))
-        optimizer = getattr(model, "optimizer", None) or "scipy"
-
-        def _bic(m):
-            # optimize_params(adam/gradient) leaves q_mu/q_sqrt untrainable,
-            # which would skew calc_metric's parameter count; restore for the
-            # measurement, then put the flags back.
-            flags = (m.q_mu.trainable, m.q_sqrt.trainable)
-            set_trainable(m.q_mu, True)
-            set_trainable(m.q_sqrt, True)
-            try:
-                return m.calc_metric(data=data, metric="BIC")
-            finally:
-                set_trainable(m.q_mu, flags[0])
-                set_trainable(m.q_sqrt, flags[1])
-
-        full = gpflow.utilities.deepcopy(model)
-        full.num_trainable_params = np.nan
-        full.optimize_params(data=data, optimizer=optimizer)
-        bic_full = _bic(full)
-
-        out = {}
-        for idx in targets:
-            reduced = gpflow.utilities.deepcopy(full)
-            reduced.kernel.kernels.pop(idx)
-            reduced.num_trainable_params = np.nan
-            reduced.optimize_params(data=data, optimizer=optimizer)
-            out[idx] = float(-0.5 * (bic_full - _bic(reduced)))
-        return out, None
-    except Exception as exc:  # noqa: BLE001 - reported per draw, not raised
-        return None, str(exc)
-
-
 def _component_covariate_names(kernel_name, feat_names):
     """Map each '+'-joined additive kernel component to its (kernel_type,
     covariate) label pair (product terms keep all factors, joined with
@@ -1810,25 +1729,26 @@ class GPSearch:
     def get_significance_table(self):
         """Flatten every metabolite's per-component log_bf and marginal
         deviance-explained into one long DataFrame, with the kernel type,
-        covariate name, and the two columns calc_hardened_eb_qvalues needs
-        to stratify and center its empirical null correctly:
-          - `stratum` (= "kernel_type:covariate"): pass as `groups=` --
-            squared_exponential and lin components for the same covariate
-            have different null spreads, so pooling them into one
-            sigma_null is wrong for both (frozen decision 4).
-          - `null_offset` (= -p*log(n)/2, p from _component_param_count,
-            n = that metabolite's own observation count): pass as
-            `null_offset=` -- log_bf is not centered at 0 under the null.
-        See docs/revision/FINDINGS.md, "T2 (continued)" for the derivation
-        of both corrections.
+        covariate name, and a `stratum` label (= "kernel_type:covariate").
+
+        `stratum` is the unit significance is assessed within: squared_
+        exponential and lin components for the same covariate have different
+        null distributions, so pooling them is wrong for both (frozen
+        decision 4). Pass it as `groups=` to any stratified procedure, or
+        join this table to `GPSearch.permutation_significance`'s output on
+        (metabolite, kernel_type, covariate).
+
+        This table carries evidence and magnitude only -- no p-values.
+        Significance comes from `permutation_significance`, which builds its
+        own null rather than assuming one for log_bf.
 
         Returns
         -------
         pd.DataFrame with columns: metabolite, kernel_type, covariate,
-        log_bf, deviance_explained, null_offset, stratum. One row per
-        additive kernel component per metabolite (the trailing leftover-
-        noise entry in feature_importance_detail, which has no covariate
-        label, is excluded).
+        log_bf, deviance_explained, stratum. One row per additive kernel
+        component per metabolite (the trailing leftover-noise entry in
+        feature_importance_detail, which has no covariate label, is
+        excluded).
         """
         rows = []
         for name, model in self.models.items():
@@ -1844,21 +1764,17 @@ class GPSearch:
                     "(refit=False and never-called models don't populate "
                     "the per-component detail this method needs)."
                 )
-            n_obs = model.data[0].shape[0]
-            is_sum = model.kernel.name == "sum"
-            for idx, (kernel_type, cov_name, comp) in enumerate(
+            for kernel_type, cov_name, comp in (
                 zip(kernel_types, cov_names, detail[:-1])
             ):
                 if comp["log_bf"] is None or not np.isfinite(comp["log_bf"]):
                     continue
-                p = _component_param_count(model.kernel, idx, is_sum)
                 rows.append({
                     "metabolite": name,
                     "kernel_type": kernel_type,
                     "covariate": cov_name,
                     "log_bf": comp["log_bf"],
                     "deviance_explained": comp["deviance_explained"],
-                    "null_offset": -p * np.log(n_obs) / 2,
                     "stratum": f"{kernel_type}:{cov_name}",
                 })
         return pd.DataFrame(rows)

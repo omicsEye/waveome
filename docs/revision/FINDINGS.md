@@ -836,7 +836,8 @@ would silently give it a meaningless within-subject test.
   collapse-to-floor, and both SE and lin components, or it passes
   trivially.
 - Nothing here is wired into the library; `calc_hardened_eb_qvalues`
-  remains the shipped path.
+  remains the shipped path. *(Superseded: permutation is now the shipped
+  path and that function has been removed -- see 18-19.)*
 
 ### 8. Why the mixed-model variance-component literature doesn't transfer
 
@@ -1149,13 +1150,26 @@ changing an answer, is a poor trade.
   ranks, so all draws are one matmul). The rule in section 16 was derived one
   message before it was violated.
 
+- **`calc_hardened_eb_qvalues` was removed from the library**, not merely
+  demoted. It was introduced on this branch (`7a0e40c`) and never shipped, so
+  nothing external depends on it, and keeping an uncalibrated method exported
+  as a "fallback" would amount to recommending one this document shows is
+  wrong. Removed with it: `get_significance_table`'s `null_offset` column and
+  `_component_param_count`, which existed only to compute it. `null_offset`
+  was independently a wrong quantity -- the theoretical anchor it encodes is
+  biased by +1.736 (p=1) and +0.672 (p=2), measured in section 3.
+  Earlier entries in this document (sections 1-10) still refer to it; those
+  are the record of what was tried and are left as written.
+
 ### 19. Where the code stands
 
 Shipped in `waveome/`: `permute_covariate`, `calc_between_unit_fraction`,
 `calc_permutation_pvalues` (utilities), `GPSearch.permutation_significance`
 with adaptive B, checkpoint/resume, and a between-unit-variance warning.
-`calc_hardened_eb_qvalues` remains exported and should carry a pointer to
-the permutation path.
+`calc_hardened_eb_qvalues`, `null_offset` and `_component_param_count` were
+removed outright (see 18). `calc_empirical_pvalue` and `empirical_null_bh`
+are kept: currently unused, but correct, and they are frozen decision 4's
+machinery for the known-null simulation path.
 
 Three resume bugs were found and fixed (`c756656`), all from assuming a
 checkpoint always matches the scope of the call resuming it -- which fails
