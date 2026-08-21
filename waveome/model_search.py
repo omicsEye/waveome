@@ -1,5 +1,7 @@
 import os
 import re
+
+from scipy.stats import rankdata
 import time
 import warnings
 
@@ -30,6 +32,7 @@ from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import full_kernel_build, make_folds
 from .utilities import (
     calc_between_unit_fraction,
+    calc_residuals,
     calc_bh_qvalues,
     calc_bic,
     calc_rsquare,
@@ -77,6 +80,28 @@ def _pooled_correlations(X_df, cont_idx):
             if np.isfinite(r):
                 corr_out[(cont_idx[a], cont_idx[b])] = r
     return corr_out
+
+
+# max_calls=1, max_retries=5: same rationale as the other Ray workers here.
+@ray.remote(max_calls=1, max_retries=5)
+def _subject_residuals_remote(model, X, y, drop_idx, resid_type):
+    """Refit without a covariate's components; return per-observation residuals.
+
+    The covariate is removed rather than retained so its signal stays IN the
+    residuals -- that is what the subject-level test then looks for.
+    """
+    try:
+        data = convert_data_to_tensors(X, y.reshape(-1, 1))
+        m = gpflow.utilities.deepcopy(model)
+        for i in sorted(drop_idx, reverse=True):
+            m.kernel.kernels.pop(i)
+        m.num_trainable_params = np.nan
+        m.optimize_params(
+            data=data, optimizer=getattr(model, "optimizer", None) or "scipy")
+        return calc_residuals(
+            m, X=data[0], Y=data[1], resid_type=resid_type).ravel(), None
+    except Exception as exc:  # noqa: BLE001 - reported per task, not raised
+        return None, str(exc)
 
 
 def _component_covariate_names(kernel_name, feat_names):
@@ -2071,6 +2096,168 @@ class GPSearch:
 
         results = pd.concat(out, ignore_index=True)
         self.permutation_results = results
+        return results
+
+    def between_subject_significance(
+        self,
+        covariates,
+        n_permutations=20000,
+        random_seed=9102,
+        resid_type="pearson",
+        num_processes=None,
+        ray_dashboard=False,
+        ray_logging=False,
+        verbose=True,
+    ):
+        """Subject-level significance -- the complement to
+        `permutation_significance`.
+
+        A within-unit permutation preserves each unit's own covariate values,
+        so between-unit association sits in the null on both sides of the
+        comparison and can neither create a hit nor be credited as one. For a
+        covariate carrying much of its variance between units (see
+        `calc_between_unit_fraction`; hbi is 41% in the iHMP cohort,
+        time_from_max 47%) that leaves a real share of its variation
+        untested. This covers it.
+
+        Per (outcome, covariate):
+          1. refit with ALL of that covariate's kernel components dropped, so
+             the residuals retain whatever the rest of the model cannot
+             explain -- including any covariate signal, which is the point
+          2. reduce each unit to two numbers: mean covariate, mean residual
+          3. Spearman correlation across units (rank-based, since a clinical
+             index is typically bounded and discrete -- hbi has 14 distinct
+             values and skew +2.03)
+          4. permute the unit-level covariate means and recompute
+          5. empirical p, then Benjamini-Hochberg within each covariate
+
+        Exact and design-agnostic: each unit contributes exactly ONE number,
+        so units are freely exchangeable under the null however many
+        observations each has. It is the move OmicsLonDA makes with a
+        subject-level group label, applied to a continuous value.
+
+        Cost is one refit per (outcome, covariate). The permutation itself is
+        arithmetic -- Spearman is Pearson on ranks, so permuting the unit
+        means just permutes their ranks and every draw is one matrix product.
+
+        Parameters
+        ----------
+        covariates : list of str
+            Covariate names to test.
+        n_permutations : int
+            Must satisfy n >= m/q for Benjamini-Hochberg to be able to reject
+            at rank 1 (m outcomes, level q); at m=564 and q=0.05 that is
+            11,280. The default is deliberately generous because these draws
+            cost almost nothing -- an earlier version used 200 and floored
+            every p-value at 5e-3, 56x above the threshold, reporting a
+            meaningless zero.
+
+        Returns
+        -------
+        pd.DataFrame with one row per (outcome, covariate): spearman_abs,
+        p_value, q_value, n_units. Also stored as
+        `self.between_subject_results`.
+        """
+        names = list(self.models.keys())
+        if not names:
+            raise ValueError("between_subject_significance: no fitted models")
+        kernel_types, cov_names = _component_covariate_names(
+            self.models[names[0]].kernel_name, self.feat_names
+        )
+        X = self.X.to_numpy()
+        unit_ids = X[:, self.unit_idx]
+        units = np.unique(unit_ids)
+
+        targets = {}
+        for cov in covariates:
+            if cov not in self.feat_names:
+                raise ValueError(f"unknown covariate {cov!r}")
+            idxs = [i for i, c in enumerate(cov_names) if c == cov]
+            if not idxs:
+                raise ValueError(f"covariate {cov!r} has no kernel components")
+            targets[cov] = idxs
+            if verbose:
+                print(f"{cov}: dropping components {idxs} "
+                      f"({[kernel_types[i] for i in idxs]}) to build residuals")
+
+        floor = n_permutations + 1
+        if verbose:
+            print(f"{len(units)} units; p-value floor 1/{floor} = "
+                  f"{1 / floor:.2g} (BH rank-1 at q=0.05 needs "
+                  f"{0.05 / len(names):.2g})")
+
+        try:
+            ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
+                     configure_logging=ray_logging)
+        except RuntimeError:
+            ray.shutdown()
+            ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
+                     configure_logging=ray_logging)
+        X_ref = ray.put(X)
+        jobs = []
+        for cov in covariates:
+            for n in names:
+                jobs.append((n, cov, _subject_residuals_remote.remote(
+                    ray.put(self.models[n]), X_ref,
+                    ray.put(self.Y[n].to_numpy()), targets[cov], resid_type)))
+
+        if verbose:
+            print(f"\n{len(jobs)} refits queued "
+                  f"({len(names)} outcomes x {len(covariates)} covariates)")
+        t0 = time.time()
+        resid, n_fail, done = {}, 0, 0
+        pending = [j[2] for j in jobs]
+        meta = {j[2]: j[:2] for j in jobs}
+        while pending:
+            ready, pending = ray.wait(
+                pending, num_returns=min(100, len(pending)))
+            for ref in ready:
+                res, err = ray.get(ref)
+                done += 1
+                if err is None:
+                    resid[meta[ref]] = res
+                else:
+                    n_fail += 1
+            if verbose:
+                el = time.time() - t0
+                print(f"  {done}/{len(jobs)} ({el/60:.1f} min, "
+                      f"{n_fail} failed)", flush=True)
+        ray.shutdown()
+
+        rng = np.random.default_rng(random_seed)
+        rows = []
+        for cov in covariates:
+            ci = self.feat_names.index(cov)
+            cov_mean = np.array([X[unit_ids == u, ci].mean() for u in units])
+            # The unit-level covariate means are the same vector for every
+            # outcome, so one permutation set serves all of them.
+            rc = rankdata(cov_mean)
+            rc = (rc - rc.mean()) / np.linalg.norm(rc - rc.mean())
+            perms = np.array([rng.permutation(rc)
+                              for _ in range(n_permutations)])
+            for n in names:
+                r = resid.get((n, cov))
+                if r is None:
+                    continue
+                y_mean = np.array([r[unit_ids == u].mean() for u in units])
+                ry = rankdata(y_mean)
+                denom = np.linalg.norm(ry - ry.mean())
+                if denom == 0:          # residuals tied across every unit
+                    continue
+                ry = (ry - ry.mean()) / denom
+                obs = abs(float(rc @ ry))
+                null = np.abs(perms @ ry)
+                rows.append({
+                    "metabolite": n, "covariate": cov,
+                    "spearman_abs": obs, "n_units": len(units),
+                    "p_value": (1 + int(np.sum(null >= obs))) / (1 + len(null)),
+                })
+
+        results = pd.DataFrame(rows)
+        for cov, g in results.groupby("covariate"):
+            results.loc[g.index, "q_value"] = calc_bh_qvalues(
+                g["p_value"].to_numpy())
+        self.between_subject_results = results
         return results
 
     def plot_marginal(
