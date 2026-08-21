@@ -16,6 +16,7 @@ quantile regression, so it no longer depicts the pipeline.
     python plot_permutation_null_ihmp.py
 """
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
@@ -119,22 +120,45 @@ def main():
     for s in ("top", "right"):
         b.spines[s].set_visible(False)
 
-    # C -- observed values against the fitted bar
+    # C -- observed values against the bar BH actually applies.
+    # Restricted to the metabolites the quantile regression governs.
+    # Components with a degenerate null bypass it entirely (p is assigned
+    # directly), so no curve in this space can reproduce their decision --
+    # including them drops boundary/decision agreement from 259/273 to
+    # 374/564. They also all sit at exactly (0, 0), a single overplotted
+    # point rather than a cloud, so jittering them would imply a spread in
+    # null SD that does not exist.
     c = ax[1, 0]
-    excess = (obs - centre).to_numpy()
-    sd = spread.to_numpy()
-    p95 = mod.fit(q=0.95, max_iter=2000).params
-    c.scatter(sd[~sig], excess[~sig], s=6, alpha=0.45, color=C_OBS,
-              linewidths=0, label=f"n.s. ({int((~sig).sum())})")
-    c.scatter(sd[sig], excess[sig], s=11, color=C_SIG, zorder=3,
-              linewidths=0, label=f"$q<{Q_TARGET}$ ({int(sig.sum())})")
-    c.plot(xs, p95[0] + p95[1] * xs, color=C_NULL, ls="--", lw=1.4,
-           label=r"fitted $Q_{0.95}$")
+    keep = spread.to_numpy() >= 1e-6
+    excess = (obs - centre).to_numpy()[keep]
+    sd = spread.to_numpy()[keep]
+    sig_c = sig[keep]
+    # BH reduces to one p threshold -- the largest p among the rejected -- so
+    # the corresponding quantile IS the decision boundary, unlike a fixed
+    # Q_0.95, which is merely one rung of the 80-node ladder.
+    p_star = float(rf.set_index("metabolite").reindex(common)
+                   .p_value[sig].max())
+    bnd = mod.fit(q=1 - p_star, max_iter=2000).params
+    c.scatter(sd[~sig_c], excess[~sig_c], s=6, alpha=0.45, color=C_OBS,
+              linewidths=0, label=f"n.s. ({int((~sig_c).sum())})")
+    c.scatter(sd[sig_c], excess[sig_c], s=11, color=C_SIG, zorder=3,
+              linewidths=0, label=f"$q<{Q_TARGET}$ ({int(sig_c.sum())})")
+    c.plot(xs, bnd[0] + bnd[1] * xs, color=C_NULL, ls="--", lw=1.4,
+           label=rf"BH boundary, $Q_{{{1 - p_star:.3f}}}$")
+
     c.set_yscale("symlog", linthresh=1)
     c.set_xlabel("null SD of that metabolite")
     c.set_ylabel("observed excess (log BF)")
-    c.legend(frameon=False, loc="lower right", handlelength=1.6,
-             borderpad=0.2, labelspacing=0.25)
+    # The omitted-count note rides in the legend as a blank-handle entry so
+    # the two sit inside one border rather than as separate floating blocks.
+    h, lab = c.get_legend_handles_labels()
+    h.append(Line2D([], [], linestyle="none"))
+    lab.append(f"{int((~keep).sum())} degenerate nulls omitted\n"
+               "(all n.s.; see panel A)")
+    c.legend(h, lab, loc="lower right", bbox_to_anchor=(0.985, 0.03),
+             handlelength=1.6, borderpad=0.45, labelspacing=0.35,
+             framealpha=0.95, edgecolor="#94a3b8", facecolor="white",
+             fancybox=False)
     panel_letter(c, "C")
     for s in ("top", "right"):
         c.spines[s].set_visible(False)
@@ -175,6 +199,12 @@ def main():
     # stale without the figure going stale too.
     b_used = {c: int(gg[gg.draw >= 0]["draw"].max()) + 1
               for c, gg in d.groupby("covariate")}
+    # How well the drawn curve tracks the actual BH decision. Not exact:
+    # p-values are grid-valued, so the cut between p <= p* and p > p* falls
+    # between tau nodes and no single fitted quantile reproduces it.
+    _above = excess >= bnd[0] + bnd[1] * sd
+    n_agree = int((_above == sig_c).sum())
+    n_pvals = int(rf.p_value.nunique())
     at_floor = [r[0] for r in rows if r[3]]
     above = [r[0] for r in rows if not r[3]]
     n_sig_focus = int(sig.sum())
@@ -191,10 +221,19 @@ quantiles rise with null width, so the threshold a metabolite must exceed
 adapts to its own null rather than to a single pooled distribution.
 
 (C) Observed excess over each metabolite's null centre against that null's
-scale; points above the fitted Q0.95 are candidates, with those passing
-Benjamini-Hochberg at q < {Q_TARGET} in orange (n = {n_sig_focus}). A metabolite
-with a narrow null clears the threshold at an excess near 1 log BF while one
-with a wide null requires roughly 5.
+scale, for the {len(sd)} metabolites whose null is non-degenerate; those
+passing Benjamini-Hochberg at q < {Q_TARGET} are in orange (n = {int(sig_c.sum())}).
+A metabolite with a narrow null clears the threshold at an excess near 1 log
+BF while one with a wide null requires roughly 5. The {int((~keep).sum())}
+components whose null is a point mass are omitted: they bypass the quantile
+regression (their p-value is assigned directly), all sit at the same point,
+and none is significant. The dashed curve is the quantile
+corresponding to the single p-threshold Benjamini-Hochberg reduces to at this
+q, not a fixed reference level. It tracks the decision to within the
+resolution of the tau grid -- {n_agree} of {len(sd)} metabolites fall on the
+expected side; p-values take only {n_pvals} distinct values in this stratum,
+so the cut lies between grid nodes and a handful of points sit on the wrong
+side of the drawn line.
 
 (D) Discoveries per (kernel, covariate) stratum at q < {Q_TARGET}. Asterisks mark
 strata whose smallest p-value sits at the floor attainable from the pooled
