@@ -968,3 +968,200 @@ targets nominal** and is adopted. **Caveat: n=19 and n=13 give ±0.05 on a
 0.05 proportion**, so both are *consistent with* nominal and neither is
 *demonstrated* correct. Settling it needs ~M=800 outcomes (~100 in the
 wide bin), roughly 14 core-hours.
+
+### 11. Stage 1 at scale reversed the choice made at n=19
+
+Section 10 adopted standardised pooling on wide-subgroup rates of 0.053 and
+0.077 against nominal 0.05, from n=19 and n=13 outcomes. Rerunning at M=400
+(B0=10 screen, B1=100 top-up; 153 of 400 outcomes non-degenerate, so 13,770
+extra draws rather than 36,000) put ~60 outcomes in the wide bin and
+**inverted the ranking**:
+
+| WIDE subgroup | lin | SE |
+|---|---|---|
+| pooled (broken) | 0.368 (n=19) | 0.385 (n=13) |
+| (a) scale-stratified, M=400 | **0.032** (n=62) | **0.028** (n=36) |
+| (b) standardised, M=400 | 0.081 | 0.111 |
+
+At the larger sample (a) sits just below nominal and (b) sits above it in
+both kernels, 1.6x and 2.2x. Neither is individually significant (+1.1 and
++1.7 SE) but (b) errs the same direction in both, and that direction is the
+one the whole exercise exists to remove. **The small-sample evidence would
+have shipped the anti-conservative variant.**
+
+### 12. Quantile regression replaced binning; leave-one-out was immaterial
+
+Binning works but needs an arbitrary cutpoint, and it over/undershoots
+either side of it (narrow 0.070, wide 0.032 against nominal 0.05). Replacing
+it with a conditional quantile regression of the pooled centred draws on
+each outcome's own null SD -- no bins, smooth in scale -- calibrates better
+and gives slightly more power at identical FDR:
+
+| lin | narrow | WIDE | q=0.01 FDR / power | q=0.05 FDR / power |
+|---|---|---|---|---|
+| scale-stratified | 0.070 | 0.032 | 0.010 / 0.866 | 0.029 / 0.893 |
+| **quantile regression** | **0.047** | **0.048** | 0.010 / **0.884** | 0.029 / **0.902** |
+
+**Adopted.** Caveat: it assumes the conditional quantile is linear in null
+SD, which is a real modelling assumption with SD spanning 0 to 21 and is the
+thing most likely to break on other data.
+
+IHW (Ignatiadis & Huber 2016) also motivated a **leave-one-out** check --
+each outcome's own draws sit in the pool it is judged against, the
+circularity IHW's cross-fold design exists to prevent. Implemented and
+measured: **not one p-value moved** in either dataset. Each outcome
+contributes ~100 draws to a bin pool of 6,200-8,600, so removing its own
+shifts the count by ~1.5%, never enough to cross a threshold. Real in
+principle, immaterial at this scale.
+
+### 13. T2 Stage 2 -- realized FDR, and GPD rejected
+
+400 outcomes, 112 true positives (28%), within-effect sizes 0.15-1.20 so the
+table has a power gradient rather than all-or-nothing detection. True nulls
+still carry between-subject effects, preserving the wide-null regime.
+
+**This is the evidence R1.M5 / R2.5 asked for:**
+
+| q | discoveries | false | realized FDR | power |
+|---|---|---|---|---|
+| 0.01 | 98 | 1 | 0.010 | 0.866 |
+| 0.05 | 103 | 3 | 0.029 | 0.893 |
+| 0.10 | 104 | 3 | 0.029 | 0.902 |
+
+**GPD tail approximation (Knijnenburg et al. 2009) tested and rejected.** It
+matches at q=0.05 and 0.10 but **loses 80% of its power at q=0.01** (0.179
+vs 0.866). Cause: 49 of 113 GPD attempts (43%) returned shape c < 0, a
+*bounded* tail whose endpoint the observed value exceeds, giving sf = 0 --
+not a small p-value but an invalid one. Those fall back to the empirical
+p-value, capped at 1/(B+1), which q=0.01 cannot reject. The method adopted
+to beat the resolution floor dumps 43% of tests back onto it. Intrinsic to
+fitting a GPD to these collapse-dominated tails; more permutations would not
+help.
+
+**Known gap:** both methods show ~0 power for SE components here, because
+the simulated true positives are *linear* within-subject effects that
+`lin[cindex]` captures and `SE[cindex]` has no reason to. SE produces no
+false positives, but **SE power is unvalidated**. Affects a power claim, not
+error control. ~15h to fix.
+
+### 14. iHMP results
+
+16.9h, 32,358 draws, **zero failed fits** (before the variance floor, 74% of
+fits failed). 399 of 1128 components (35%) had a non-degenerate null and
+were topped up.
+
+| stratum | q<0.05 | q<0.10 | min p | attainable floor | verdict |
+|---|---|---|---|---|---|
+| lin:hbi | 111 | 140 | 5.10e-05 | 5.10e-05 | at floor |
+| lin:time_from_max | 3 | 3 | 5.39e-05 | 5.39e-05 | at floor |
+| SE:hbi | 1 | 1 | 5.10e-05 | 5.10e-05 | at floor |
+| SE:time_from_max | 0 | 0 | 3.24e-03 | 8.59e-05 | **above floor** |
+
+Consistently fewer hits than hardened-EB (111 vs 137, 3 vs 9, 1 vs 2) -- the
+expected direction, since permutation leaves each metabolite's
+between-subject structure in its own null.
+
+`lin:time_from_max` was re-run at B=120 because its floor cleared BH's
+rank-1 threshold by only 3%. Doubling the draws moved the floor 8.59e-05 ->
+5.39e-05, a 1.64x margin, and **nothing changed**: same 3 metabolites, zero
+decisions flipped. The count is not an artifact of thin resolution.
+
+### 15. Between-subject test -- the complement, and a null result
+
+The within-subject permutation preserves each subject's own values, leaving
+hbi's 41% and time_from_max's 47% between-subject variance untested. Covered
+by a subject-level test: refit without the covariate's components, reduce
+each subject to (mean covariate, mean Pearson residual), Spearman across the
+49 subjects, permute the 49 subject-level values. Exact and fully general --
+one number per subject, so subjects are exchangeable regardless of visit
+count. One extra fit per (metabolite, covariate); no refits under permutation.
+
+| covariate | q<0.05 | min p | floor | verdict |
+|---|---|---|---|---|
+| hbi | 0/564 | 0.0015 | 5.0e-05 | above floor -- genuinely null |
+| time_from_max | 0/564 | 0.0086 | 5.0e-05 | above floor -- genuinely null |
+
+**So HBI's association with the metabolome is within-patient.** Metabolites
+track a patient's own disease activity; patients with higher *average* HBI do
+not have systematically different levels once the rest of the model is
+accounted for. This retires the caveat that the within-subject test leaves
+41%/47% of the variance uncovered -- it is covered, and empty. Limits: n=49
+subjects, so only fairly strong between-patient effects are detectable, and
+it rests on residuals from the no-covariate refit.
+
+### 16. Sizing rule, and telling "not extreme" from "could not resolve"
+
+BH rejects the k-th smallest p if p <= qk/m, so the hardest case is rank 1
+needing p <= q/m, while the smallest p obtainable from pooled draws is 1/N.
+Hence:
+
+    N_pooled  >=  m / q            i.e.   n_degen*B0 + n_nondegen*B1 >= m/q
+
+Self-correcting: the more components collapse (contributing only B0), the
+more the survivors need. Necessary but not sufficient -- the post-hoc check
+is whether the smallest observed p sits **at** 1/N (more draws could change
+the answer) or well **above** it (the data simply is not extreme). That
+distinction is what separates SE:time_from_max, which is genuinely null,
+from the other three strata.
+
+**Ties.** 72 of the 111 lin:hbi hits sit exactly at the floor. The count is
+sound but they cannot be *ranked*; a top-N list would need more draws than a
+set does.
+
+**Boundary sensitivity.** HILn_QI42 moved q = 0.0536 -> 0.0474 on a dp of
+0.0014 when the pooled null was perturbed. Results within a few percent of
+the threshold are not stable to small changes in the pool, and borderline
+metabolites should not be presented as though the cutoff were sharp.
+
+### 17. Rejected: prefiltering components already at the variance floor
+
+A component whose *fitted* variance sits at the collapse floor cannot be
+significant -- its observed log_bf is the minimum attainable, so excess <= 0
+and p >= 0.5 for any B. Provable, and confirmed: 0 of 832 such pairs were
+significant. Skipping them looked like free compute.
+
+It is not free. **Those draws also constitute the pooled sample every other
+component is judged against.** Dropping them re-fits the quantile regression
+on a different sample: lin:time_from_max went 3 -> 0. Synthesising them
+(their null is a point mass at the observed value -- verified, 100% within
+the tie tolerance, median deviation 2.8e-8) repaired that, but repeating the
+value *exactly* built a machine-precision tie mass that made the quantile
+regression divide by zero; adding jitter at the measured 4e-8 scale fixed
+the numerics but **one metabolite still flipped** (HILn_QI42, q 0.0474 vs
+0.0536), because synthetic draws cannot be the same numbers as real ones.
+
+**Reverted.** The saving was also smaller than first calculated: 26%, not
+61% -- the first figure counted at the *component* level, but one draw serves
+both components of a covariate and the top-up phase (19,950 of 32,358 draws)
+is untouched by the prefilter. Three layers of correction for ~4h, still
+changing an answer, is a poor trade.
+
+### 18. Corrections to earlier entries in this document
+
+- **SE:time_from_max was described as resolution-blocked. It is the
+  opposite** -- the only stratum where resolution is *not* the constraint.
+  Its pool reaches 8.59e-05, below BH's 8.87e-05, and its most extreme
+  metabolite is at 3.24e-03. Its zero is a finding.
+- **The prefilter saving was quoted as 61%; it is 26%** (see 17).
+- The between-subject test first reported 0/564 from **200** permutations,
+  flooring every p at 5e-03 -- 56x above BH's threshold, so it could not
+  reject anything. Rerun with 20,000 (vectorised: Spearman is Pearson on
+  ranks, so all draws are one matmul). The rule in section 16 was derived one
+  message before it was violated.
+
+### 19. Where the code stands
+
+Shipped in `waveome/`: `permute_covariate`, `calc_between_unit_fraction`,
+`calc_permutation_pvalues` (utilities), `GPSearch.permutation_significance`
+with adaptive B, checkpoint/resume, and a between-unit-variance warning.
+`calc_hardened_eb_qvalues` remains exported and should carry a pointer to
+the permutation path.
+
+Three resume bugs were found and fixed (`c756656`), all from assuming a
+checkpoint always matches the scope of the call resuming it -- which fails
+in exactly the case checkpointing enables, topping up one covariate from a
+multi-covariate run. `tests/test_permutation_resume.py` covers it, verified
+red/green.
+
+Not yet in the library: the between-subject test (script only), p/q columns
+on `get_significance_table`, `plot_heatmap(significance=...)`.

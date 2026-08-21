@@ -1,11 +1,22 @@
 """T2 Stage 1 -- are the pooled permutation p-values calibrated?
 
-Simulates a COMPLETE NULL for the tested covariate: the outcome depends on
-subject and on time, but never on `cindex`. Valid p-values must then be
-uniform on (0,1). If pooling a shared tail shape across outcomes is
-anti-conservative -- the specific worry raised by the iHMP mixed panel,
-where per-outcome null SDs ranged 0.00 to 18.43 -- the p-values will be
-stochastically too small and the QQ plot against uniform will bend.
+Simulates the null the within-subject test actually targets: `cindex` has
+NO within-subject effect on the outcome, but MAY have a real between-subject
+one. Valid p-values must then be uniform on (0,1). If pooling a shared tail
+shape across outcomes is anti-conservative -- the worry raised by the iHMP
+mixed panel, where per-outcome null SDs ranged 0.00 to 18.43 -- the p-values
+will be stochastically too small and the QQ plot against uniform will bend.
+
+Getting that null right is the whole point. A first version simulated a
+COMPLETE null (no cindex effect at all, within or between) and was vacuous:
+the wide, heterogeneous nulls arise precisely BECAUSE a within-subject
+shuffle preserves the between-subject association, so an SE kernel keeps
+fitting it. Remove that association from the data and every null collapses
+to a point mass no matter how the subject effect is tuned -- observed
+across two tunings, categorical[id] collapsing in 83% and then 10% of
+outcomes, with SE[cindex] degenerate either way. The complete null is also
+a stricter hypothesis than the one under test: H0-within permits a
+between-subject effect.
 
 The simulated data deliberately reproduces the structural features that
 produced the problem, because a naive simulation passes trivially:
@@ -50,7 +61,7 @@ TARGET_BETWEEN_FRAC = 0.41   # matches hbi in the real cohort
 
 
 def simulate(n_units=49, visit_rate=5, M=150, rng=None):
-    """Complete null for `cindex`; real structure in subject and time."""
+    """No WITHIN-subject cindex effect; a between-subject one may be present."""
     rng = rng or np.random.default_rng(SEED)
     n_obs = np.maximum(rng.poisson(visit_rate, n_units), 1)
 
@@ -68,17 +79,48 @@ def simulate(n_units=49, visit_rate=5, M=150, rng=None):
                       "cindex": cindex,
                       "time": time})
 
-    # Outcome: subject offset + smooth time effect, NO dependence on cindex.
-    Y = {}
+    # Outcome: subject offset + smooth time effect + an optional BETWEEN-
+    # subject cindex effect. Never a within-subject cindex effect, so the
+    # hypothesis under test is exactly true for every outcome.
+    #
+    # Subject-effect strength is also drawn per outcome, since real
+    # metabolites span a range (participant_id collapsed in 52% of them) and
+    # a single fixed level puts every outcome in the same regime.
+    #
+    # Subject-mean of cindex: the ONLY channel through which cindex may act.
+    # It is constant within subject, so it survives a within-subject shuffle
+    # untouched -- which is what lets an SE kernel keep fitting it under the
+    # null and produces the wide, heterogeneous nulls we need to stress.
+    c_between = np.repeat(
+        [cindex[unit == u].mean() for u in np.arange(n_units)], n_obs)
+
+    Y, subj_sd, betas = {}, {}, {}
     for m in range(M):
-        u = np.repeat(rng.normal(0, 0.6, n_units), n_obs)
-        amp, freq, phase = rng.uniform(0.3, 1.0), rng.uniform(0.5, 2.0), rng.uniform(0, 6.3)
-        eta = 1.5 + u + amp * np.sin(freq * time + phase)
+        sd_u = np.exp(rng.uniform(np.log(0.1), np.log(1.0)))
+        u = np.repeat(rng.normal(0, sd_u, n_units), n_obs)
+        amp, freq = rng.uniform(0.3, 1.0), rng.uniform(0.5, 2.0)
+        phase = rng.uniform(0, 6.3)
+        # Between-subject cindex effect: zero for ~30% of outcomes, otherwise
+        # spanning weak to strong. There is NEVER a within-subject cindex
+        # effect, so H0-within holds exactly for every outcome and all
+        # p-values must be uniform.
+        beta = 0.0 if rng.random() < 0.3 else np.exp(
+            rng.uniform(np.log(0.2), np.log(1.5)))
+        # Baseline abundance spanning the real cohort's per-metabolite medians
+        # (q10 5.9e3 to q90 1.2e7). A first pass used a fixed intercept of 1.5,
+        # i.e. ~5 counts -- five orders of magnitude low, so Poisson noise
+        # swamped everything and every component collapsed.
+        intercept = rng.uniform(np.log(5.9e3), np.log(1.2e7))
+        eta = (intercept + u + amp * np.sin(freq * time + phase)
+               + beta * c_between)
         mu = np.exp(eta)
-        # NB via gamma-Poisson mixture, dispersion r
-        r = 5.0
+        # NB via gamma-Poisson mixture, dispersion r (higher = less noise;
+        # r=5 previously buried the subject effect under sampling noise)
+        r = 20.0
         Y[f"y{m}"] = rng.poisson(rng.gamma(r, mu / r))
-    return X, pd.DataFrame(Y)
+        subj_sd[f"y{m}"] = sd_u
+        betas[f"y{m}"] = beta
+    return X, pd.DataFrame(Y), subj_sd, betas
 
 
 def between_fraction(x, unit):
@@ -140,7 +182,7 @@ def main():
     args = ap.parse_args()
 
     rng = np.random.default_rng(SEED)
-    X, Y = simulate(n_units=args.n_units, M=args.M, rng=rng)
+    X, Y, subj_sd, betas = simulate(n_units=args.n_units, M=args.M, rng=rng)
     print(f"simulated: {X.shape[0]} obs, {args.n_units} subjects, {args.M} outcomes")
     print(f"visits per subject: min={int(X.groupby('id').size().min())} "
           f"median={int(X.groupby('id').size().median())} "
@@ -148,7 +190,10 @@ def main():
     bfrac = between_fraction(X['cindex'].values, X['id'].values)
     print(f"cindex between-subject fraction: {bfrac:.3f} "
           f"(target {TARGET_BETWEEN_FRAC}, real hbi 0.413)")
-    print("cindex has NO effect on any outcome -> all p-values should be U(0,1)\n")
+    nb = sum(1 for b in betas.values() if b > 0)
+    print(f"outcomes with a real BETWEEN-subject cindex effect: {nb}/{args.M}")
+    print("no outcome has a WITHIN-subject cindex effect -> all "
+          "p-values should be U(0,1)\n")
 
     gps = GPSearch(X=X, Y=Y, unit_col="id", categorical_vars=[],
                    outcome_likelihood="negativebinomial", Y_transform=None)
@@ -168,6 +213,18 @@ def main():
     names = list(gps.models.keys())
     kts, cns = _component_covariate_names(gps.models[names[0]].kernel_name,
                                           gps.feat_names)
+
+    # GATE: does the simulation actually reproduce the regime that motivated
+    # this check? If subject structure is uniformly shrunk away, SE[cindex]
+    # never proxies it, every null is degenerate, and the calibration result
+    # is vacuous -- it can only pass. Verify before reading any p-value.
+    print("\n--- regime gate (must hold or the check is uninformative) ---")
+    for i, (kt, cn) in enumerate(zip(kts, cns)):
+        v = np.array([float(m.kernel.kernels[i].variance.numpy())
+                      for m in gps.models.values()])
+        print(f"  {kt+'['+cn+']':30s} frac collapsed = {np.mean(v < 1e-8):.2f}")
+    print("  target: categorical[id] ~0.5 (real cohort 0.52); a first pass at "
+          "0.83 was too shrunk to be informative")
     targets = [i for i, c in enumerate(cns) if c == "cindex"]
     print(f"cindex components: {targets} -> {[kts[i] for i in targets]}")
     col = gps.feat_names.index("cindex")
@@ -225,6 +282,10 @@ def main():
         print(f"  per-outcome null SD: median={spread.median():.3f} "
               f"IQR=[{spread.quantile(.25):.3f}, {spread.quantile(.75):.3f}] "
               f"max={spread.max():.3f}")
+        print(f"  null-scale heterogeneity: {int((spread > 0.5).sum())}/"
+              f"{len(spread)} outcomes with SD>0.5, "
+              f"{int((spread < 1e-6).sum())}/{len(spread)} degenerate"
+              f"   <- needs a real spread here, or the pooling risk is untested")
         print(f"  p-values: min={p.min():.4f} median={np.median(p):.3f} "
               f"frac<0.05={np.mean(p < 0.05):.3f} (should be ~0.05)")
         print(f"  KS vs uniform: D={ks.statistic:.3f}, p={ks.pvalue:.4f}")
