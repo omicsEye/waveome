@@ -1726,7 +1726,7 @@ class GPSearch:
             p = sns.barplot(data=metric_df, y="name", x="metric")
             return p
 
-    def get_significance_table(self):
+    def get_significance_table(self, include_significance=True):
         """Flatten every metabolite's per-component log_bf and marginal
         deviance-explained into one long DataFrame, with the kernel type,
         covariate name, and a `stratum` label (= "kernel_type:covariate").
@@ -1738,17 +1738,28 @@ class GPSearch:
         join this table to `GPSearch.permutation_significance`'s output on
         (metabolite, kernel_type, covariate).
 
-        This table carries evidence and magnitude only -- no p-values.
-        Significance comes from `permutation_significance`, which builds its
-        own null rather than assuming one for log_bf.
+        Significance is not computed here -- it comes from
+        `permutation_significance`, which builds its own null rather than
+        assuming one for log_bf. If that has been run on this object, its
+        p/q-values are joined on by default so callers do not have to merge
+        by hand; components outside the covariates it tested get NaN, which
+        is the honest value (they were never tested, and are not the same as
+        tested-and-not-significant).
+
+        Parameters
+        ----------
+        include_significance : bool
+            Join `self.permutation_results` when present (default). Set
+            False for evidence and magnitude alone.
 
         Returns
         -------
         pd.DataFrame with columns: metabolite, kernel_type, covariate,
-        log_bf, deviance_explained, stratum. One row per additive kernel
-        component per metabolite (the trailing leftover-noise entry in
-        feature_importance_detail, which has no covariate label, is
-        excluded).
+        log_bf, deviance_explained, stratum, and -- when permutation results
+        are available -- p_value, q_value, null_centre, null_sd, n_draws.
+        One row per additive kernel component per metabolite (the trailing
+        leftover-noise entry in feature_importance_detail, which has no
+        covariate label, is excluded).
         """
         rows = []
         for name, model in self.models.items():
@@ -1777,7 +1788,17 @@ class GPSearch:
                     "deviance_explained": comp["deviance_explained"],
                     "stratum": f"{kernel_type}:{cov_name}",
                 })
-        return pd.DataFrame(rows)
+        table = pd.DataFrame(rows)
+
+        perm = getattr(self, "permutation_results", None)
+        if include_significance and perm is not None and len(perm):
+            cols = [c for c in ("p_value", "q_value", "null_centre",
+                                "null_sd", "n_draws") if c in perm.columns]
+            table = table.merge(
+                perm[["metabolite", "kernel_type", "covariate"] + cols],
+                on=["metabolite", "kernel_type", "covariate"], how="left",
+            )
+        return table
 
     def permutation_significance(
         self,
