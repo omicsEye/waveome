@@ -1947,14 +1947,31 @@ class GPSearch:
                 subset=["metabolite", "covariate", "draw", "log_bf"]
             ).reset_index(drop=True)
             prior["draw"] = prior["draw"].astype(int)
+            n_torn = n_raw - len(prior)
+            # Keep only the covariates being tested now. A checkpoint is
+            # shared across runs, so it can hold covariates this call does not
+            # target -- topping up one covariate from a full run is the normal
+            # case. Their rows are irrelevant here (and the completeness check
+            # below has no `targets` entry for them). The file itself is only
+            # ever appended to, so their draws stay on disk.
+            # Scope to BOTH axes of this call, not just covariates: a run
+            # over a subset of metabolites would otherwise compute its top-up
+            # set from metabolites it does not hold, and names.index() on one
+            # of them raises.
+            prior = prior[
+                prior["covariate"].isin(covariates)
+                & prior["metabolite"].isin(names)
+            ].reset_index(drop=True)
             done_keys = set(
                 zip(prior["metabolite"], prior["covariate"], prior["draw"])
             )
             if verbose:
-                torn = n_raw - len(prior)
+                other = n_raw - n_torn - len(prior)
                 print(f"resuming from {checkpoint_path}: {len(prior)} rows, "
                       f"{len(done_keys)} draws already complete"
-                      + (f" ({torn} truncated row(s) dropped)" if torn else ""))
+                      + (f"; {n_torn} truncated row(s) dropped" if n_torn else "")
+                      + (f"; {other} row(s) outside this run's scope ignored"
+                         if other else ""))
         kernel_types, cov_names = _component_covariate_names(
             self.models[names[0]].kernel_name, self.feat_names
         )
