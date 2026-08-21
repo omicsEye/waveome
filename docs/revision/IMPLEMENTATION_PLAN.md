@@ -9,8 +9,11 @@ changes mid-implementation, update the tracker first, then this plan.
 - It is a **read-only spec**. Maintain your own progress notes elsewhere.
 - Do tasks **in order**, respecting the dependency notes. **Stop at each acceptance check
   for maintainer review** before starting the next task.
-- **G1 is RESOLVED (2026-08-02)**: permutation vs. empirical-Bayes fallback decided in favor
-  of the fallback (T3'); T3 is not being pursued. See G1's entry below.
+- **G1 was REOPENED and re-decided (2026-08-20): permutation IS the method.** The 2026-08-02
+  estimate that ruled it out costed a full kernel search per permutation, but the analysis fits
+  one fixed structure to every metabolite, so a null draw is a fixed-structure refit. Measured:
+  16.9h for the real run. T3' (hardened-EB) is retained only as a documented fallback. See
+  tracker item 5 and `FINDINGS.md` §11-19.
 
 ---
 
@@ -81,12 +84,14 @@ quantity available behind a flag if cheap.
     deviance-explained is marginal and in a sensible range.
   - Seed 9102; sign convention documented.
 
-### G1 — GATE: combined compute estimate (item 5) — **RESOLVED (2026-08-02)**
-Estimate (≈5 covariates × 200 perms × ~32-min full run ≈ 530+ core-hours *before* reduced
-refits) came back prohibitive. **Decision: fallback.** T3 (permutation) will not be pursued;
-T3' (hardened-EB fallback) is the real-data significance method — see `waveome_revision_
-tracker.md` item 5 and `FINDINGS.md` "T2 (continued)" for the calibration work this made
-load-bearing rather than secondary.
+### G1 — GATE: combined compute estimate (item 5) — **REOPENED, re-decided 2026-08-20**
+The 2026-08-02 estimate (≈5 covariates × 200 perms × ~32-min *full run* ≈ 530+ core-hours)
+assumed a kernel search per permutation. The no-prune analysis fits **one identical structure
+to all 564 metabolites**, so a draw costs a fixed-structure refit (~4s) plus drop-one refits
+(~3.5s). **Measured: 16.9h, 32,358 draws, zero failed fits.** T3 (permutation) is the
+real-data significance method; T3' (hardened-EB) is a documented fallback only — it was
+additionally found to be uncalibrated (`FINDINGS.md` §3). Adaptive draw allocation and the
+`N ≥ m/q` sizing rule are in §16.
 
 ### T2 — Empirical-null + BH on the simulation (depends on T1; parallel to G1)
 Implement empirical p-values `(1 + #{null ≥ obs})/(1 + B)` **per (kernel, covariate)**, then
@@ -95,7 +100,7 @@ BH at target q. Build the null from **known-null simulation components** first.
   0.05, 0.10}; per-pair stratification vs pooling reproduces the expected gap (pooling
   over-rejects); seed 9102.
 
-### T3 — Permutation null — **NOT PURSUED (G1 resolved to "fallback")**
+### T3 — Permutation null — **DONE (G1 re-decided 2026-08-20)**
 Subject-level permutation per Frozen-decision 6. Not being implemented — kept here for
 reference in case the compute picture changes. Reuse `make_folds`/`random_seed=9102`
 conventions. Default (no roles) = permute each covariate in turn, rest held fixed.
@@ -103,7 +108,7 @@ conventions. Default (no roles) = permute each covariate in turn, rest held fixe
   known-null per (kernel, covariate) in simulation. If a stratum diverges (e.g., circular
   shift insufficient for a low-`nᵢ` covariate), **flag it**; do not silently switch schemes.
 
-### T3' — Hardened-EB fallback (ACTIVE — G1 resolved to "fallback")
+### T3' — Hardened-EB fallback (SUPERSEDED by T3; retained as documented fallback)
 Efron two-groups local-fdr **hardened**: half-normal SD factor `1/√(1−2/π)`, Storey π₀,
 stratified per (kernel, covariate), cumulative-mean → global FDR.
 - **Acceptance:** realized FDR ≈ nominal on the known-null simulation (same check as T2).
