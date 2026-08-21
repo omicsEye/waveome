@@ -153,12 +153,13 @@ def main():
     # the two sit inside one border rather than as separate floating blocks.
     h, lab = c.get_legend_handles_labels()
     h.append(Line2D([], [], linestyle="none"))
-    lab.append(f"{int((~keep).sum())} degenerate nulls omitted\n"
-               "(all n.s.; see panel A)")
-    c.legend(h, lab, loc="lower right", bbox_to_anchor=(0.985, 0.03),
-             handlelength=1.6, borderpad=0.45, labelspacing=0.35,
-             framealpha=0.95, edgecolor="#94a3b8", facecolor="white",
-             fancybox=False)
+    # Terse -- the caption carries the full explanation, so the box only has
+    # to flag that the panel is a subset.
+    lab.append(f"{int((~keep).sum())} degenerate omitted")
+    c.legend(h, lab, loc="lower right", bbox_to_anchor=(0.995, 0.02),
+             handlelength=1.1, handletextpad=0.5, borderpad=0.3,
+             labelspacing=0.2, borderaxespad=0.2, framealpha=0.95,
+             edgecolor="#94a3b8", facecolor="white", fancybox=False)
     panel_letter(c, "C")
     for s in ("top", "right"):
         c.spines[s].set_visible(False)
