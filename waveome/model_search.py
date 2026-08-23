@@ -1429,22 +1429,59 @@ class GPSearch:
         var_cutoff=0.8,
         metric_cutoff=None,
         feature_name=None,
+        outcomes=None,
         show_vals=True,
         figsize=None,
         cluster=True,
         print_drop_count=False,
         **clustermap_kwargs,
     ):
+        """Heatmap of per-component feature importance across outcomes.
 
+        Shows where the model attributes explanatory power -- a magnitude
+        question. It deliberately does not encode significance: colour here
+        is deviance explained, most components in a saturated kernel are
+        never tested at all, and layering a q-value cut on top of
+        `var_cutoff` would stack two selections with unrelated
+        justifications. Use `permutation_significance` /
+        `between_subject_significance` for that, and pass the outcomes they
+        select via `outcomes=` if you want the two views combined.
+
+        Parameters
+        ----------
+        outcomes : list of str, optional
+            Restrict to these outcomes (default: all). Lets a caller supply
+            a selection made elsewhere -- e.g. the significant set from a
+            permutation test -- while keeping the selection logic out of the
+            plotting code.
+
+            Note that `var_cutoff` still applies on top of this: it keeps
+            only outcomes whose model explains at least that fraction of
+            deviance, which is a strong filter (on the iHMP cohort the 0.8
+            default keeps 5 of 564). Pass `var_cutoff=0` to plot a curated
+            selection exactly as given.
+        """
         # Specify output dataframe
         out_info = pd.DataFrame()
+
+        if outcomes is None:
+            outcomes = self.out_names
+        else:
+            unknown = [o for o in outcomes if o not in self.out_names]
+            if unknown:
+                raise ValueError(
+                    f"plot_heatmap: unknown outcome(s) {unknown!r}; "
+                    f"expected names from self.out_names."
+                )
+            if not len(outcomes):
+                raise ValueError("plot_heatmap: `outcomes` is empty.")
 
         # Drop counters
         n_feature_drops = 0
         n_explained_drops = 0
 
-        # Loop through all models
-        for o in self.out_names:
+        # Loop through the selected models
+        for o in outcomes:
 
             # Copy model
             m_copy = gpflow.utilities.deepcopy(self.models[o])
@@ -1531,8 +1568,17 @@ class GPSearch:
             col_cluster = True
             row_cluster = True
             assert len(out_info.index) > 1, (
-                "Not enough models meet criteria (clustermap) requested!"
-                f"  (N={len(out_info.index)})"
+                "Not enough models meet criteria (clustermap) requested! "
+                f"(N={len(out_info.index)} of {len(outcomes)} outcomes). "
+                f"{n_explained_drops} were dropped by var_cutoff={var_cutoff}"
+                + (f" / metric_cutoff={metric_cutoff}"
+                   if metric_cutoff is not None else "")
+                + (f", {n_feature_drops} for lacking feature_name="
+                   f"{feature_name!r}" if feature_name is not None else "")
+                + ". var_cutoff keeps only outcomes whose model explains at "
+                "least that fraction of deviance, and it applies on top of "
+                "any `outcomes` you passed -- set var_cutoff=0 to plot a "
+                "selection as given."
             )
         else:
             col_cluster = False
