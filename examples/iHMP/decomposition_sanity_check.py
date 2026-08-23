@@ -90,7 +90,7 @@ def main():
         prune_components=False,
     )
 
-    tab = gps_dec.get_significance_table()
+    tab = gps_dec.get_significance_table(include_significance=False)
     tab.to_csv("output/decomposition_sanity_check.csv", index=False)
 
     print("\n=== log_bf: original single hbi  vs  decomposed between/within ===")

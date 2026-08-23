@@ -1820,8 +1820,11 @@ class GPSearch:
         Parameters
         ----------
         include_significance : bool
-            Join `self.permutation_results` when present (default). Set
-            False for evidence and magnitude alone.
+            Join `self.permutation_results` (default). Raises if they are
+            absent rather than quietly returning a table with no p/q
+            columns -- that silence surfaced later as a bare
+            ``KeyError: 'q_value'`` in downstream code. Set False for
+            evidence and magnitude alone.
 
         Returns
         -------
@@ -1862,7 +1865,20 @@ class GPSearch:
         table = pd.DataFrame(rows)
 
         perm = getattr(self, "permutation_results", None)
-        if include_significance and perm is not None and len(perm):
+        if include_significance:
+            if perm is None or not len(perm):
+                raise ValueError(
+                    "get_significance_table: include_significance=True but "
+                    "no permutation results are attached to this object.\n"
+                    "Significance is NOT stored on the fitted model and is "
+                    "NOT restored by unpickling one -- re-loading a saved "
+                    "GPSearch discards it, which is the usual cause here.\n"
+                    "Fix: run GPSearch.permutation_significance(...) and "
+                    "assign its output to `.permutation_results`, or assign "
+                    "a saved run read back from CSV.\n"
+                    "Pass include_significance=False for evidence and "
+                    "magnitude alone."
+                )
             cols = [c for c in ("p_value", "q_value", "null_centre",
                                 "null_sd", "n_draws") if c in perm.columns]
             table = table.merge(
