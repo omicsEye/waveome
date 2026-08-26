@@ -1368,3 +1368,90 @@ removed clamp shortcut) exists because a non-refit evaluation produced a
 deterministic log_bf and an artificial point mass that broke the null.
 Changing which objective is differenced is the same class of change and
 needs the same scrutiny.
+
+## 22. The `calc_bic` prior double-count biases the permutation test against live components (2026-08-26)
+
+Follow-up to section 21, prompted by the right question: if proline's
+SE[time_from_max] represents something real, is log_bf simply wrong?
+
+### The defect
+
+`calc_bic(loglik, n, k)` returns `k*log(n) - 2*loglik` and documents
+`loglik` as "Log-likelihood of observations under model".
+`model_classes.calc_metric` calls it as
+`calc_bic(loglik=self.log_posterior_density(data), ...)` -- the log
+*posterior*, i.e. log-likelihood + log-prior.
+
+BIC's derivation is `log p(D|M) ~= log L(theta_hat) - (k/2) log n`, in which
+the `k log n` term IS the Occam factor approximating the prior's
+contribution. Passing the log posterior adds `log p(theta_hat)` on top, so
+the prior is counted twice. The function is being called against its own
+stated contract.
+
+### It does not explain proline's negative sign
+
+Correcting it moves proline's SE[time_from_max] from -5.48 to -3.69. Still
+negative, because the component's fit gain is genuinely smaller than the
+two-parameter penalty under every accounting:
+
+```
+  gain (ELBO)                1.78     penalty 5.47
+  gain (predictive log-lik)  4.62     penalty 5.47
+```
+
+The 2.06x peak-to-trough effect accounts for 9.24 of 375 total deviance
+units -- 2.5%. Visually striking, modest against the noise. The negative
+log_bf is a real statement about the data, not an artifact.
+
+### It DOES bias the permutation test, against true positives
+
+The offset was assumed to cancel because observed and permuted statistics
+run through the same code path. It does not, because the two sides differ in
+exactly the way that matters: the observed component is alive (so dropping
+it removes a substantial prior penalty, which the double-count credits back
+to the reduced model) while under permutation the component collapses (so
+dropping it removes almost nothing).
+
+Measured on proline's SE[time_from_max], observed vs 10 within-subject
+permutation draws (7 of 10 permuted components collapsed):
+
+| formula | observed | null median | excess | z |
+|---|---|---|---|---|
+| log-posterior (current) | -5.48 | -4.805 | **-0.671** | -0.68 |
+| ELBO-only (BIC as defined) | -3.69 | **-5.472** | **+1.781** | +0.94 |
+
+**The sign of the excess flips.** Under the shipped formula the component
+looks worse than a random shuffle; under BIC as defined it looks better.
+
+The null medians show the mechanism cleanly. Under ELBO-only a dead
+component scores exactly -5.472 = -0.5*2*ln(238), the pure parameter
+penalty. Under log-posterior it scores -4.805, the double-counted prior
+handing back +0.67. The observed, being alive, has a far larger prior
+penalty (1.79) credited to its reduced model, which pushes it below the
+dead-component null. **The formula systematically penalizes live components
+relative to dead ones**, and live components are the ones with real effects.
+
+This is a bias against true positives, so no null-only calibration
+simulation would detect it -- Stage 1 could not have caught it.
+
+### Scope and caveats
+
+- One metabolite, 10 permutations. Direction is clear and mechanistically
+  explained; the magnitude is not established.
+- Fixing it would NOT have made proline significant: z moves from -0.68 to
+  +0.94, still short.
+- The null SD also changes (0.992 -> 1.895), so this is not a pure location
+  shift and p-values will not move by a predictable amount.
+- `calc_bic` also feeds `model_search.kernel_test` and
+  `model_fitting.kernel_test_reg`; the earlier addendum established neither
+  is reached by the real-data pipeline, but both are live exported API.
+- Per section 21's warning, changing which objective is differenced is the
+  same class of change as the removed clamp shortcut and requires the null
+  to be re-validated, not a one-line edit.
+- `sim_se_power.py` is running against the CURRENT formula, so its power
+  numbers measure the shipped behaviour including this bias. If the fix
+  lands, power must be re-measured.
+
+Reproduce: the script is in the session scratchpad as `prior_bias_test.py`;
+it refits proline's full and reduced models under observed and permuted
+covariates and reports log_bf both ways.
