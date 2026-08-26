@@ -1455,3 +1455,81 @@ simulation would detect it -- Stage 1 could not have caught it.
 Reproduce: the script is in the session scratchpad as `prior_bias_test.py`;
 it refits proline's full and reduced models under observed and permuted
 covariates and reports log_bf both ways.
+
+## 23. SE-power simulation: the test is not the bottleneck, fitting is (2026-08-26)
+
+`examples/simulations/sim_se_power.py`, M=150, B0=10/B1=60, 108 min, zero
+failed draws. Settles section 20's open question.
+
+### Headline
+
+| stratum | discoveries | false | realized FDR | power |
+|---|---|---|---|---|
+| squared_exponential[cindex] | 72 | 0 | 0.000 | **72/77 (93.5%)** |
+| lin[cindex] | 4 | 1 | 0.250 | 3/77 |
+
+Power by lengthscale was flat -- 100% / 88% / 95% / 91% at ls_rel 0.25 /
+0.5 / 1.0 / 2.0 -- so the LogNormal lengthscale prior does **not**
+over-suppress at any smoothness. lin[cindex] is correctly near-blind to a
+nonlinear effect (3/77), confirming the strata separate what they should.
+
+Component survival mirrored this: 7/73 alive under the null versus 88-100%
+alive across the true-positive arms, with fitted lengthscales recovering
+the true values (0.295/0.62/0.944/1.68 against 0.25/0.5/1.0/2.0).
+
+### The mechanism: detection is decided at fitting, not at testing
+
+```
+                detected=False   detected=True
+  SE alive=False       4               0
+  SE alive=True        1              72
+```
+
+Four of the five misses are components whose variance collapsed to the
+floor during fitting; they are undetectable thereafter (p = 0.5 or 1.0).
+Conditional on surviving, detection is 72/73 = 98.6%. Seven true-null
+components stayed alive and **none** was falsely detected.
+
+So the permutation test is not the limiting factor. The limiting factor is
+whether the optimizer keeps the component alive, which is a property of
+effect size, not of the significance machinery. This also means sections 21
+and 22's log_bf concerns, while real, are not currently costing much power:
+93.5% is achieved *with* the prior double-count in place.
+
+### The caveat that constrains what can be claimed
+
+Every simulated effect was stronger than the real component that prompted
+this investigation:
+
+```
+  simulated amp_c (component contribution SD, log scale):
+      min 0.203   median 0.476   max 1.167
+  proline's real SE[time_from_max] contribution SD:  0.179
+  simulated effects weaker than proline's:  0 of 77
+```
+
+Power was already declining at the bottom of the tested range -- 78.6%
+(11/14) for amp_c in (0.20, 0.25], 88.9% in (0.25, 0.35], 100% above 0.35 --
+and all five misses fall between 0.204 and 0.305. **The simulation
+approached the detection boundary but stopped just above where iHMP's actual
+candidate effects sit.**
+
+Proline is consistent with being at that boundary: alive (variance 0.102)
+but undetected (q=0.37), where the simulation's alive components at amp_c
+>= 0.2 were detected 98.6% of the time.
+
+### What the manuscript can and cannot say
+
+**Can say**, and this is a much stronger claim than "we found nothing":
+nonlinear associations of magnitude >= 0.35 (log-scale contribution SD)
+would have been detected with ~100% power, and >= 0.2 with ~80-90% power,
+at realized FDR 0.000; none were found in 564 metabolites for either tested
+covariate.
+
+**Cannot say**: that nonlinear effects below ~0.2 are absent. iHMP's ~95%
+dead SE components cannot be distinguished between "no effect" and "effect
+too weak to survive fitting". Proline's 0.179 sits in exactly that zone.
+
+**Follow-up that would close it**: rerun with amp_c extended down to
+0.05-0.25 to map the boundary. That is the regime the real data occupies,
+and it is the only remaining gap in the nonlinearity claim.
