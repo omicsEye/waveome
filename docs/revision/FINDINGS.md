@@ -1179,3 +1179,133 @@ red/green.
 
 Not yet in the library: the between-subject test (script only), p/q columns
 on `get_significance_table`, `plot_heatmap(significance=...)`.
+
+## 20. SE components are ~95% numerically dead, and `deviance_explained` credits dead components (2026-08-26)
+
+Found while choosing manuscript showcase metabolites: proline's
+`SE[time_from_max]` panel shows a striking peaked curve labelled DE=8.5%
+next to log_bf=-5.5. Chasing that contradiction turned up a structural
+problem in two reported quantities.
+
+### The survey
+
+Across all 7,332 components of the reported fit, **85% sit on exactly two
+log_bf values**, determined by kernel parameter count, not by data:
+
+| log_bf | count | kernel types |
+|---|---|---|
+| -1.0 | 4,153 | categorical (2,283) + lin (1,870) — 1-parameter |
+| -4.8 | 2,102 | squared_exponential — 2-parameter |
+
+`deviance_explained` and `log_bf` are **uncorrelated** among live components
+(spearman +0.031, n=1,782), and ~70% of components with substantial DE carry
+negative log_bf at every threshold tested (DE>0.02: 67.8%; >0.10: 69.6%;
+>0.20: 69.5%).
+
+### The mechanism — the pinned components are dead
+
+| group | n | median variance | at VARIANCE_FLOOR | median lengthscale |
+|---|---|---|---|---|
+| pinned at -4.8 | 2,102 | 1e-10 | **99.9%** | 2.117 |
+| unpinned | 154 | 0.124 | 0.0% | 1.43 |
+
+The pinned components have variance sitting exactly on `VARIANCE_FLOOR`
+(1e-10). Their lengthscale is 2.117 for *every* covariate alike — hbi,
+study_days, age, time_from_max, identical to four figures — which is
+`exp(1 - 0.5^2)`, the mode of the LogNormal(1.0, 0.5) lengthscale prior
+added in "T2 addendum 2". With variance at zero the lengthscale is
+unidentified and reverts to its prior mode.
+
+So log_bf = -4.8 is not "strong evidence against"; it is the constant a
+dead 2-parameter component contributes. Likewise -1.0 for dead 1-parameter
+components. This is *the same phenomenon as the collapse atom* that makes
+permutation nulls degenerate (section 13) — seen from the parameter side.
+
+### `deviance_explained` credits components that contribute nothing
+
+Of the 248 SE components with DE>0.10 that are pinned at -4.8, **246
+(99.2%) have variance at the floor, and their median DE is 0.969**. A
+component contributing exactly nothing is credited with explaining 97% of
+its model's gain over null; 81 dead components score DE=1.000.
+
+The cause is that `calc_feature_importance_components` computes marginal DE
+from the *refit* reduced model. Dropping a dead component changes the model
+by nothing, but the subsequent refit lands the surviving components in a
+different local optimum, and DE attributes that entire prediction shift to
+the dropped component. **DE as currently computed measures refit
+instability, not a component's explanatory contribution**, whenever the
+component is dead. This is why the proline panel shows a compelling curve
+beside a rejecting log_bf: the curve is drawn from the full model's fitted
+component, but that component's variance is at the floor.
+
+### Consequence for the reported nonlinearity result
+
+```
+SE:hbi            dead 537/564 (95.2%)   alive 27
+SE:time_from_max  dead 534/564 (94.7%)   alive 30
+```
+
+log_bf is a constant for ~95% of the metabolites in both tested SE strata.
+The permutation nulls, however, are **not** correspondingly absent -- the
+non-degenerate counts are almost identical to the linear strata:
+
+| stratum | live nulls | median null SD | significant |
+|---|---|---|---|
+| lin:hbi | 273/564 | **0.378** | 140 |
+| SE:hbi | 272/564 | 1.32e-05 | 1 |
+| lin:time_from_max | 109/564 | 1.84e-05 | 3 |
+| SE:time_from_max | 107/564 | 1.24e-05 | 0 |
+
+So the SE strata are *not* untestable for want of usable nulls; they have as
+many as the linear strata. What separates them is null *width*: SE:hbi's
+median live null is four orders of magnitude narrower than lin:hbi's. Under
+permutation the component occasionally comes alive, which is what gives the
+null any spread at all.
+
+A narrow null does not by itself imply no power -- the conditional quantile
+regression conditions on each metabolite's own null SD, and lin:time_from_max
+produced 3 hits from a null of comparable width (1.84e-05). So **what
+remains unestablished is whether 1/564 and 0/564 reflect genuine absence of
+nonlinear association or insufficient power.** The observed statistic being
+constant for 95% of metabolites is a reason for concern, not a proof of no
+power. Do not state in the manuscript that nonlinearity was tested and found
+absent until this is settled.
+
+This is not obviously a defect. The LogNormal prior was added deliberately
+(T2 addendum 2) because unconstrained SE lengthscales collapsed below the
+data's resolution and fit per-observation noise — proline's was 1,130x
+shorter than the median nearest-neighbour gap, and the prior moved it from
+log_bf 9.0 to -5.8. Genuine nonlinearity still survives it (gabapentin's
+SE[hbi], 39.6 -> 36.6). The 154 live SE components show the prior does not
+kill everything. The open question is whether ~95% death is correct
+suppression of terms that never helped, or over-suppression.
+
+### What must not be said, and what is safe
+
+- Do **not** report DE for a component without checking its variance is off
+  the floor; the number is meaningless for dead components.
+- Do **not** state that nonlinearity was tested and found absent. State that
+  SE terms overwhelmingly collapse under the lengthscale prior, and that the
+  permutation test has no resolving power where they do.
+- The linear results are **not** threatened by this. `lin` components pin at
+  -1.0 too, but `lin:hbi`'s live nulls have median SD 0.378 -- four orders
+  wider than any other stratum -- and it produced 140 hits.
+
+Diagnostic: `examples/iHMP/diagnose_se_collapse.py`, which classifies
+components as collapsed / absorbed / ELBO-blind and writes
+`output/se_collapse_diagnosis.csv`.
+
+### Diagnostic output (25 components per group, fresh refits)
+
+| group | stored DE | variance | contribution SD | d_ELBO | d_predictive deviance |
+|---|---|---|---|---|---|
+| pinned, high DE | 1.000 | 1e-10 | 4.9e-11 | -5.5e-07 | -3.5e-07 |
+| pinned, zero DE | 0.000 | 1e-10 | 3.6e-08 | -2.6e-06 | -4.5e-03 |
+| unpinned | 0.195 | 0.130 | 0.220 | +3.85 | +14.5 |
+
+The two pinned groups are physically indistinguishable -- same floor
+variance, same negligible contribution to predictions, same negligible ELBO
+and predictive-deviance change when dropped. Only their *stored* DE differs,
+by 1.000 vs 0.000. That is the direct demonstration that DE is noise for a
+dead component. Live components behave as expected: dropping one costs 3.85
+ELBO and 14.5 predictive deviance units.
