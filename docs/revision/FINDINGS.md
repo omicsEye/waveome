@@ -1234,9 +1234,16 @@ by nothing, but the subsequent refit lands the surviving components in a
 different local optimum, and DE attributes that entire prediction shift to
 the dropped component. **DE as currently computed measures refit
 instability, not a component's explanatory contribution**, whenever the
-component is dead. This is why the proline panel shows a compelling curve
-beside a rejecting log_bf: the curve is drawn from the full model's fitted
-component, but that component's variance is at the floor.
+component is dead.
+
+**Correction:** an earlier draft of this section claimed proline's
+`SE[time_from_max]` panel was one of these dead components. It is not. Its
+variance is 0.1016, well off the floor, and its lengthscale is 1.51 (fitted,
+not the prior mode) = 211 days against a ~3-day median gap between adjacent
+observed values. It is one of the 154 live components, its log_bf is -5.5
+rather than the -4.8 mass point, and the 2.06x peak-to-trough effect it
+draws at ~112 days post-maximum is real and supported by 93 of 238
+observations. Its negative log_bf has a different cause -- see section 21.
 
 ### Consequence for the reported nonlinearity result
 
@@ -1309,3 +1316,55 @@ and predictive-deviance change when dropped. Only their *stored* DE differs,
 by 1.000 vs 0.000. That is the direct demonstration that DE is noise for a
 dead component. Live components behave as expected: dropping one costs 3.85
 ELBO and 14.5 predictive deviance units.
+
+
+## 21. `log_bf` charges a component's own prior penalty against its fit gain (2026-08-26)
+
+Follow-up to section 20, from asking why proline's *live* SE[time_from_max]
+scores log_bf=-5.5 while visibly improving the fit.
+
+`calc_metric(metric="BIC")` differences `log_posterior_density`, which is
+ELBO + log priors. Dropping a component therefore removes both its fit
+contribution and its own prior penalty. For proline these cancel almost
+exactly:
+
+```
+  ELBO          delta = +1.7812     the component helps the fit
+  log priors    delta = -1.7842     removing it removes its prior penalty
+  log posterior delta = -0.0030     what log_bf differences
+```
+
+The near-exact cancellation is not coincidence: at the optimum of a
+penalized objective the marginal likelihood gain and marginal prior cost
+balance by construction, so this is systematic rather than a proline quirk.
+
+Measured over 25 live SE components (fresh refits):
+
+| quantity | median | min | max |
+|---|---|---|---|
+| ELBO delta (actual fit gain) | 3.850 | 0.753 | 23.532 |
+| log-posterior delta (what log_bf sees) | 1.372 | -1.128 | 20.472 |
+
+**Only ~29% of a component's fit gain survives into log_bf** (median ratio
+0.289). 22 of the 25 carry a negative log_bf despite a positive ELBO gain.
+Paper-wide, 137 of the 154 live SE components (89%) have log_bf < 0. An SE
+component needs an ELBO gain of roughly 19 to break even at log_bf = 0,
+after the ~71% prior absorption and the 2*ln(238)=10.94 parameter penalty.
+
+### Does this invalidate the significance results?
+
+Probably not, and the reasoning matters. The permutation null computes the
+observed and the permuted statistics through the identical code path, so a
+systematic downward offset appears on both sides and cancels -- that is
+precisely what the permutation design buys. What the effect plausibly costs
+is **dynamic range**: if log_bf sits near the penalty floor regardless of
+effect size, the statistic discriminates poorly and power falls. That is a
+power question, not a validity question, and it is what
+`examples/simulations/sim_se_power.py` measures.
+
+Do NOT "fix" this by reverting to a likelihood-only comparison without
+first re-validating the null. The frozen refit decision (section: the
+removed clamp shortcut) exists because a non-refit evaluation produced a
+deterministic log_bf and an artificial point mass that broke the null.
+Changing which objective is differenced is the same class of change and
+needs the same scrutiny.
