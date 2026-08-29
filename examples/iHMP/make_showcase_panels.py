@@ -65,8 +65,16 @@ def main():
         # Annotate each component panel with its q-value. Without this the
         # most eye-catching panel in a figure can be a REJECTED component
         # (proline's SE[time_from_max] peak, q=1.00) with nothing saying so.
+        # Filter to THIS metabolite first. Keying the lookup on
+        # (kernel_type, covariate) alone let all 564 metabolites overwrite
+        # each other, so every panel was annotated with whichever metabolite
+        # happened to be last in the table -- which tagged serine's null
+        # lin[hbi] as significant and its significant lin[time_from_max] as
+        # null.
+        pm = perm[perm.metabolite == compound]
+        assert len(pm), f"no permutation rows for {compound}"
         lut = {(r_.kernel_type, r_.covariate): r_.q_value
-               for r_ in perm.itertuples()}
+               for r_ in pm.itertuples()}
         for ax in axes.flatten():
             m = re.match(r"^(\w+)\[(\w+)\]", ax.get_title())
             if not m:
