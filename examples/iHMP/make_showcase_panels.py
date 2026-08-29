@@ -24,15 +24,34 @@ import pickle
 import re
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 PKL = "output/fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl"
 PERM = "output/ihmp_permutation_significance.csv"
 TFM = "output/ihmp_permutation_tfm_b120.csv"
-PANELS = [("HILp_QI578", "hbi"), ("HILn_QI110", "time_from_max")]
+# (compound, covariate, n_cols). Three columns at a 7.2in width gives 2.4in
+# panels, which is the narrowest that still fits a title like
+# "squared_exponential[time_from_max]" and the categorical legends without
+# them spilling outside their axes. Four columns (1.8in) overruns both.
+PANELS = [("HILp_QI578", "hbi", 3), ("HILn_QI110", "time_from_max", 3)]
 
-plt.rcParams.update({"font.size": 9, "axes.labelsize": 9, "axes.titlesize": 9,
-                     "xtick.labelsize": 9, "ytick.labelsize": 9})
+# Sized for print, not for the screen. Figures are saved at exactly the
+# width they will occupy in the journal, so the publisher never rescales
+# them and the point sizes below are the point sizes that print. The
+# previous 15x12in figure had to shrink 2.07x to reach a double-column
+# width, which drove 9pt text to 4.3pt -- under every journal's floor.
+FIG_WIDTH_IN = 7.2       # double-column (183mm); use 3.5 for single column
+PANEL_ASPECT = 0.85      # plot-area height / panel width
+TITLE_OVERHEAD_IN = 0.60  # 3-line panel title + x-label, per row
+SUPTITLE_IN = 0.35
+DPI = 600                # for the raster copy; the PDF is vector
+
+plt.rcParams.update({
+    "font.size": 7, "axes.labelsize": 7, "axes.titlesize": 7,
+    "xtick.labelsize": 6, "ytick.labelsize": 6, "legend.fontsize": 6,
+    "savefig.bbox": "tight", "pdf.fonttype": 42,  # embed as TrueType, editable
+})
 
 
 def main():
@@ -45,7 +64,7 @@ def main():
         gps = pickle.load(f)
 
     captions = []
-    for compound, cov in PANELS:
+    for compound, cov, ncols in PANELS:
         r = perm[(perm.metabolite == compound) & (perm.covariate == cov)
                  & (perm.kernel_type == "lin")].iloc[0]
         # 72 hbi hits share the floor q, so report it as a bound, not a point
@@ -53,15 +72,34 @@ def main():
         qtxt = (f"q<={floor:.4f}" if r.q_value <= floor else f"q={r.q_value:.4f}")
         label = names.get(compound, compound)
 
+        # plot_parts decides how many components survive pruning, so the row
+        # count (and thus the height) is only knowable after the call.
+        # Building at the final print width means no rescaling later.
+        panel_w = FIG_WIDTH_IN / ncols
         fig, axes = gps.plot_parts(
             out_label=compound,
             x_axis_label="study_days",
-            figsize=(15, 12),
-            num_cols_in_fig=4,
+            figsize=(FIG_WIDTH_IN, panel_w * PANEL_ASPECT * 3),
+            num_cols_in_fig=ncols,
             reverse_transform_axes=True,
             residual_dict={"resid_type": "pearson", "residuals_on_y_axis": False},
             prune_before_plot=True,
         )
+        # Drop slots plot_parts left empty; an unused axes still renders as a
+        # blank framed box, which reads as a missing panel rather than as
+        # spare grid.
+        used = 0
+        for ax in list(axes.flatten()):
+            if ax.has_data() or ax.get_title():
+                used += 1
+            elif ax in fig.axes:      # plot_parts may already have dropped it
+                fig.delaxes(ax)
+        # Each row needs its plot area PLUS the three-line panel title and the
+        # x-label beneath it; sizing on the plot area alone squashed the
+        # panels flat and let the categorical legends overflow their axes.
+        rows = int(np.ceil(used / ncols))
+        row_h = panel_w * PANEL_ASPECT + TITLE_OVERHEAD_IN
+        fig.set_size_inches(FIG_WIDTH_IN, rows * row_h + SUPTITLE_IN)
         # Annotate each component panel with its q-value. Without this the
         # most eye-catching panel in a figure can be a REJECTED component
         # (proline's SE[time_from_max] peak, q=1.00) with nothing saying so.
@@ -94,7 +132,7 @@ def main():
         plt.tight_layout()
         stem = f"output/showcase_{cov}_{compound}"
         for ext in ("png", "pdf"):
-            fig.savefig(f"{stem}.{ext}", dpi=300, bbox_inches="tight")
+            fig.savefig(f"{stem}.{ext}", dpi=DPI, bbox_inches="tight")
         plt.close(fig)
         print(f"wrote {stem}.png / .pdf   log_bf={r.log_bf:.1f} {qtxt}")
         captions.append(
