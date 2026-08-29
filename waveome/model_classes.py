@@ -708,10 +708,31 @@ class BaseGP(gpflow.models.SVGP):
         return None
 
     def calc_metric(self, data=None, metric="BIC"):
+        """BIC for this fitted model.
+
+        Uses the ELBO, not `log_posterior_density`. BIC approximates the log
+        marginal likelihood as `log L(theta_hat) - (k/2) log n`, in which the
+        `k log n` term IS the Occam factor standing in for the prior's
+        contribution. Passing the log posterior (= ELBO + log prior) adds
+        `log p(theta_hat)` on top of that, counting the prior twice -- and
+        `calc_bic` documents its argument as a log-likelihood.
+
+        This was not a neutral mislabeling. The double-count does not cancel
+        in the drop-one comparison that produces `log_bf`, because the two
+        sides differ exactly where it matters: an observed component that is
+        alive has a substantial prior penalty which dropping it hands back,
+        while the same component under permutation collapses to the variance
+        floor and has almost none. So the old form charged live components
+        more than dead ones -- a bias against precisely the components
+        carrying real effects, invisible to any null-only calibration. On
+        proline's SE[time_from_max] it flipped the sign of the excess over
+        its permutation null (-0.671 before, +1.781 after). See
+        docs/revision/FINDINGS.md sections 21-22.
+        """
         assert metric == "BIC", "Only BIC currently allowed."
         if metric == "BIC":
             return calc_bic(
-                loglik=self.log_posterior_density(data),
+                loglik=self.maximum_log_likelihood_objective(data),
                 n=data[0].shape[0],  # self.X.shape[0],
                 k=len(self.trainable_parameters),
             )
