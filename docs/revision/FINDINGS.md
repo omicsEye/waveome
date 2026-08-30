@@ -1533,3 +1533,97 @@ too weak to survive fitting". Proline's 0.179 sits in exactly that zone.
 **Follow-up that would close it**: rerun with amp_c extended down to
 0.05-0.25 to map the boundary. That is the regime the real data occupies,
 and it is the only remaining gap in the nonlinearity claim.
+
+## 24. The calc_bic fix exposes a pre-existing wide-null calibration failure (2026-08-30)
+
+Step 2 of the correction sequence (Stage 1 uniformity under the corrected
+ELBO-based BIC, `416514a`) was the gate before re-running anything. It did
+not pass, and the reason matters more than the fix.
+
+### The headline
+
+Same script, same seed, same config (150 outcomes, 3150 draws):
+
+| statistic | frac p<0.05 | median p |
+|---|---|---|
+| OLD (log-posterior BIC) | 0.020 | 0.996 |
+| NEW (ELBO BIC) | **0.080** | 0.933 |
+
+Nominal is 0.05. The old statistic under-rejected; the corrected one
+over-rejects by 60%. BH still controlled FDR in both (0/150 false
+discoveries at q<0.05), but the raw rate is not calibrated.
+
+### The cause is not the fix
+
+Broken out by null scale (complete null, nominal 0.05):
+
+| null-SD stratum | n | frac p<0.05 |
+|---|---|---|
+| degenerate <1e-6 | 193 | 0.000 |
+| 1e-6..1e-2 | 63 | 0.016 |
+| 1e-2..0.5 | 6 | 0.333 |
+| 0.5..2 | 12 | **0.917** |
+| >2 | 26 | 0.385 |
+
+The failure is confined to wide nulls. And it is **pre-existing**:
+
+| | wide tests (SD>1e-2) | their frac p<0.05 | overall |
+|---|---|---|---|
+| OLD | 20/300 | **0.300** | 0.020 |
+| NEW | 44/300 | 0.523 | 0.080 |
+
+The old statistic was already 6x anti-conservative for wide nulls. It was
+invisible in aggregate because only 20 of 300 tests were wide and the 267
+degenerate ones (p ~ 1) diluted it. The corrected BIC produces more live,
+wider nulls (degenerate 267 -> 193, max null SD 1.32 -> 19.5), roughly
+doubling the wide-null count, which pushes the aggregate across from
+conservative to anti-conservative. **The fix exposes the defect; it does not
+create it.**
+
+### Reconciling with the 0.047/0.048 validation
+
+`calc_permutation_pvalues` was adopted on the strength of 0.047 narrow /
+0.048 wide in `sim_fdr_stage1_stratified.py`. That simulation was built to
+generate wide nulls, so the quantile regression had a well-populated wide
+region to fit. The uniformity simulation is a complete null where wide nulls
+are a small minority, so the regression is dominated by the degenerate mass
+and extrapolates into the wide region.
+
+This is precisely the caveat already recorded when the method was adopted:
+that it assumes the conditional quantile is *linear in null SD*, and that
+this is "the thing most likely to break on other data". It broke here.
+
+### What this means for the reported iHMP results
+
+Not all strata are equally exposed. `lin:hbi` has 273 live nulls of 564 with
+median live SD 0.378 -- a well-populated wide region, resembling the regime
+where the quantile regression validated. The other three strata have live
+nulls with median SD ~1e-5, so their wide tests are a small minority,
+resembling the regime where it fails. The strata with the fewest hits are
+the ones in the unvalidated regime, which cuts against reading their near-
+zero counts as evidence of absence.
+
+**This is a live concern for the paper independent of the calc_bic fix.**
+
+### Status: stopped, not resolved
+
+Steps 3-5 (extended SE-power sim, Stage 2 FDR re-check, iHMP re-run) are NOT
+started. All three would be built on a p-value construction that is
+mis-calibrated for wide nulls, so running them now would produce numbers
+that have to be discarded.
+
+Three ways forward, none of them free:
+
+1. **Revert `416514a`.** Keeps the conservative behaviour and the published
+   numbers. The prior double-count stays, documented in section 22, biasing
+   against true positives -- safe direction, wrong statistic.
+2. **Keep the fix and repair `calc_permutation_pvalues`.** The right answer,
+   but it is a methodology change to a frozen component and needs Stage 1
+   (both variants) and Stage 2 re-validated.
+3. **Keep the fix and add a guard**: fall back to the per-test empirical
+   p-value when a test's null SD sits outside the range the regression was
+   fit on, rather than extrapolating. Smaller change than 2, still needs
+   re-validation.
+
+Recommendation deferred to the maintainer: 2 and 3 both reopen a frozen
+decision, and 1 knowingly ships a statistic we have shown to be wrong.
