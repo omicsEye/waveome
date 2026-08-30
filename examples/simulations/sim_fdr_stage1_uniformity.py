@@ -52,7 +52,11 @@ from gpflow.utilities import set_trainable  # noqa: E402
 
 from waveome.kernels import Lin  # noqa: E402
 from waveome.model_search import GPSearch, _component_covariate_names  # noqa: E402
-from waveome.utilities import calc_bh_qvalues, convert_data_to_tensors  # noqa: E402
+from waveome.utilities import (  # noqa: E402
+    calc_bh_qvalues,
+    calc_permutation_pvalues,
+    convert_data_to_tensors,
+)
 
 SEED = 9102
 UNIT_IDX = 0
@@ -267,15 +271,21 @@ def main():
     from scipy.stats import kstest
     out = []
     for kt, grp in draws.groupby("kernel_type"):
+        # Call the SHIPPED construction. This script previously computed
+        # p-values from a single global pooled tail -- the superseded method
+        # the quantile regression replaced -- so it was calibrating code that
+        # does not run in the pipeline. On the same draws the two disagree by
+        # a factor of four in the wide-null stratum (0.444 vs 0.074), which
+        # is how a correct BIC fix came to look like a calibration failure.
+        # See FINDINGS.md section 24.
         obs = grp[grp.draw == -1].set_index("outcome")["log_bf"]
-        null = grp[grp.draw >= 0]
-        centre = null.groupby("outcome")["log_bf"].median()
-        spread = null.groupby("outcome")["log_bf"].std()
-        pooled = null["log_bf"].values - centre.reindex(null["outcome"]).values
-        common = obs.index.intersection(centre.index)
-        excess = obs.loc[common].values - centre.loc[common].values
-        p = np.array([(1 + np.sum(pooled >= e - TIE_TOL)) / (1 + len(pooled))
-                      for e in excess])
+        nd = {o: g["log_bf"].to_numpy()
+              for o, g in grp[grp.draw >= 0].groupby("outcome")}
+        obs = obs[[o in nd for o in obs.index]]
+        res = calc_permutation_pvalues(obs, {o: nd[o] for o in obs.index})
+        common = list(res.index)
+        p = res["p_value"].to_numpy()
+        spread = res["null_sd"]
         q = calc_bh_qvalues(p)
         ks = kstest(p, "uniform")
         print(f"\n=== {kt}:cindex (COMPLETE NULL) ===")

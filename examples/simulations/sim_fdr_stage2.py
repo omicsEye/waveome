@@ -47,7 +47,10 @@ from scipy.stats import genpareto, goodness_of_fit  # noqa: E402
 
 from waveome.kernels import Lin  # noqa: E402
 from waveome.model_search import GPSearch, _component_covariate_names  # noqa: E402
-from waveome.utilities import calc_bh_qvalues  # noqa: E402
+from waveome.utilities import (  # noqa: E402
+    calc_bh_qvalues,
+    calc_permutation_pvalues,
+)
 
 from sim_fdr_stage1_uniformity import between_fraction, draw  # noqa: E402
 
@@ -259,8 +262,17 @@ def main():
         tp = truth.loc[common, "is_tp"].astype(bool)
 
         print(f"\n================ {kt}:cindex ================")
+        # The SHIPPED construction is scored first and is the number that
+        # describes the reported method. This script previously scored only
+        # (a) scale-stratified pooling and (b) the GPD tail -- BOTH of which
+        # were rejected in favour of the conditional quantile regression --
+        # so its headline FDR table did not describe what the pipeline runs.
+        # See FINDINGS.md section 24.
+        p_s = calc_permutation_pvalues(obs, by_out)["p_value"]
+        fdr_table(p_s, tp, "(SHIPPED) conditional quantile regression")
+
         p_a = pvals_stratified(obs, centre, spread, by_out)
-        fdr_table(p_a, tp, "(a) scale-stratified pooling")
+        fdr_table(p_a, tp, "(a) scale-stratified pooling [comparison only]")
 
         res = {o: gpd_pvalue(by_out[o], obs[o]) if spread[o] >= DEGEN_TOL
                else ((1.0 if obs[o] - centre[o] <= TIE_TOL
@@ -270,9 +282,9 @@ def main():
         meth = pd.Series({o: v[1] for o, v in res.items()})
         print("\n  GPD method usage: " + ", ".join(
             f"{k}={v}" for k, v in meth.value_counts().items()))
-        fdr_table(p_b, tp, "(b) GPD tail, no pooling")
+        fdr_table(p_b, tp, "(b) GPD tail, no pooling [comparison only]")
 
-        out = pd.DataFrame({"p_stratified": p_a, "p_gpd": p_b,
+        out = pd.DataFrame({"p_shipped": p_s, "p_stratified": p_a, "p_gpd": p_b,
                             "method": meth, "null_sd": spread,
                             "is_tp": tp})
         out.to_csv(f"{args.out_prefix}_{kt}_pvalues.csv")

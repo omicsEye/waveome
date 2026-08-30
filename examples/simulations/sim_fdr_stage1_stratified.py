@@ -24,6 +24,14 @@ whose null is non-degenerate. Reuses the B=20 draws and fitted models
 already produced by sim_fdr_stage1_uniformity.py rather than refitting.
 
     python sim_fdr_stage1_stratified.py --B1 60
+
+!!! These are PROTOTYPE implementations kept for method comparison. They
+are NOT the shipped construction -- `waveome.utilities.calc_permutation_pvalues`
+is. They differ in real ways (the prototype quantile regression here lacks the
+shipped monotonisation of the fitted quantile curve, among others), so numbers
+from this script must NOT be cited as calibration of the reported method. See
+FINDINGS.md section 24. `tests/test_sims_use_shipped_pvalues.py` enforces the
+split between comparison scripts and calibration ones.
 """
 import argparse
 import os

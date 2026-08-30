@@ -16,6 +16,14 @@ still fit, which sets the B a real run would need.
 Runs on the existing M=400 draws -- pure arithmetic, no refits. Every outcome
 is null by construction (no within-subject cindex effect), so frac(p<0.05)
 should be ~0.05 in every subgroup.
+
+!!! These are PROTOTYPE implementations kept for method comparison. They
+are NOT the shipped construction -- `waveome.utilities.calc_permutation_pvalues`
+is. They differ in real ways (the prototype quantile regression here lacks the
+shipped monotonisation of the fitted quantile curve, among others), so numbers
+from this script must NOT be cited as calibration of the reported method. See
+FINDINGS.md section 24. `tests/test_sims_use_shipped_pvalues.py` enforces the
+split between comparison scripts and calibration ones.
 """
 import numpy as np
 import pandas as pd

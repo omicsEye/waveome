@@ -14,6 +14,14 @@ Run on both existing datasets -- pure arithmetic, no refits:
   * Stage 1 M=400 (everything null)  -> false-positive rate by subgroup,
     which should sit at 0.05 everywhere
   * Stage 2 (112 known true positives) -> realized FDR vs nominal, and power
+
+!!! These are PROTOTYPE implementations kept for method comparison. They
+are NOT the shipped construction -- `waveome.utilities.calc_permutation_pvalues`
+is. They differ in real ways (the prototype quantile regression here lacks the
+shipped monotonisation of the fitted quantile curve, among others), so numbers
+from this script must NOT be cited as calibration of the reported method. See
+FINDINGS.md section 24. `tests/test_sims_use_shipped_pvalues.py` enforces the
+split between comparison scripts and calibration ones.
 """
 import numpy as np
 import pandas as pd
