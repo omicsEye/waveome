@@ -1534,7 +1534,7 @@ too weak to survive fitting". Proline's 0.179 sits in exactly that zone.
 0.05-0.25 to map the boundary. That is the regime the real data occupies,
 and it is the only remaining gap in the nonlinearity claim.
 
-## 24. The calc_bic fix exposes a pre-existing wide-null calibration failure (2026-08-30)
+## 24. Gate result RETRACTED -- the calibration scripts do not test the shipped code (2026-08-30)
 
 Step 2 of the correction sequence (Stage 1 uniformity under the corrected
 ELBO-based BIC, `416514a`) was the gate before re-running anything. It did
@@ -1552,6 +1552,68 @@ Same script, same seed, same config (150 outcomes, 3150 draws):
 Nominal is 0.05. The old statistic under-rejected; the corrected one
 over-rejects by 60%. BH still controlled FDR in both (0/150 false
 discoveries at q<0.05), but the raw rate is not calibrated.
+
+### CORRECTION (same day): the gate script does not test the shipped code
+
+Everything below this heading, as originally written, measured the wrong
+thing. `sim_fdr_stage1_uniformity.py` does not call
+`calc_permutation_pvalues`. It computes p-values from a single global pooled
+tail:
+
+```python
+pooled = null["log_bf"].values - centre.reindex(null["outcome"]).values
+p = (1 + np.sum(pooled >= e - TIE_TOL)) / (1 + len(pooled))
+```
+
+That is the superseded construction this document already records as "badly
+anti-conservative for the wide-null minority". The script was never updated
+when the conditional quantile regression was adopted.
+
+Recomputing p-values from the SAME draws with the shipped function reverses
+the conclusion:
+
+| statistic | construction | overall frac p<0.05 | wide tests only |
+|---|---|---|---|
+| OLD | global pool (script) | 0.040 lin / 0.000 SE | 0.316 (n=19) |
+| OLD | **shipped quantile reg** | 0.013 lin / 0.000 SE | **0.105** (n=19) |
+| NEW | global pool (script) | 0.087 lin / 0.073 SE | 0.444 / 0.647 |
+| NEW | **shipped quantile reg** | **0.020** lin / **0.007** SE | **0.074** / **0.059** |
+
+**The corrected BIC does not break calibration under the shipped code -- it
+improves it.** Wide-null false positives fall from 0.105 to 0.074 (nominal
+0.05), and both statistics stay conservative overall. The catastrophic
+0.917 figure below belongs to the obsolete global pooling, not to anything
+that ships.
+
+### A wider validation gap
+
+Auditing which simulations exercise the shipped function:
+
+| script | calls `calc_permutation_pvalues`? |
+|---|---|
+| `sim_fdr_stage1_uniformity.py` | **no** -- global pooling (superseded) |
+| `sim_fdr_stage1_stratified.py` | **no** -- binned + standardised only |
+| `sim_fdr_stage2.py` | **no** -- scores binned pooling and GPD tail |
+| `sim_se_power.py` | yes |
+
+The consequences for what this document claims:
+
+- The **0.047 / 0.048** quantile-regression calibration came from
+  `eval_pooling_variants.py`'s prototype `p_quantreg`, which differs from
+  the shipped function -- it lacks the `np.maximum.accumulate`
+  monotonisation of the fitted quantile curve, among other things.
+- **Stage 2's headline FDR/power** (realized FDR 0.010/0.029/0.029, power
+  0.87-0.90) scores scale-binned pooling and the GPD tail. Both were
+  *rejected* in favour of the quantile regression. Those numbers do not
+  describe the shipped method.
+
+So the shipped significance path has been exercised end-to-end by exactly
+one simulation, `sim_se_power.py` (FDR 0.000, power 93.5%), plus the
+recomputation above. That is not nothing, but it is far less than this
+document implied. **Any manuscript claim citing 0.047/0.048 or Stage 2's FDR
+table as validation of the reported method is currently unsupported.**
+
+### Original analysis, retained -- applies to the superseded global pooling
 
 ### The cause is not the fix
 
