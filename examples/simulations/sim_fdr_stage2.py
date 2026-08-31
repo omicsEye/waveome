@@ -146,20 +146,54 @@ def gpd_pvalue(null, obs, n_exc_start=40, n_exc_min=8, step=4):
     return emp, "empirical-fallback"
 
 
-def fdr_table(p, truth_tp, label):
+def fdr_table(p, truth_tp, label, n_boot=2000):
+    """Realized FDR and power at three nominal q, with a bootstrap CI.
+
+    A single run gives one realized-FDR point per q, and the Monte Carlo
+    noise on it is not small -- at q=0.05 with ~110 discoveries roughly 5
+    are expected false, so the estimate carries an SD near 0.02. Reporting
+    a bare point estimate invites "that is one draw". Resampling outcomes
+    with replacement and re-running BH inside each resample costs no extra
+    simulation and turns it into an interval. BH is re-run per resample
+    rather than reusing the original q-values because BH is a function of
+    the whole set, not of each test independently.
+    """
+    # Align explicitly; p and truth_tp come from different code paths and
+    # positional .values on mismatched order would silently mis-score.
+    p = p.reindex(truth_tp.index)
+    assert not p.isna().any(), "p-values missing for some scored outcomes"
+    pv, tv = p.to_numpy(), truth_tp.to_numpy().astype(bool)
+    n, n_tp = len(pv), int(tv.sum())
+    rng = np.random.default_rng(SEED)
+    boot = rng.integers(0, n, size=(n_boot, n))
+
     print(f"\n  --- {label} ---")
     print(f"  {'q':>6s}{'discoveries':>13s}{'false':>7s}"
-          f"{'realized FDR':>14s}{'power':>8s}")
-    n_tp = int(truth_tp.sum())
+          f"{'realized FDR':>14s}{'95% CI':>18s}{'power':>8s}")
     for q in (0.01, 0.05, 0.10):
-        qv = calc_bh_qvalues(p.values)
-        sel = qv < q
+        sel = calc_bh_qvalues(pv) < q
         n_sel = int(sel.sum())
-        n_false = int((sel & ~truth_tp.values).sum())
+        n_false = int((sel & ~tv).sum())
         fdp = n_false / n_sel if n_sel else 0.0
-        pwr = int((sel & truth_tp.values).sum()) / n_tp if n_tp else 0.0
+        pwr = int((sel & tv).sum()) / n_tp if n_tp else 0.0
+        # Resamples that select nothing have no FDP defined, so the interval
+        # is conditional on making at least one discovery. When the point
+        # estimate itself selects nothing that conditioning is on a
+        # different event, and reporting an interval there is misleading --
+        # a smoke run printed "FDR 0.000, 95% CI [1.000, 1.000]".
+        fdps = []
+        for b in boot:
+            sb = calc_bh_qvalues(pv[b]) < q
+            if sb.sum():
+                fdps.append(int((sb & ~tv[b]).sum()) / int(sb.sum()))
+        if n_sel == 0 or len(fdps) < 0.5 * n_boot:
+            ci = "n/a" if n_sel == 0 else f"({len(fdps)}/{n_boot} boot)"
+        else:
+            lo, hi = np.percentile(fdps, [2.5, 97.5])
+            ci = f"[{lo:.3f}, {hi:.3f}]"
         flag = "  <- ABOVE nominal" if fdp > q else ""
-        print(f"  {q:>6.2f}{n_sel:>13d}{n_false:>7d}{fdp:>14.3f}{pwr:>8.3f}{flag}")
+        print(f"  {q:>6.2f}{n_sel:>13d}{n_false:>7d}{fdp:>14.3f}"
+              f"{ci:>18s}{pwr:>8.3f}{flag}")
 
 
 def main():
