@@ -1689,3 +1689,76 @@ Three ways forward, none of them free:
 
 Recommendation deferred to the maintainer: 2 and 3 both reopen a frozen
 decision, and 1 knowingly ships a statistic we have shown to be wrong.
+
+## 25. Stage 2 re-run against the shipped construction: FDR controlled (2026-09-01)
+
+`sim_fdr_stage2.py --M 400 --B0 10 --B1 100`, 466 min, 20,790 top-up draws,
+zero failures. 400 outcomes, 112 true positives (28%), 288 true nulls, 231
+of 400 non-degenerate. Run under the corrected ELBO-based BIC (`416514a`)
+and scoring the shipped `calc_permutation_pvalues` for the first time --
+section 24 established that the previous Stage 2 scored only constructions
+that had been rejected.
+
+### The result (lin:cindex, shipped construction)
+
+| nominal q | discoveries | false | realized FDR | 95% CI | power |
+|---|---|---|---|---|---|
+| 0.01 | 100 | 1 | **0.010** | [0.000, 0.035] | 0.884 |
+| 0.05 | 103 | 3 | **0.029** | [0.000, 0.067] | 0.893 |
+| 0.10 | 105 | 5 | **0.048** | [0.010, 0.094] | 0.893 |
+
+FDR is at or below nominal at every level, with power 0.88-0.89. **This is
+the R1.M5 / R2.5 calibration evidence, and unlike the previous table it
+describes the method the pipeline actually runs.**
+
+### The comparison justifies the method choice empirically
+
+Scored on identical draws, so the differences are attributable to the
+construction alone:
+
+| construction | q=0.01 FDR | q=0.01 power |
+|---|---|---|
+| **shipped quantile regression** | **0.010** | **0.884** |
+| (a) scale-binned pooling | 0.030 (ABOVE nominal) | 0.857 |
+| (b) GPD tail, no pooling | 0.000 | 0.205 |
+
+Binned pooling **exceeds nominal at q=0.01** -- it is not merely less
+powerful, it fails control at the strictest level. The GPD tail controls
+FDR but loses 78% of power there, with 71 of its fits hitting the
+bounded-tail fallback. This is the supplemental evidence for "why this
+construction and not something simpler".
+
+### SE stratum: type-I error at iHMP scale
+
+Only linear within-subject effects are generated, so the
+squared_exponential stratum is a pure null. **0 false discoveries out of
+288 true nulls at every q.** The single discovery there belongs to a true-
+positive outcome, i.e. an SE component partially capturing that outcome's
+linear effect -- not a false positive.
+
+Together with `sim_se_power.py` (93.5% power, realized FDR 0.000 on planted
+nonlinear effects), both kernel types are now covered at iHMP's geometry:
+this run gives the SE stratum's type-I error, that one gives its power.
+
+### Comparison with the superseded numbers
+
+The retired table reported 0.010 / 0.029 / 0.029 with power 0.87-0.90 for
+the *binned* method. The shipped method gives 0.010 / 0.029 / 0.048 with
+power 0.884-0.893 -- close at q=0.01 and 0.05, higher but still controlled
+at q=0.10. The similarity is coincidental and does not retroactively
+validate the old table, which scored a construction that is not used.
+
+### Sizing caveat
+
+With 231 non-degenerate outcomes the pooled null holds ~23,100 draws, so
+the finest attainable p is 4.3e-05 while BH rank-1 at q=0.01 needs 2.5e-05.
+The single most extreme test therefore cannot be rejected at q=0.01 in
+isolation; with 112 true positives BH operates at much higher ranks, which
+is why 100 discoveries appear there anyway. A stratum with few true effects
+would need a larger B1 to report q=0.01 honestly.
+
+### Consequence
+
+The gate is passed: the corrected statistic controls FDR at iHMP's
+geometry. The downstream commitments -- the iHMP permutation re-run and the
+R1.M2 harder-conditions study -- are licensed to proceed.
