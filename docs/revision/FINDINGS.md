@@ -1762,3 +1762,84 @@ would need a larger B1 to report q=0.01 honestly.
 The gate is passed: the corrected statistic controls FDR at iHMP's
 geometry. The downstream commitments -- the iHMP permutation re-run and the
 R1.M2 harder-conditions study -- are licensed to proceed.
+
+## 26. iHMP re-run under the corrected BIC: power recovered, one false positive exposed (2026-09-02)
+
+`run_ihmp_permutation.py` re-run against the corrected ELBO-based BIC
+(`416514a`) with refreshed `feature_importance_detail` (`7f9db59`) and a
+cleared checkpoint. 33,258 draws, zero failures, ~17.5 h.
+
+Before it could run at all, `_permutation_draw_remote` had to be restored
+(`caa959a`) -- the hardened-EB cleanup in `38037fd` had deleted it while
+leaving its call site, so `permutation_significance` had been broken for six
+commits. It went unnoticed because every session since read the saved CSVs.
+
+### Every stratum gained hits
+
+| stratum | new | old | live nulls | median live SD |
+|---|---|---|---|---|
+| lin:hbi | **166** | 140 | 276/564 | 0.593 |
+| lin:time_from_max | **5** | 3 | 127/564 | 5.4e-05 |
+| squared_exponential:hbi | **4** | 1 | 275/564 | 8.2e-05 |
+| squared_exponential:time_from_max | **2** | 0 | 127/564 | 3.8e-05 |
+
+Unique metabolites: 169 for hbi (was 141), 7 for time_from_max (was 3). The
+direction is what section 22 predicted -- the old statistic charged live
+components their own prior penalty while dead ones had almost none to give
+back, suppressing exactly the components with real effects. Correcting it
+recovers that power.
+
+### The nonlinearity conclusion changes
+
+Sections 20 and 23 recorded that nonlinearity was not demonstrable on these
+data (1/564 and 0/564 SE hits, the single hit having log_bf=-1.3). Under the
+corrected statistic there are 6 SE hits, 5 of them on genuinely live
+components with fitted lengthscales 0.76-1.98 and variances 0.11-1.80.
+HILp_QI2850's SE[hbi] -- the old sole hit, previously log_bf=-1.3 with 3%
+deviance -- is now log_bf=+4.90 with variance 1.80. It was a real nonlinear
+signal the old statistic was suppressing.
+
+**Section 23's "cannot claim absence below ~0.2" caveat stands**, but the
+stronger claim that nonlinearity is absent from iHMP does not.
+
+### A dead component was called significant
+
+Of the 6 SE hits, one is a false positive:
+
+```
+C18n_QI43  SE[hbi]:  variance 1.0e-10 (VARIANCE_FLOOR), lengthscale 2.115
+                     (the LogNormal prior mode -- unidentified)
+  observed log_bf -5.468932   null centre -5.472280   null SD 1.39e-04
+  excess +0.003348   ~24 null SDs   p=1.5e-04   q=0.028
+  observed exceeds 60/60 of its own draws
+```
+
+The component contributes nothing; both observed and permuted sit on the
+parameter penalty and the only spread is optimizer jitter. Two things
+combine:
+
+1. `degenerate_tol` is 1e-6 but the jitter SD is 1.39e-04 -- 139x larger --
+   so the null is classified LIVE and gets the full quantile-regression
+   treatment instead of the point-mass path.
+2. The 60/60 is not chance. C18n_QI43 has `lin:hbi` log_bf=8.38 (q=0.0003),
+   real signal that lowers the FULL model's BIC on real data but not on
+   shuffled data. Since log_bf(SE) = -0.5*(BIC_full - BIC_reduced_SE), the
+   two terms do not cancel exactly and a small positive residue leaks into
+   the dead component. **Real signal in one component biases a different,
+   dead component's statistic upward.**
+
+`tie_tol=1e-3` neutralises 340 of the 341 jitter-scale SE cases; this one
+slips through with an excess of 0.0033.
+
+### Recommended fix, not applied
+
+Gate on the component's fitted **variance**, not on its null SD: a component
+whose variance sits on `VARIANCE_FLOOR` provably contributes nothing and
+should take the degenerate path regardless of how much jitter its refits
+produce. That is more principled than raising `tie_tol`, which would only
+move the threshold. It is a change to `calc_permutation_pvalues`, a frozen
+component, so it is flagged rather than made.
+
+Scope is 1 of 1128 SE tests and 0 of the lin hits inspected, so this does
+not undermine the run -- but C18n_QI43's SE[hbi] should be struck from any
+reported nonlinearity result.
