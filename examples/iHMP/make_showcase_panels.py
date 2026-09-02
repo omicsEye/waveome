@@ -36,7 +36,14 @@ TFM = "output/ihmp_permutation_tfm_b120.csv"
 # panels, which is the narrowest that still fits a title like
 # "squared_exponential[time_from_max]" and the categorical legends without
 # them spilling outside their axes. Four columns (1.8in) overruns both.
-PANELS = [("HILp_QI578", "hbi", 3), ("HILn_QI110", "time_from_max", 3)]
+# (compound, covariate, kernel_type, n_cols). kernel_type names which
+# component the figure is built around -- the first two showcase LINEAR
+# associations, the third a NONLINEAR one, which only became reportable
+# under the corrected BIC (FINDINGS 26).
+PANELS = [("HILp_QI578", "hbi", "lin", 3),
+          ("HILn_QI110", "time_from_max", "lin", 3),
+          ("HILp_QI2850", "hbi", "squared_exponential", 3),
+          ("HILp_QI19549", "hbi", "squared_exponential", 3)]
 
 # Sized for print, not for the screen. Figures are saved at exactly the
 # width they will occupy in the journal, so the publisher never rescales
@@ -77,9 +84,9 @@ def main():
         gps = pickle.load(f)
 
     captions = []
-    for compound, cov, ncols in PANELS:
+    for compound, cov, ktype, ncols in PANELS:
         r = perm[(perm.metabolite == compound) & (perm.covariate == cov)
-                 & (perm.kernel_type == "lin")].iloc[0]
+                 & (perm.kernel_type == ktype)].iloc[0]
         # 72 hbi hits share the floor q, so report it as a bound, not a point
         floor = perm[perm.stratum == r.stratum].q_value.min()
         qtxt = (f"q<={floor:.4f}" if r.q_value <= floor else f"q={r.q_value:.4f}")
@@ -138,18 +145,23 @@ def main():
                 fontsize=8)
 
         fig.suptitle(
-            f"{label} ({compound}): linear {cov} association "
+            f"{label} ({compound}): "
+            f"{'nonlinear' if ktype.startswith('squared') else 'linear'} "
+            f"{cov} association "
             f"(log_bf={r.log_bf:.1f}, {qtxt}, null SD={r.null_sd:.2f}, "
             f"B={int(r.n_draws)})",
             fontsize=9, y=1.02)
         plt.tight_layout()
-        stem = f"output/showcase_{cov}_{compound}"
+        stem = (f"output/showcase_{cov}_{compound}"
+                + ("_SE" if ktype.startswith("squared") else ""))
         for ext in ("png", "pdf"):
             fig.savefig(f"{stem}.{ext}", dpi=DPI, bbox_inches="tight")
         plt.close(fig)
         print(f"wrote {stem}.png / .pdf   log_bf={r.log_bf:.1f} {qtxt}")
         captions.append(
-            f"{label} ({compound}) -- {cov}: linear component log_bf="
+            f"{label} ({compound}) -- {cov}: "
+            f"{'nonlinear (SE)' if ktype.startswith('squared') else 'linear'} "
+            f"component log_bf="
             f"{r.log_bf:.1f}, {qtxt} (within-subject permutation, B="
             f"{int(r.n_draws)}, null SD={r.null_sd:.2f}).")
 
@@ -166,7 +178,18 @@ def main():
             "many hits share the minimum attainable q -- every time_from_max "
             "hit sits at the pooled-null resolution floor.\n\n"
             + "\n".join(captions) +
-            "\n\nBoth selected components are linear, which is a property "
+            "\nTwo percentages appear in each figure and they use different "
+            "denominators. A component's DE is its share of what the MODEL "
+            "explains (its gain over the null model), so components can sum "
+            "past 100% -- each is measured by dropping that component and "
+            "refitting, and non-orthogonal components re-absorb one "
+            "another's shared credit. The residual panel instead reports the "
+            "share of TOTAL deviance, and states the model's overall "
+            "explanatory power so the component DEs can be placed on that "
+            "scale: bilirubin's SE[hbi] at 56.8% of an 11.7% explained "
+            "portion is roughly 6.6% of total deviance, not 56.8% of the "
+            "metabolite.\n"
+            "\nBoth linear showcase components are linear, which is a property "
             "of these two metabolites and not of the cohort: significant "
             "nonlinear components exist elsewhere (4 SE:hbi, 2 "
             "SE:time_from_max). Components shown without a q-value were not "
