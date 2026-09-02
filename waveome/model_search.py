@@ -82,6 +82,62 @@ def _pooled_correlations(X_df, cont_idx):
     return corr_out
 
 
+# max_calls=1, max_retries=5: same rationale as penalized_optimization's own
+# worker -- long sequences of GPflow/TF fits in one process accumulate an
+# unbounded resource leak, and recycling per task avoids it.
+@ray.remote(max_calls=1, max_retries=5)
+def _permutation_draw_remote(model, X, y, unit_ids, col, targets, seed):
+    """One permutation draw (seed=None -> the observed statistic).
+
+    Refits the full model on the permuted data, then drops each target
+    component and refits again, exactly mirroring
+    calc_feature_importance_components. The observed statistic goes through
+    this same path so optimizer/ELBO noise is common to both sides and
+    cancels in the ranking.
+
+    Returns ({kernel_index: log_bf}, error_string_or_None) -- one failed
+    component must not abort a batch of tens of thousands of draws.
+    """
+    try:
+        Xp = X
+        if seed is not None:
+            Xp = X.copy()
+            Xp[:, col] = permute_covariate(
+                X[:, col], unit_ids, np.random.default_rng(seed)
+            )
+        data = convert_data_to_tensors(Xp, y.reshape(-1, 1))
+        optimizer = getattr(model, "optimizer", None) or "scipy"
+
+        def _bic(m):
+            # optimize_params(adam/gradient) leaves q_mu/q_sqrt untrainable,
+            # which would skew calc_metric's parameter count; restore for the
+            # measurement, then put the flags back.
+            flags = (m.q_mu.trainable, m.q_sqrt.trainable)
+            set_trainable(m.q_mu, True)
+            set_trainable(m.q_sqrt, True)
+            try:
+                return m.calc_metric(data=data, metric="BIC")
+            finally:
+                set_trainable(m.q_mu, flags[0])
+                set_trainable(m.q_sqrt, flags[1])
+
+        full = gpflow.utilities.deepcopy(model)
+        full.num_trainable_params = np.nan
+        full.optimize_params(data=data, optimizer=optimizer)
+        bic_full = _bic(full)
+
+        out = {}
+        for idx in targets:
+            reduced = gpflow.utilities.deepcopy(full)
+            reduced.kernel.kernels.pop(idx)
+            reduced.num_trainable_params = np.nan
+            reduced.optimize_params(data=data, optimizer=optimizer)
+            out[idx] = float(-0.5 * (bic_full - _bic(reduced)))
+        return out, None
+    except Exception as exc:  # noqa: BLE001 - reported per draw, not raised
+        return None, str(exc)
+
+
 # max_calls=1, max_retries=5: same rationale as the other Ray workers here.
 @ray.remote(max_calls=1, max_retries=5)
 def _subject_residuals_remote(model, X, y, drop_idx, resid_type):
