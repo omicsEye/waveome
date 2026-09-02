@@ -514,16 +514,16 @@ def plot_residuals(
     )
 
     # Set title and labels
-    # Two percentages appear on a plot_parts figure and they use DIFFERENT
-    # denominators, which is easy to misread. A component panel's DE is its
-    # share of the MODEL'S GAIN over null; this one is the share of the NULL
-    # deviance still unexplained. Stating the model's total explanatory power
-    # here gives the reader the anchor needed to interpret the component DEs
-    # -- without it, "DE=56.8%" reads as 56.8% of the metabolite, when it is
-    # 56.8% of an 11.7% explained portion, i.e. ~6.6% of total deviance.
+    # A component panel's DE is its share of the MODEL'S GAIN over null;
+    # this panel's number is a share of TOTAL deviance. Reporting the
+    # model's explanatory power here gives the reader the anchor to convert
+    # between them -- without it "DE=56.8%" reads as 56.8% of the outcome
+    # when it is 56.8% of an 11.7% explained portion, i.e. ~6.6% of total.
+    # Only the explained share is shown: the unexplained share is its
+    # complement, so printing both spent the space twice.
     ax.set(
-        title=(f"residuals\n{round(var_percent, 1)}% unexplained; "
-               f"model explains {round(100 - var_percent, 1)}%"),
+        title=(f"residuals\n"
+               f"model explains {round(100 - var_percent, 1)}% of deviance"),
         xlabel="fitted value",
         ylabel=f"{resid_type} residual"
     )

@@ -40,10 +40,25 @@ TFM = "output/ihmp_permutation_tfm_b120.csv"
 # component the figure is built around -- the first two showcase LINEAR
 # associations, the third a NONLINEAR one, which only became reportable
 # under the corrected BIC (FINDINGS 26).
-PANELS = [("HILp_QI578", "hbi", "lin", 3),
-          ("HILn_QI110", "time_from_max", "lin", 3),
-          ("HILp_QI2850", "hbi", "squared_exponential", 3),
-          ("HILp_QI19549", "hbi", "squared_exponential", 3)]
+# (compound, covariate, kernel_type, n_cols, role).
+#
+# MAIN carries the manuscript's three claims: a linear hbi association, a
+# linear time_from_max association, and a NONLINEAR hbi association that a
+# linear model would miss entirely (bilirubin's lin[hbi] is q=1.00 while its
+# SE[hbi] is q=0.014). Nonlinearity only became reportable under the
+# corrected BIC -- see FINDINGS 26.
+#
+# SUPP holds metronidazole as a POSITIVE CONTROL. It is an antibiotic
+# prescribed for active Crohn's, so its sharp rise above hbi~13 is most
+# parsimoniously confounding by indication rather than biology. That makes
+# it a poor headline result but good evidence the method recovers real
+# structure: a known prescribing threshold, found without being told to look
+# for it. Keeping it in the main set would invite the criticism it deserves;
+# omitting it entirely would discard a genuine validation.
+PANELS = [("HILp_QI578", "hbi", "lin", 3, "main"),
+          ("HILn_QI110", "time_from_max", "lin", 3, "main"),
+          ("HILp_QI19549", "hbi", "squared_exponential", 3, "main"),
+          ("HILp_QI2850", "hbi", "squared_exponential", 3, "supp")]
 
 # Sized for print, not for the screen. Figures are saved at exactly the
 # width they will occupy in the journal, so the publisher never rescales
@@ -84,7 +99,7 @@ def main():
         gps = pickle.load(f)
 
     captions = []
-    for compound, cov, ktype, ncols in PANELS:
+    for compound, cov, ktype, ncols, role in PANELS:
         r = perm[(perm.metabolite == compound) & (perm.covariate == cov)
                  & (perm.kernel_type == ktype)].iloc[0]
         # 72 hbi hits share the floor q, so report it as a bound, not a point
@@ -152,13 +167,15 @@ def main():
             f"B={int(r.n_draws)})",
             fontsize=9, y=1.02)
         plt.tight_layout()
-        stem = (f"output/showcase_{cov}_{compound}"
+        stem = (f"output/{'supp_' if role == 'supp' else ''}"
+                f"showcase_{cov}_{compound}"
                 + ("_SE" if ktype.startswith("squared") else ""))
         for ext in ("png", "pdf"):
             fig.savefig(f"{stem}.{ext}", dpi=DPI, bbox_inches="tight")
         plt.close(fig)
         print(f"wrote {stem}.png / .pdf   log_bf={r.log_bf:.1f} {qtxt}")
         captions.append(
+            ("[SUPPLEMENTAL] " if role == "supp" else "") +
             f"{label} ({compound}) -- {cov}: "
             f"{'nonlinear (SE)' if ktype.startswith('squared') else 'linear'} "
             f"component log_bf="
