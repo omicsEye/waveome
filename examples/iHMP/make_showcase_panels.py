@@ -189,7 +189,7 @@ def main():
             "scale: bilirubin's SE[hbi] at 56.8% of an 11.7% explained "
             "portion is roughly 6.6% of total deviance, not 56.8% of the "
             "metabolite.\n"
-            "\nBoth linear showcase components are linear, which is a property "
+            "\nThe two linear showcases select linear components, which is a property "
             "of these two metabolites and not of the cohort: significant "
             "nonlinear components exist elsewhere (4 SE:hbi, 2 "
             "SE:time_from_max). Components shown without a q-value were not "
