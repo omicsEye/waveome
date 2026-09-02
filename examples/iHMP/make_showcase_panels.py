@@ -156,8 +156,11 @@ def main():
             ax.set_title(
                 ax.get_title() + ("\nnot permutation-tested" if q is None
                                   else f"\nq={q:.3g}"
-                                  + ("  SIGNIFICANT" if q <= 0.10 else "")),
-                fontsize=8)
+                                  + ("  SIGNIFICANT" if q <= 0.10 else "")))
+                # no explicit fontsize: rcParams axes.titlesize governs, so
+                # annotated component titles match the residual panel's.
+                # Hardcoding 8pt here left the residual title at 7pt and
+                # visibly out of step with the rest of the figure.
 
         fig.suptitle(
             f"{label} ({compound}): "
