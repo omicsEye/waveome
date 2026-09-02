@@ -167,7 +167,8 @@ def main():
 
     with open("output/showcase_panels_caption.txt", "w") as f:
         f.write(
-            "Additive decomposition of two metabolite models.\n\n"
+            f"Additive decomposition of {len(captions)} metabolite "
+            f"model{'s' if len(captions) != 1 else ''}.\n\n"
             "Each panel shows the fitted additive kernel components of a "
             "single metabolite model; the component for the covariate under "
             "test is the one named in the title. Metabolites were selected "
