@@ -97,6 +97,8 @@ def main():
     names = mbx.set_index("Compound")["Metabolite"].to_dict()
     with open(PKL, "rb") as f:
         gps = pickle.load(f)
+    # plot_parts reads this to annotate tested components with their q-value
+    gps.permutation_results = perm
 
     captions = []
     for compound, cov, ktype, ncols, role in PANELS:
@@ -120,47 +122,26 @@ def main():
             residual_dict={"resid_type": "pearson", "residuals_on_y_axis": False},
             prune_before_plot=True,
         )
-        # Drop slots plot_parts left empty; an unused axes still renders as a
-        # blank framed box, which reads as a missing panel rather than as
-        # spare grid.
-        used = 0
-        for ax in list(axes.flatten()):
-            if ax.has_data() or ax.get_title():
-                used += 1
-            elif ax in fig.axes:      # plot_parts may already have dropped it
-                fig.delaxes(ax)
+        # plot_parts now deletes unused grid slots itself, so just count
+        # what survived -- the row count drives the figure height below.
+        used = sum(1 for ax in axes.flatten()
+                   if ax.has_data() or ax.get_title())
         # Each row needs its plot area PLUS the three-line panel title and the
         # x-label beneath it; sizing on the plot area alone squashed the
         # panels flat and let the categorical legends overflow their axes.
         rows = int(np.ceil(used / ncols))
         row_h = panel_w * PANEL_ASPECT + TITLE_OVERHEAD_IN
         fig.set_size_inches(FIG_WIDTH_IN, rows * row_h + SUPTITLE_IN)
-        # Annotate each component panel with its q-value. Without this the
-        # most eye-catching panel in a figure can be a REJECTED component
-        # (proline's SE[time_from_max] peak, q=1.00) with nothing saying so.
-        # Filter to THIS metabolite first. Keying the lookup on
-        # (kernel_type, covariate) alone let all 564 metabolites overwrite
-        # each other, so every panel was annotated with whichever metabolite
-        # happened to be last in the table -- which tagged serine's null
-        # lin[hbi] as significant and its significant lin[time_from_max] as
-        # null.
-        pm = perm[perm.metabolite == compound]
-        assert len(pm), f"no permutation rows for {compound}"
-        lut = {(r_.kernel_type, r_.covariate): r_.q_value
-               for r_ in pm.itertuples()}
+        # plot_parts annotates tested components with their q-value. For
+        # the manuscript figures we additionally mark UNTESTED components,
+        # so a reader cannot mistake a blank line for a null result -- only
+        # hbi and time_from_max were permutation-tested here.
+        tested = {(r_.kernel_type, r_.covariate)
+                  for r_ in perm[perm.metabolite == compound].itertuples()}
         for ax in axes.flatten():
             m = re.match(r"^(\w+)\[(\w+)\]", ax.get_title())
-            if not m:
-                continue
-            q = lut.get((m.group(1), m.group(2)))
-            ax.set_title(
-                ax.get_title() + ("\nnot permutation-tested" if q is None
-                                  else f"\nq={q:.3g}"
-                                  + ("  SIGNIFICANT" if q <= 0.10 else "")))
-                # no explicit fontsize: rcParams axes.titlesize governs, so
-                # annotated component titles match the residual panel's.
-                # Hardcoding 8pt here left the residual title at 7pt and
-                # visibly out of step with the rest of the figure.
+            if m and (m.group(1), m.group(2)) not in tested:
+                ax.set_title(ax.get_title() + "\nnot permutation-tested")
 
         fig.suptitle(
             f"{label} ({compound}): "

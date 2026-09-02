@@ -1765,6 +1765,39 @@ class GPSearch:
                             )
                         )
 
+        fig, axes = pkp[0], pkp[1]
+
+        # Drop grid slots plot_parts left unused. An unused axes still draws
+        # its frame, so it reads as a panel whose content failed to render
+        # rather than as spare grid -- a 5-component model on a 4-column grid
+        # showed three of them.
+        for ax in list(np.asarray(axes).flatten()):
+            if not (ax.has_data() or ax.get_title()):
+                if ax in fig.axes:
+                    fig.delaxes(ax)
+
+        # Annotate each component with its q-value, when one exists. Without
+        # this a panel shows deviance explained and log_bf but nothing about
+        # significance, and those two can point the opposite way: a component
+        # can draw a compelling curve at DE=8.5% that a third of permutations
+        # reproduce. Components with no permutation result get no line at all
+        # rather than a placeholder, so output is unchanged for anyone who
+        # has not run permutation_significance.
+        perm = getattr(self, "permutation_results", None)
+        if perm is not None and len(perm):
+            sub = perm[perm["metabolite"] == out_label]
+            lut = {(r.kernel_type, r.covariate): r.q_value
+                   for r in sub.itertuples()}
+            for ax in np.asarray(axes).flatten():
+                m = re.match(r"^(\w+)\[(\w+)\]", ax.get_title())
+                if m is None:
+                    continue
+                q = lut.get((m.group(1), m.group(2)))
+                if q is None:
+                    continue
+                ax.set_title(ax.get_title() + f"\nq={q:.3g}"
+                             + ("  SIGNIFICANT" if q <= 0.10 else ""))
+
         return pkp
 
     def plot_feature_metrics(
