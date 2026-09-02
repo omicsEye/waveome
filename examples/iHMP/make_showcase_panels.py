@@ -4,22 +4,24 @@ One metabolite per tested covariate, chosen by a single stated rule:
 among metabolites significant for that covariate (q<=0.10), the one whose
 model has the richest additive decomposition (most components explaining
 >5% of deviance). A stated rule matters here because significance alone
-does not identify a unique metabolite -- 72 of the 140 hbi hits share the
-same minimum q, and all 3 time_from_max hits tie at 0.0101, so ranking by
-q would be an arbitrary pick among ties.
+does not identify a unique metabolite: many hits share the same minimum q
+(all time_from_max hits sit at the pooled-null resolution floor), so ranking
+by q would be an arbitrary pick among ties.
 
-  hbi           -> HILp_QI578  (6 components, lin:hbi DE=0.263)
-  time_from_max -> HILn_QI110  (4 components, lin:time_from_max DE=0.274)
+  hbi           -> HILp_QI578  (6 components, uniquely richest of 166 hits)
+  time_from_max -> HILn_QI110  (4 components, vs 1 for the runners-up of 5)
 
-Both selected components are LINEAR. No metabolite significant for either
-covariate has any nonlinear (SE) structure in that same covariate -- every
-SE:hbi and SE:time_from_max component among the 143 significant models sits
-at log_bf=-4.8, DE=0.000. Nonlinearity is not demonstrable on these data
-and is not claimed here.
+Both selected components are LINEAR, which is a property of these two
+metabolites rather than of the data as a whole. Under the corrected
+ELBO-based BIC there ARE significant nonlinear components elsewhere -- 4
+SE:hbi and 2 SE:time_from_max, five of the six on live components with
+fitted lengthscales 0.76-1.98 (FINDINGS 26). The earlier claim that
+nonlinearity was not demonstrable here belonged to the superseded statistic.
 
 Titles are read from the permutation table rather than hard-coded, so they
 follow a re-run instead of drifting.
 """
+import os
 import pickle
 import re
 
@@ -55,9 +57,20 @@ plt.rcParams.update({
 
 
 def main():
-    perm = pd.concat(
-        [pd.read_csv(PERM).query("covariate != 'time_from_max'"), pd.read_csv(TFM)],
-        ignore_index=True)
+    # The B=120 time_from_max top-up is an OPTIONAL second pass, not part of
+    # the main run. Fall back to the base results when it is absent, and say
+    # which was used -- previously its absence crashed the script, which made
+    # regenerating figures between the main run and the top-up impossible.
+    base = pd.read_csv(PERM)
+    if os.path.exists(TFM):
+        perm = pd.concat([base.query("covariate != 'time_from_max'"),
+                          pd.read_csv(TFM)], ignore_index=True)
+        print(f"time_from_max: using the B=120 top-up ({TFM})")
+    else:
+        perm = base
+        b = int(base.query("covariate == 'time_from_max'").n_draws.max())
+        print(f"time_from_max: top-up absent, using base results at B={b} "
+              "-- q-values for that covariate are PROVISIONAL")
     mbx = pd.read_csv("data/iHMP_labeled_metabolomics.csv", low_memory=False)
     names = mbx.set_index("Compound")["Metabolite"].to_dict()
     with open(PKL, "rb") as f:
@@ -149,14 +162,16 @@ def main():
             "by a single rule: among those significant for the covariate "
             "(q<=0.10, within-subject permutation), the one whose model has "
             "the most components explaining >5% of deviance. Selection by "
-            "q-value alone would not identify a unique metabolite, since 72 "
-            "of the 140 hbi hits share the minimum attainable q and all "
-            "three time_from_max hits tie at 0.0101.\n\n"
+            "q-value alone would not identify a unique metabolite, since "
+            "many hits share the minimum attainable q -- every time_from_max "
+            "hit sits at the pooled-null resolution floor.\n\n"
             + "\n".join(captions) +
-            "\n\nBoth selected components are linear. Components without a "
-            "q-value were not permutation-tested -- only hbi and "
-            "time_from_max were -- and untested is not the same as tested "
-            "and null.\n")
+            "\n\nBoth selected components are linear, which is a property "
+            "of these two metabolites and not of the cohort: significant "
+            "nonlinear components exist elsewhere (4 SE:hbi, 2 "
+            "SE:time_from_max). Components shown without a q-value were not "
+            "permutation-tested -- only hbi and time_from_max were -- and "
+            "untested is not the same as tested and null.\n")
     print("wrote output/showcase_panels_caption.txt")
 
 

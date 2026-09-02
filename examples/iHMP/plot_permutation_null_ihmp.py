@@ -17,6 +17,8 @@ quantile regression, so it no longer depicts the pipeline.
 """
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+import os
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
@@ -52,7 +54,9 @@ def panel_letter(ax, letter):
 def load_results():
     """hbi from the B=60 run, time_from_max from its B=120 re-run."""
     base = pd.read_csv(RESULTS)
-    tfm = pd.read_csv(RESULTS_TFM)
+    # optional B=120 top-up; fall back to the base run when absent
+    tfm = (pd.read_csv(RESULTS_TFM) if os.path.exists(RESULTS_TFM)
+           else base[base.covariate == "time_from_max"])
     return pd.concat([base[base.covariate != "time_from_max"], tfm],
                      ignore_index=True)
 
