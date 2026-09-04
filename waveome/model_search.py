@@ -1980,7 +1980,10 @@ class GPSearch:
         self,
         covariates,
         B0=10,
-        B1=120,
+        B1=None,
+        q_target=0.05,
+        B1_min=100,
+        B1_max=500,
         random_seed=9102,
         checkpoint_path=None,
         resume=True,
@@ -2218,12 +2221,50 @@ class GPSearch:
               .std())
         need = sorted({(m, c) for (m, c, _), v in sd.items()
                        if pd.notna(v) and v >= 1e-6})
+
+        # How many draws the top-up needs is a function of how many survived
+        # the screen, which is only knowable now -- so derive it rather than
+        # make the caller guess. The finest p obtainable is 1/N over the
+        # pooled live draws, and BH's rank-1 threshold is q/m, so
+        #
+        #     B1  >=  (m / n_live) / q_target
+        #
+        # Draws are pooled, so each live component's draws serve every other
+        # one: the more that survive, the fewer each needs. m/n_live is a
+        # degeneracy multiplier, and it is what made two covariates in the
+        # same study need different budgets (hbi 2.0x, time_from_max 4.4x).
+        #
+        # Per COVARIATE rather than per stratum, because one draw yields
+        # log_bf for every kernel type of that covariate at once.
+        #
+        # Clipped below by B1_min because the resolution requirement says
+        # nothing about how stably each component's own null SD is estimated
+        # -- that is a separate failure mode (FINDINGS 27), where B=60 was
+        # unbiased but noisy enough to flip a call. Clipped above by B1_max
+        # so a stratum where almost everything collapsed cannot demand an
+        # unbounded run.
+        B1_by_cov = {}
+        for c in covariates:
+            live_c = len({m_ for (m_, c_) in need if c_ == c})
+            if B1 is not None:
+                B1_by_cov[c] = B1
+            else:
+                req = int(np.ceil((len(names) / max(live_c, 1)) / q_target))
+                B1_by_cov[c] = int(np.clip(req, B1_min, B1_max))
+                if verbose:
+                    print(f"  {c}: {live_c} live of {len(names)} -> "
+                          f"resolution wants B1>={req} at q={q_target}"
+                          f"; using {B1_by_cov[c]}"
+                          + (" (B1_min floor)" if req < B1_min else "")
+                          + (" (B1_max cap -- q_target NOT reachable)"
+                             if req > B1_max else ""))
         if verbose:
             print(f"topping up {len(need)} of {len(names)*len(covariates)} "
-                  f"components with a non-degenerate null to B={B1}")
-        if need and B1 > B0:
+                  f"components with a non-degenerate null to "
+                  f"B={ {c: B1_by_cov[c] for c in covariates} }")
+        if need:
             top = _todo([(m, c, b) for (m, c) in need
-                         for b in range(B0, B1)])
+                         for b in range(B0, B1_by_cov[c])])
             if verbose and not top:
                 print("resuming: all top-up draws already done")
             if top:
@@ -2277,7 +2318,8 @@ class GPSearch:
                     f"{stratum}: permutation budget too coarse for "
                     f"q={Q_REF}. Finest attainable p is {floor:.2g} but BH "
                     f"needs {bh_rank1:.2g} to reject the top-ranked test; "
-                    f"the budget is deciding, not the data. B1={B1} gave "
+                    f"the budget is deciding, not the data. B1="
+                    f"{B1_by_cov.get(stratum.split(':')[1], B1)} gave "
                     f"{pooled:,} pooled draws over {len(live)} live tests; "
                     f"B1>={need} is required. Raise B1 and re-run with "
                     "resume=True to top up.",

@@ -120,6 +120,24 @@ def main():
             f"out-of-scope rows not reported distinctly:\n{msg}"
         print("[bug 3] truncated vs out-of-scope rows reported separately")
 
+        # --- B1 derived from the screen (the DEFAULT path) ---
+        # Every other case here passes B1 explicitly, so without this the
+        # library's own default was untested.
+        g3 = build_fit()
+        ck3 = os.path.join(tmp, "derived.csv")
+        der = g3.permutation_significance(
+            covariates=["cov_a"], B0=2, q_target=0.5, B1_min=3, B1_max=6,
+            random_seed=SEED, checkpoint_path=ck3, verbose=False)
+        # count DRAWS, not rows: each draw emits one row per kernel type,
+        # so .size() double-counts (6 draws x 2 kernels read as 12).
+        n_per = (pd.read_csv(ck3).query("draw >= 0")
+                 .groupby(["metabolite", "covariate"])["draw"].nunique())
+        assert len(der), "derived-B1 run produced no results"
+        assert n_per.max() <= 6, f"exceeded B1_max: {n_per.max()}"
+        assert n_per.max() >= 3, f"below B1_min: {n_per.max()}"
+        print(f"[derived B1] no explicit B1: drew up to {n_per.max()} per "
+              f"component, within [B1_min=3, B1_max=6]")
+
         # --- the checkpoint is append-only: nothing was rewritten away ---
         after = pd.read_csv(ck)
         assert (after.covariate == "cov_b").sum() == \
