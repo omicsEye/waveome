@@ -1980,7 +1980,7 @@ class GPSearch:
         self,
         covariates,
         B0=10,
-        B1=100,
+        B1=120,
         random_seed=9102,
         checkpoint_path=None,
         resume=True,
@@ -2246,6 +2246,54 @@ class GPSearch:
             out.append(res)
 
         results = pd.concat(out, ignore_index=True)
+
+        # Warn when the permutation budget is too coarse for BH to work.
+        # The finest p obtainable is 1/N over the pooled non-degenerate
+        # draws. If that floor sits ABOVE BH's rank-1 threshold (q/m) then
+        # the most extreme test in the stratum cannot be rejected however
+        # extreme it is, and the budget -- not the data -- is deciding.
+        #
+        # Being merely TIED at the floor is a different, milder condition:
+        # those tests are genuinely more extreme than every pooled draw, so
+        # the answer is right but they cannot be ranked against each other.
+        # Reported separately, because conflating the two cries wolf: at
+        # B1=60 lin:hbi had 85 tests tied at the floor while its floor
+        # (6e-05) still cleared BH's threshold (8.9e-05) comfortably.
+        # lin:time_from_max did NOT clear it, and is exactly the stratum
+        # where doubling B1 later moved a hit from q=0.009 to q=1.00
+        # (FINDINGS 27).
+        Q_REF = 0.05
+        for stratum, g in results.groupby("stratum"):
+            live = g[g["null_sd"] > 1e-6]
+            if not len(live):
+                continue
+            pooled = int(live["n_draws"].sum())
+            floor = 1.0 / max(pooled, 1)
+            bh_rank1 = Q_REF / len(g)
+            n_tied = int((g["p_value"] <= floor * 1.01).sum())
+            if floor > bh_rank1:
+                need = int(np.ceil(len(g) / (Q_REF * len(live))))
+                warnings.warn(
+                    f"{stratum}: permutation budget too coarse for "
+                    f"q={Q_REF}. Finest attainable p is {floor:.2g} but BH "
+                    f"needs {bh_rank1:.2g} to reject the top-ranked test; "
+                    f"the budget is deciding, not the data. B1={B1} gave "
+                    f"{pooled:,} pooled draws over {len(live)} live tests; "
+                    f"B1>={need} is required. Raise B1 and re-run with "
+                    "resume=True to top up.",
+                    stacklevel=2,
+                )
+            elif n_tied > 1:
+                warnings.warn(
+                    f"{stratum}: {n_tied} tests are tied at the resolution "
+                    f"floor p={floor:.2g} (their observed statistic beats "
+                    "every pooled draw). Their q-values are bounds and they "
+                    "cannot be ranked against one another; raise B1 to "
+                    "separate them. BH itself is unaffected -- the floor "
+                    f"({floor:.2g}) clears its threshold ({bh_rank1:.2g}).",
+                    stacklevel=2,
+                )
+
         self.permutation_results = results
         return results
 
