@@ -1923,3 +1923,76 @@ q-values do not express.
    large z is no guarantee.
 
 Not decided here.
+
+## 28. iHMP standardised at the library's derived B1 (2026-09-04)
+
+Re-run with `B1` derived rather than hardcoded (`ab9fe5a`): the library
+computed 100 for both covariates at `q_target=0.05` and topped hbi up from
+60. 11,120 new draws, 5.4 h, zero failures. `time_from_max` already had 120
+and needed none.
+
+### Final reported counts
+
+| stratum | B=100 | B=60 | old BIC | live | B used |
+|---|---|---|---|---|---|
+| lin:hbi | **165** | 166 | 140 | 274 | 100 |
+| lin:time_from_max | **4** | 5 | 3 | 128 | 120 |
+| squared_exponential:hbi | **3** | 4 | 1 | 275 | 100 |
+| squared_exponential:time_from_max | **2** | 2 | 0 | 127 | 120 |
+
+167 unique metabolites for hbi, 6 for time_from_max. **Every stratum now
+clears BH's rank-1 threshold** (floors 3.6e-05 to 6.6e-05 against 8.9e-05),
+so no budget warning fires -- which was the point of standardising.
+
+### The derivation reproduced the earlier judgement call, with a reason
+
+```
+hbi:           278 live of 564 -> resolution wants B1>=41 at q=0.05
+time_from_max: 132 live of 564 -> resolution wants B1>=86 at q=0.05
+```
+
+Topping up time_from_max and not hbi was right, but the note recording that
+decision justified it as "hbi already has 1.7x margin" -- a resolution
+argument. The actual distinction is the 2.1x difference in degeneracy rate,
+which the formula surfaces automatically instead of relying on someone
+noticing.
+
+### Membership churn quantifies section 27's instability
+
+Going from 60 to 100 draws, hbi **lost 6 hits and gained 4** -- roughly 6%
+churn for 40 extra draws. Every one lost was ALIVE (variances 0.003 to
+0.187), i.e. marginal calls moving across the threshold, not artifacts being
+cleaned up.
+
+**This is the honest characterisation of the hit list: its borderline
+membership is not stable to the permutation budget.** The count is stable
+(166 -> 165); which specific metabolites compose it is less so. Any
+manuscript claim should be about the population of hits, not about individual
+borderline metabolites.
+
+### More draws do NOT fix the dead-component false positive
+
+C18n_QI43's SE[hbi], identified in section 26, survives at B=100:
+
+```
+  log_bf -5.468932   null_centre -5.472279   null_sd 1.13e-04   q=0.0317
+```
+
+Its null SD stayed at jitter scale (113x degenerate_tol) because the failure
+is structural rather than statistical: the component is dead, and its
+observed statistic sits systematically above its own null via signal leakage
+from that metabolite's lin:hbi (log_bf 8.38). Compute cannot fix it --
+only gating degeneracy on fitted VARIANCE rather than on null SD, as
+section 26 recommended.
+
+So of the 3 squared_exponential:hbi hits, **2 are genuine** (bilirubin
+q=0.009, metronidazole q=0.009) and one is this artifact. The nonlinearity
+claim rests on those two plus the 2 SE:time_from_max hits.
+
+### Residual asymmetry
+
+hbi is reported at 100 draws and time_from_max at 120, since the earlier
+top-up's draws were kept rather than discarded. Truncating time_from_max to
+100 was verified to give the identical hit set in both its strata, so the
+choice is presentational: report "B1=100 throughout" and drop 20 draws, or
+report both numbers.
