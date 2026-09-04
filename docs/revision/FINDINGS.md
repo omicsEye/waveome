@@ -1843,3 +1843,83 @@ component, so it is flagged rather than made.
 Scope is 1 of 1128 SE tests and 0 of the lin hits inspected, so this does
 not undermine the run -- but C18n_QI43's SE[hbi] should be struck from any
 reported nonlinearity result.
+
+## 27. The B=120 top-up removed a false positive; B=60 null SDs are unbiased but noisy (2026-09-03)
+
+`run_tfm_topup.py` under the corrected BIC: 7,920 draws, 4.0 h, zero
+failures, resuming from the main run's checkpoint.
+
+### The top-up changed the answer
+
+| stratum | B=60 | B=120 |
+|---|---|---|
+| lin:time_from_max | 5 | **4** |
+| squared_exponential:time_from_max | 2 | 2 |
+
+One hit dropped and none were added. The observed statistic did not move --
+only the null did:
+
+```
+C18n_QI55  lin:time_from_max
+  B=60 : log_bf -1.106   null_sd 0.235   p 8.0e-05   q 0.0091   SIGNIFICANT
+  B=120: log_bf -1.106   null_sd 0.551   p 0.0323    q 1.0000   not significant
+```
+
+At 60 draws its null's spread came out less than half its value at 120,
+which made an unremarkable observation look extreme. This is the top-up
+doing exactly the job it exists for.
+
+### B=60 is unbiased, but its SD estimates are far noisier than theory
+
+Over the 252 live time_from_max components measured at both budgets:
+
+```
+  median ratio SD(120)/SD(60)      = 0.992     no systematic bias
+  fraction where B=120 SD is larger= 45.6%     symmetric, as expected
+  quartiles of the ratio           = [0.924, 0.992, 1.125]
+
+  observed spread of log(ratio)    = 0.628
+  theoretical (iid Gaussian, n=60) = 0.092     6.8x noisier
+```
+
+So B=60 does not systematically understate the null -- C18n_QI55 was
+sampling variability, not bias. But the SD estimates are nearly seven times
+more variable than iid sampling theory predicts, because the draws are not
+iid Gaussian: each is a refit, and a component can be alive in some
+permutations and collapsed in others, giving heavy-tailed nulls whose sample
+SD swings.
+
+### Consequence for the hbi results, which remain at B=60
+
+Individual borderline calls are unstable, and the natural stability
+diagnostic does not work. Margins of the 170 hbi hits (z = excess / null SD):
+
+| z at B=60 | count |
+|---|---|
+| < 3 | 0 |
+| 3-6 | 65 (38.2%) |
+| > 6 | 105 (61.8%) |
+
+**C18n_QI55 had z = 6.9 at B=60 and still flipped.** z cannot separate stable
+from unstable hits, because z is computed from the very SD estimate that is
+unstable. The 61.8% "robust" fraction is therefore not a guarantee.
+
+This is not evidence that the hbi hits are wrong -- there is no systematic
+bias, and hbi's nulls are the widest and best-resolved in the analysis
+(median live SD 0.593 against ~1e-5 elsewhere). It means the *individual*
+membership of the 166-metabolite list carries instability that the reported
+q-values do not express.
+
+### Options
+
+1. **Top up hbi to B=120** as well. ~551 live components x 60 draws at
+   ~1.8 s/draw is roughly 16.5 h. It is the only way to know which
+   individual calls move.
+2. **Report the caveat.** State that borderline membership is not stable to
+   the permutation budget, and avoid presenting the list as though the
+   cutoff were sharp. This echoes the caveat already recorded for R1.M5/R2.5.
+3. **Report a margin alongside q**, so a reader can see which hits sit near
+   the boundary -- while noting z is itself estimated and C18n_QI55 shows a
+   large z is no guarantee.
+
+Not decided here.
