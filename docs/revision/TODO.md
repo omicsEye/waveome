@@ -35,10 +35,10 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
 ## B. Notebook work (unblocked -- A1 needs no re-run)
 
 - [x] ~~B1. Regenerate~~ — not needed; A1 changes no results.
-- [ ] **B2. Showcase panels into the notebook.** The 3 main + 1 supplemental
+- [x] **B2. Showcase panels into the notebook — DONE.** The 3 main + 1 supplemental
   models are currently produced only by `make_showcase_panels.py`; they
   should appear in the notebook so it is the single reproducible narrative.
-- [ ] **B3. Reproducibility check (separate agent).** Verify the notebook
+- [~] **B3. Reproducibility check (separate agent) — IN PROGRESS.** Verify the notebook
   runs end-to-end with NO locally stored output — no pickles, no CSVs, no
   checkpoint. Expect this to expose the untested create-branches.
 
