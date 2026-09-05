@@ -7,22 +7,34 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
 
 ---
 
-## A. Items that CHANGE RESULTS (do first)
+## A. Items that CHANGE RESULTS
 
-- [ ] **A1. `C18n_QI43` SE[hbi] false positive.** A dead component (variance
-  on VARIANCE_FLOOR) scoring q=0.032. Survives at B=100 because the failure
-  is structural, not sampling: its observed statistic sits above its
-  jitter-scale null via leakage from that metabolite's `lin:hbi`
-  (log_bf 8.38). FINDINGS 26, 28.
-  - Inflates hbi from 167 to 168 components — the sole cause of the
-    notebook's component/metabolite gap.
-  - Fix: gate degeneracy on fitted **variance**, not null SD, in
-    `calc_permutation_pvalues`. Frozen component → needs sign-off.
-  - **Changes:** significance CSV, all figures, notebook cells 12/15/22.
+- [x] **A1. `C18n_QI43` SE[hbi] false positive — RESOLVED, no code change.**
+  The reporting unit is the METABOLITE, not the component: the research
+  question is which metabolite intensities associate with disease activity,
+  not which functional form carries the association.
 
-## B. Downstream of A — regenerate once A is settled
+  Verified that this framing is safe rather than merely convenient: **no
+  metabolite reaches significance solely through a dead component.**
+  C18n_QI43 is the only hit on a floor-variance kernel, and it is separately
+  significant via `lin:hbi` at log_bf 8.38, q=0.0003. So the metabolite-level
+  answer is **167 for hbi and 6 for time_from_max**, artifact or not.
 
-- [ ] **B1. Regenerate** significance CSV, 5 figures, notebook.
+  `calc_permutation_pvalues` is therefore left alone -- it is frozen, it
+  carries Stage 1 / Stage 2 / sim_se_power validation, and changing it would
+  buy nothing at the level results are reported.
+
+  **The one live constraint:** do not report the SE:hbi stratum count of 3
+  as "3 nonlinear associations" -- one is the artifact, so it is 2. The
+  nonlinearity showcase (bilirubin, metronidazole) is unaffected; both are
+  alive. Component-level counts need the dead-kernel check; metabolite-level
+  counts do not.
+
+  **Nothing downstream changes.** No re-run, no regeneration.
+
+## B. Notebook work (unblocked -- A1 needs no re-run)
+
+- [x] ~~B1. Regenerate~~ — not needed; A1 changes no results.
 - [ ] **B2. Showcase panels into the notebook.** The 3 main + 1 supplemental
   models are currently produced only by `make_showcase_panels.py`; they
   should appear in the notebook so it is the single reproducible narrative.
