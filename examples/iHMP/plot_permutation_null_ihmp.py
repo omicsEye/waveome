@@ -25,7 +25,6 @@ import statsmodels.api as sm
 
 DRAWS = "output/ihmp_permutation_draws.csv"
 RESULTS = "output/ihmp_permutation_significance.csv"
-RESULTS_TFM = "output/ihmp_permutation_tfm_b120.csv"
 OUT = "output/permutation_null_explained"
 FOCUS = ("hbi", "lin")          # stratum shown in panels A-C
 Q_TARGET = 0.10
@@ -53,12 +52,11 @@ def panel_letter(ax, letter):
 
 def load_results():
     """hbi from the B=60 run, time_from_max from its B=120 re-run."""
-    base = pd.read_csv(RESULTS)
-    # optional B=120 top-up; fall back to the base run when absent
-    tfm = (pd.read_csv(RESULTS_TFM) if os.path.exists(RESULTS_TFM)
-           else base[base.covariate == "time_from_max"])
-    return pd.concat([base[base.covariate != "time_from_max"], tfm],
-                     ignore_index=True)
+    # One source of truth. The separate time_from_max top-up file belonged
+    # to the era when B1 was hardcoded and one covariate needed a manual
+    # second pass; B1 is now derived per covariate from the screen, so the
+    # main run already carries the right budget for each.
+    return pd.read_csv(RESULTS)
 
 
 def main():

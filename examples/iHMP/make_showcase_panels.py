@@ -31,7 +31,6 @@ import pandas as pd
 
 PKL = "output/fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl"
 PERM = "output/ihmp_permutation_significance.csv"
-TFM = "output/ihmp_permutation_tfm_b120.csv"
 # (compound, covariate, n_cols). Three columns at a 7.2in width gives 2.4in
 # panels, which is the narrowest that still fits a title like
 # "squared_exponential[time_from_max]" and the categorical legends without
@@ -79,20 +78,15 @@ plt.rcParams.update({
 
 
 def main():
-    # The B=120 time_from_max top-up is an OPTIONAL second pass, not part of
-    # the main run. Fall back to the base results when it is absent, and say
-    # which was used -- previously its absence crashed the script, which made
-    # regenerating figures between the main run and the top-up impossible.
-    base = pd.read_csv(PERM)
-    if os.path.exists(TFM):
-        perm = pd.concat([base.query("covariate != 'time_from_max'"),
-                          pd.read_csv(TFM)], ignore_index=True)
-        print(f"time_from_max: using the B=120 top-up ({TFM})")
-    else:
-        perm = base
-        b = int(base.query("covariate == 'time_from_max'").n_draws.max())
-        print(f"time_from_max: top-up absent, using base results at B={b} "
-              "-- q-values for that covariate are PROVISIONAL")
+    # One source of truth. The separate time_from_max top-up file belonged to
+    # the era when B1 was hardcoded and one covariate needed a manual second
+    # pass; B1 is now derived per covariate from the screen, so the main run
+    # already carries the right budget for each. Reading a side file here
+    # would silently reintroduce mixed budgets.
+    perm = pd.read_csv(PERM)
+    for cov, g in perm.groupby("covariate"):
+        print(f"{cov}: B={int(g.n_draws.max())}, "
+              f"{int((g.null_sd > 1e-6).sum())} live of {len(g)}")
     mbx = pd.read_csv("data/iHMP_labeled_metabolomics.csv", low_memory=False)
     names = mbx.set_index("Compound")["Metabolite"].to_dict()
     with open(PKL, "rb") as f:
