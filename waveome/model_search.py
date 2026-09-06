@@ -2045,6 +2045,21 @@ class GPSearch:
         Also stored as `self.permutation_results`, and the raw draws as
         `self.permutation_draws` so diagnostics never need a re-run.
         """
+        # Fail now, not in ~23 h. calc_permutation_pvalues imports
+        # statsmodels lazily at the very END of this method, so a missing
+        # install would surface only after every draw had been computed.
+        try:
+            import statsmodels.api  # noqa: F401
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "permutation_significance needs statsmodels (the conditional "
+                "quantile regression in calc_permutation_pvalues uses "
+                "QuantReg), and it is not importable. Install it before "
+                "starting -- the p-value step runs only after every "
+                "permutation draw, so this would otherwise fail at the very "
+                "end of a run that takes hours."
+            ) from exc
+
         names = list(self.models.keys())
         if not names:
             raise ValueError("permutation_significance: no fitted models")
