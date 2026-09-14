@@ -1311,6 +1311,7 @@ def individual_kernel_predictions(
 
     # Copy model component of interest
     sub_model = gpflow.utilities.deepcopy(model)
+    component_selected = False
 
     # Make sure we have additive components, otherwise return the full model
     if sub_model.kernel.name == "sum":
@@ -1321,9 +1322,13 @@ def individual_kernel_predictions(
                 "Not enough kernel components for index requested!"
             )
 
-        # TODO: Show that using the independent kernel is bad!
-        # Now subset the copied model to the specific kernel component
+        # Now subset the copied model to the specific kernel component.
+        # component_selected records that what follows is ONE PART of an
+        # additive model rather than a model in its own right -- the
+        # prediction below needs the full model's K_zz to evaluate it
+        # (FINDINGS.md section 29).
         sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
+        component_selected = True
 
     # # Then generate predictions
     # pred_mu, pred_var = sub_model.predict_f(X)
@@ -1355,9 +1360,13 @@ def individual_kernel_predictions(
     #         sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
     # pred_x = model_data[0] if X is None else X
 
-    # If there is only one kernel component then return
-    # standard marginal prediction
-    if sub_model.kernel.name != "sum":
+    # Dispatch on whether a component was pulled out of an additive model.
+    # This used to test `sub_model.kernel.name != "sum"`, but the kernel has
+    # already been swapped for the component by this point, so an ordinary
+    # component (linear, squared_exponential, ...) always took the
+    # single-model path and never reached the additive branch below.
+    if not component_selected:
+        # Not an additive model -- sub_model IS the model.
         pred_mu, pred_var = sub_model.predict_f(X)
         _, pred_cov = sub_model.predict_f(X, full_cov=True)
         sample_fns = tf.transpose(
@@ -1365,7 +1374,68 @@ def individual_kernel_predictions(
         )
     else:
 
-        if marginal is True:
+        if marginal is True and model.inducing_variable is not None:
+            # Additive-component posterior.
+            #
+            # The variational parameters (q_mu, q_sqrt) were fitted against
+            # the FULL kernel, so a component's contribution has to be
+            # evaluated with the full K_zz. Swapping in the sub-kernel and
+            # calling predict_f -- what this branch used to do -- rebuilds
+            # K_zz from that component alone and re-interprets q_mu against
+            # the wrong matrix. The components then do not sum to the model
+            # and the curve can come out with the wrong sign
+            # (FINDINGS.md section 29).
+            #
+            # For f = sum_i f_i with shared inducing values u at Z:
+            #   mean_i = K_i(X,Z) L^-T q_mu
+            #   cov_i  = K_i(X,X) - K_i(X,Z) Kzz^-1 K_i(Z,X)
+            #            + K_i(X,Z) L^-T S L^-1 K_i(Z,X)
+            # which is exactly what base_conditional returns when handed
+            # Kmn/Knn from the component and Kmm from the full kernel.
+            X_t = tf.convert_to_tensor(X, dtype=gpflow.default_float())
+            Z_t = tf.convert_to_tensor(
+                model.inducing_variable.Z, dtype=gpflow.default_float()
+            )
+            Kmm = model.kernel(Z_t) + tf.eye(
+                tf.shape(Z_t)[0], dtype=gpflow.default_float()
+            ) * gpflow.config.default_jitter()
+            pred_mu, pred_cov = gpflow.conditionals.util.base_conditional(
+                Kmn=sub_model.kernel(Z_t, X_t),
+                Kmm=Kmm,
+                Knn=sub_model.kernel(X_t),
+                f=model.q_mu,
+                q_sqrt=model.q_sqrt,
+                white=getattr(model, "whiten", True),
+                full_cov=True,
+            )
+            pred_cov = tf.squeeze(pred_cov, axis=0)
+            # Each panel is drawn on the response scale, so keep the model's
+            # mean function on every component as the old branch did. It is
+            # a constant offset and does not affect any component's shape.
+            pred_mu = pred_mu + model.mean_function(X_t)
+            pred_var = tf.linalg.diag_part(pred_cov)
+            try:
+                sample_fns = tf.transpose(
+                    tf.reshape(
+                        tfp.distributions.MultivariateNormalTriL(
+                            loc=tf.transpose(pred_mu),
+                            scale_tril=tf.linalg.cholesky(
+                                pred_cov
+                                + tf.eye(
+                                    tf.shape(X_t)[0],
+                                    dtype=gpflow.default_float(),
+                                )
+                                * gpflow.config.default_jitter()
+                            ),
+                        ).sample(sample_shape=num_samples),
+                        (num_samples, -1),
+                    )
+                )
+            except tf.errors.InvalidArgumentError:
+                sample_fns = tf.repeat(pred_mu, num_samples, axis=1)
+        elif marginal is True:
+            # No inducing variables (e.g. an exact GPR): fall back to the
+            # sub-kernel prediction.
             pred_mu, pred_var = sub_model.predict_f(X)
             _, pred_cov = sub_model.predict_f(X, full_cov=True)
             sample_fns = tf.transpose(

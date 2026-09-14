@@ -1996,3 +1996,106 @@ top-up's draws were kept rather than discarded. Truncating time_from_max to
 100 was verified to give the identical hit set in both its strata, so the
 choice is presentational: report "B1=100 throughout" and drop 20 draws, or
 report both numbers.
+
+## 29. `plot_parts` component curves are not an additive decomposition (2026-09-12)
+
+**The plotted shape and direction of every kernel-component panel can be wrong.
+The significance numbers are unaffected.**
+
+Found while choosing manuscript Fig. 7. For 3-hydroxymethylglutarate
+(`HILn_QI9`), the conditional figure (`plot_marginal`) shows intensity RISING
+with HBI while the `plot_parts` `lin[hbi]` panel shows it FALLING — same model,
+same covariate, opposite sign.
+
+### Cause
+
+`individual_kernel_predictions` (`utilities.py:1325`) isolates a component by
+replacing the model's kernel with that single sub-kernel and calling
+`predict_f`:
+
+```python
+sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
+...
+pred_mu, pred_var = sub_model.predict_f(X)      # marginal=True branch
+```
+
+The model is an SVGP with `whiten=True`, so its posterior mean is
+`K_xz L^{-T} q_mu` with `L L^T = K_zz` built from the **full** kernel.
+Swapping in a sub-kernel recomputes `K_zz` from that component alone, so the
+fitted `q_mu` is re-interpreted against the wrong matrix. The result is not
+this component's contribution — it is a different model that happens to share
+`q_mu`.
+
+The correct decomposition keeps the coefficient vector from the full model:
+`alpha = L^{-T} q_mu` computed once from the full `K_zz`, then component
+`i`'s contribution is `k_i(X, Z) @ alpha`.
+
+### Evidence
+
+Additivity test on `HILn_QI9` — do the component means sum back to the full
+model? (grid: all covariates at 0, hbi swept over its range)
+
+| | value at hbi min -> max | residual spread |
+|---|---|---|
+| full model `predict_f` | 12.7466 -> 14.1882 | — |
+| sum of `marginal=True` components | 167.9564 -> 167.1358 | **2.2621** |
+| sum of shared-alpha components | -0.2155 -> 1.2261 | **3.8e-10** |
+
+The shared-alpha components reproduce the full model exactly, offset by the
+constant mean function (12.962 at both ends). The `marginal=True` components
+do not sum to the full model at all.
+
+Direction for the single component under test:
+
+| method | lin[hbi] contribution | |
+|---|---|---|
+| `individual_kernel_predictions(marginal=True)` (what `plot_parts` uses) | 13.0706 -> 12.2500 | FALLING |
+| shared-alpha | -0.1906 -> 1.2509 | RISING |
+
+Independent confirmation that RISING is right: removing `lin[hbi]` from the
+kernel makes the full-model sweep perfectly flat (12.5994 -> 12.5994), so all
+of the model's hbi dependence runs through that one component — and the full
+model rises.
+
+`utilities.py:1323` already carries the comment
+`# TODO: Show that using the independent kernel is bad!`, so the author
+suspected this.
+
+### Scope
+
+- **Significance is NOT affected.** `log_bf`, `q_value` and
+  `deviance_explained` come from `calc_feature_importance_components`, which
+  refits with the component dropped. It never calls this function. All counts
+  in FINDINGS 26-28 and `MANUSCRIPT_CHANGES.md` stand.
+- **Conditional figures are NOT affected.** `plot_marginal` predicts from the
+  full model and is correct.
+- **Every `plot_parts` component panel IS affected** — all showcase panels,
+  and any claim read off a panel's shape or direction.
+- The `marginal=False` branch implements a proper conditional decomposition
+  and is likely correct, but is not the default and is untested here.
+
+### Second bug found while fixing it
+
+The dispatch `if sub_model.kernel.name != "sum"` sat AFTER the kernel had
+already been swapped for the component, so an ordinary component (linear,
+squared_exponential, ...) has a non-"sum" name and always took the
+single-model path. The `marginal` argument was therefore dead for every
+component of interest -- neither `marginal=True` nor `marginal=False` was
+reached. Dispatch is now on an explicit `component_selected` flag.
+
+### Fixed (2026-09-12)
+
+`individual_kernel_predictions` now computes the component posterior with
+`gpflow.conditionals.util.base_conditional`, handing it `Kmn`/`Knn` from the
+component and `Kmm` from the full kernel, respecting `model.whiten`. Models
+without inducing variables keep the old path.
+
+Acceptance: `tests/test_component_decomposition.py` -- components sum to the
+full model, a component's slope agrees in sign with the full model's, and the
+variance stays non-negative. On the real iHMP model the additivity residual
+spread is **4.3e-14**, and `HILn_QI9`'s `lin[hbi]` now reads RISING
+(12.7714 -> 14.2130), matching both the full model and the conditional figure.
+
+Note for anyone writing similar code: `kernel.K(X, Z)` does NOT apply
+`active_dims` slicing -- only `kernel(X, Z)` does. Using `.K` silently
+computes the kernel over every column.
