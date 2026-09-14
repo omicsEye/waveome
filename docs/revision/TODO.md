@@ -40,7 +40,31 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
   should appear in the notebook so it is the single reproducible narrative.
 - [~] **B3. Reproducibility check (separate agent) — IN PROGRESS.** Verify the notebook
   runs end-to-end with NO locally stored output — no pickles, no CSVs, no
-  checkpoint. Expect this to expose the untested create-branches.
+  checkpoint. Expect this to expose the untested create-branches. Findings,
+  in severity order:
+
+  - [x] **B3.1 `statsmodels` was an undeclared dependency.** Added to
+    `pyproject.toml` (`97c6166`).
+  - [x] **B3.2 Between-subject block vanished silently on a clean checkout.**
+    `ihmp_between_subject.csv` is untracked and was produced by a separate
+    script, so the notebook printed one advisory line and dropped the entire
+    block. Cell 12 now calls `gps.between_subject_significance` under the
+    same load-or-create pattern as the fit. Verified the library method
+    reproduces the retired script over all 1128 outcome x covariate pairs
+    (max abs diff 1.1e-16 on p and q; `0/564` for both covariates), then
+    retired `run_between_subject_test.py` so one implementation remains.
+  - [x] **B3.3 Selection rule printed but not applied — RESOLVED by removing
+    the claim.** The rule was never applied to the SE panels, and once the
+    figures were chosen on biological coherence and model structure it became
+    simply false. Cell 21, markdown cell 20 and the caption file now state the
+    per-figure criterion instead of asserting a single mechanical rule, and
+    print how many significant metabolites each figure was chosen from.
+  - [ ] **B3.4 Provenance.** `all_component_results.csv` and
+    `all_component_results_with_significance.csv` are byte-identical, and no
+    `..._clamp_removed_runtime_stats.json` exists, so the R1.M7 numbers
+    describe a different artifact than the one on disk.
+  - [ ] **B3.5 Cosmetic.** Version string says 0.1.0 (pyproject says 0.2.0);
+    `../iHMP/` paths; FINDINGS references without the `docs/revision/` prefix.
 
 ## C. Documentation only — no result changes, can run in parallel
 
