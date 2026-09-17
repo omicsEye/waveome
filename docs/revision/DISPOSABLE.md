@@ -12,7 +12,7 @@ model pickles rather than results.
 
 | artifact | size | why |
 |---|---|---|
-| `fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl` | 172 MB | the reported fit; 13 references across scripts and the notebook |
+| `ihmp_penalized_fit.pkl` | 172 MB | the reported fit; 13 references across scripts and the notebook |
 | `ihmp_permutation_draws.csv` | 5.4 MB | the checkpoint; regenerating costs ~23 h |
 | `ihmp_permutation_significance.csv` | 0.3 MB | reported p/q at B0=10, B1=100 |
 | `ihmp_between_subject.csv` | 0.1 MB | between-subject complement; regenerating costs ~15 min via the notebook |

@@ -13,7 +13,7 @@ Resumes from the shared checkpoint, so only draws 60-119 are computed.
 import pickle, time
 import pandas as pd
 
-IN = "output/fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl"
+IN = "output/ihmp_penalized_fit.pkl"
 DRAWS = "output/ihmp_permutation_draws.csv"
 
 with open(IN, "rb") as f:

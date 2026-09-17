@@ -41,8 +41,7 @@ import ray  # noqa: E402
 from waveome.model_search import _component_covariate_names  # noqa: E402
 from waveome.utilities import convert_data_to_tensors  # noqa: E402
 
-PKL = ("output/fit_penalized_models_revision_full_scipy_ls_prior"
-       "_no_prune_clamp_removed.pkl")
+PKL = "output/ihmp_penalized_fit.pkl"
 BACKUP = "output/archive_oldbic_2026-09-01/fit_penalized_models_OLDBIC.pkl"
 
 # Independently measured before writing this script, so the result can be

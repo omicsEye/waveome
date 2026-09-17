@@ -24,7 +24,7 @@ from waveome.kernels import Lin
 from waveome.model_search import GPSearch
 
 INPUT_FP = (
-    "output/fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl"
+    "output/ihmp_penalized_fit.pkl"
 )
 DEMO = [
     "HILp_QI2874",   # SE:hbi 36.6 -- suspected subject-structure proxy

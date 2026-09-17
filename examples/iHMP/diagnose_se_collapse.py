@@ -42,7 +42,7 @@ from waveome.utilities import (
     convert_data_to_tensors,
 )
 
-PKL = "output/fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl"
+PKL = "output/ihmp_penalized_fit.pkl"
 TABLE = "output/all_component_results_with_significance.csv"
 OUT = "output/se_collapse_diagnosis.csv"
 MASS_POINT = -4.8

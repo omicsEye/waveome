@@ -49,7 +49,7 @@ from waveome.utilities import (  # noqa: E402
 )
 
 INPUT_FP = (
-    "output/fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl"
+    "output/ihmp_penalized_fit.pkl"
 )
 SEED = 9102
 UNIT_IDX = 0

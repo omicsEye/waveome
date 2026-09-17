@@ -22,7 +22,7 @@ from gpflow.utilities import set_trainable
 from waveome.utilities import convert_data_to_tensors
 
 INPUT_FP = (
-    "output/fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl"
+    "output/ihmp_penalized_fit.pkl"
 )
 SEED = 9102
 B = 20

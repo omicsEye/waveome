@@ -84,10 +84,38 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
       except the clamp removal — but the clamp removal was a numerical fix
       to the optimiser (FINDINGS 1-2), so convergence and iteration counts
       are exactly what it could move. **Do not quote the proxy as the
-      operating point.** Deleting the pickle and re-running cell 11
-      regenerates both (~100 min). Cell 11 now prints a NOTE on load when
-      the stats file is absent, so the gap surfaces on every run instead of
-      in an audit.
+      operating point.** Cell 11 now prints a NOTE on load when the stats
+      file is absent, so the gap surfaces on every run instead of in an
+      audit.
+
+      **Artifacts renamed** for outside reviewers -- the old name encoded the
+      development history rather than what the file is:
+
+      | | |
+      |---|---|
+      | model | `output/ihmp_penalized_fit.pkl` |
+      | stats (to be produced) | `output/ihmp_penalized_fit_runtime_stats.json` |
+      | pre-refit backup | `output/ihmp_penalized_fit_PREFIT_BACKUP.pkl` |
+      | proxy stats, earlier config | `output/ihmp_penalized_fit_PROXY_no_clamp_fix_runtime_stats.json` |
+
+      All 14 code and doc references updated; two of them
+      (`run_ihmp_permutation.py`, `refresh_feature_importances.py`) split the
+      name across concatenated string literals and needed patching by hand.
+
+      **Re-fit protocol.** Cell 11 writes to the same path, and the 23 h
+      permutation results describe the CURRENT pickle, so a non-reproducing
+      re-fit would strand them:
+      1. backup already taken (`..._PREFIT_BACKUP.pkl`)
+      2. `rm output/ihmp_penalized_fit.pkl`, run cell 11 (~100 min)
+      3. verify per-model kernel variances across all 564 models, new vs
+         backup
+      4. match -> keep; differ -> restore the backup, and the new stats are
+         unusable for the same reason the old ones are
+
+      Config was checked against the pickle's own stored `run_parameters`
+      before renaming: seed 9102, `num_restart=3`, `prune_components=False`,
+      scipy, `[SquaredExponential, Lin]`, all interaction flags False -- every
+      value matches what cell 11 would call, so this re-runs the same fit.
   - [ ] **B3.5 Cosmetic.** Version string says 0.1.0 (pyproject says 0.2.0);
     `../iHMP/` paths; FINDINGS references without the `docs/revision/` prefix.
 

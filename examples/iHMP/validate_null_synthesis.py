@@ -24,7 +24,7 @@ import numpy as np
 from waveome.model_search import _component_covariate_names
 from waveome.utilities import VAR_CUTOFF_DEFAULT, calc_bh_qvalues, calc_empirical_pvalue
 
-INPUT_FP = "output/fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl"
+INPUT_FP = "output/ihmp_penalized_fit.pkl"
 
 
 def main():
