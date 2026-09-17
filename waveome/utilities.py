@@ -917,14 +917,26 @@ def calc_feature_importance_components(
         denom = -2 * np.sum(null_lls_r - mod_lls)
         if denom != 0:
             marginal_de = (-2 * np.sum(sub_mod_lls - mod_lls)) / denom
-            marginal_de = np.round(max(min(1, marginal_de), 0), 3)
+            marginal_de = max(min(1, marginal_de), 0)
         else:
             marginal_de = 0.0
 
+        # Returned at full precision. These used to be rounded here
+        # (delta_bic/log_bf to 1dp, deviance_explained to 3dp), which put a
+        # rounded copy of the statistic into every model's cached
+        # feature_importance_detail and from there into the component table,
+        # where it disagreed with the full-precision value in the
+        # permutation results on 2256 of 2256 tested rows. Rounding also
+        # erased the dead-component signature: a collapsed component's
+        # log_bf is exactly -0.5 * k * log(n) (-2.7361 / -5.4723 at n=238),
+        # which 1dp turns into -2.7 / -5.5. Round at display time instead.
+        # float() matters: these are tf.Tensor scalars, and np.round used to
+        # convert them as a side effect. Returning raw tensors leaks them into
+        # the cached detail, the component CSV and anything that serialises it.
         return {
-            "delta_bic": np.round(delta_bic, 1),
-            "log_bf": np.round(log_bf, 1),
-            "deviance_explained": marginal_de,
+            "delta_bic": float(delta_bic),
+            "log_bf": float(log_bf),
+            "deviance_explained": float(marginal_de),
         }
 
     def _refit_result_with_retry(make_reduced_kernel, max_attempts=2):
@@ -978,7 +990,7 @@ def calc_feature_importance_components(
         {
             "delta_bic": None,
             "log_bf": None,
-            "deviance_explained": np.round(1 - full_de, 3),
+            "deviance_explained": float(1 - full_de),
         }
     )
 
