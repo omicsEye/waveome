@@ -59,10 +59,35 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
     simply false. Cell 21, markdown cell 20 and the caption file now state the
     per-figure criterion instead of asserting a single mechanical rule, and
     print how many significant metabolites each figure was chosen from.
-  - [ ] **B3.4 Provenance.** `all_component_results.csv` and
-    `all_component_results_with_significance.csv` are byte-identical, and no
-    `..._clamp_removed_runtime_stats.json` exists, so the R1.M7 numbers
-    describe a different artifact than the one on disk.
+  - [~] **B3.4 Provenance — half done.**
+    - [x] **Duplicate component table removed.** Cells 18 and 19 wrote the
+      same dataframe to `all_component_results.csv` and
+      `all_component_results_with_significance.csv`, so the two files were
+      byte-identical (md5 `861f45aa…`) and neither name told you which was
+      current. Cell 18 no longer writes; the `_with_significance` name is
+      kept because `diagnose_se_collapse.py` reads that path.
+    - [ ] **R1.M7 operating point still describes a different fit.**
+      MAINTAINER RE-RUN NEEDED — not run here. The three
+      `*_runtime_stats.json` files in `output/` belong to earlier
+      configurations; the pickle behind every reported result
+      (`..._ls_prior_no_prune_clamp_removed.pkl`) has none, because it
+      predates the instrumentation in cell 11's fit branch.
+
+      | stats file | prune | convergence | wall clock | sec/metabolite | peak GB |
+      |---|---|---|---|---|---|
+      | `..._full_scipy` | True | 0.266 | 80.0 min | 8.51 | 7.55 |
+      | `..._ls_prior` | True | 0.264 | 78.5 min | 8.35 | 8.04 |
+      | `..._ls_prior_no_prune` | False | **0.982** | 97.9 min | 10.42 | 8.37 |
+      | `..._no_prune_clamp_removed` | False | — | **MISSING** | — | — |
+
+      `..._ls_prior_no_prune` is the closest proxy — same configuration
+      except the clamp removal — but the clamp removal was a numerical fix
+      to the optimiser (FINDINGS 1-2), so convergence and iteration counts
+      are exactly what it could move. **Do not quote the proxy as the
+      operating point.** Deleting the pickle and re-running cell 11
+      regenerates both (~100 min). Cell 11 now prints a NOTE on load when
+      the stats file is absent, so the gap surfaces on every run instead of
+      in an audit.
   - [ ] **B3.5 Cosmetic.** Version string says 0.1.0 (pyproject says 0.2.0);
     `../iHMP/` paths; FINDINGS references without the `docs/revision/` prefix.
 

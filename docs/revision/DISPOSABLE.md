@@ -15,10 +15,10 @@ model pickles rather than results.
 | `fit_penalized_models_revision_full_scipy_ls_prior_no_prune_clamp_removed.pkl` | 172 MB | the reported fit; 13 references across scripts and the notebook |
 | `ihmp_permutation_draws.csv` | 5.4 MB | the checkpoint; regenerating costs ~23 h |
 | `ihmp_permutation_significance.csv` | 0.3 MB | reported p/q at B0=10, B1=100 |
-| `ihmp_between_subject.csv`, `_residuals.npz` | 2.4 MB | between-subject complement; unaffected by the BIC fix |
-| `all_component_results*.csv` | 1.2 MB | component tables (regenerate when the notebook runs) |
+| `ihmp_between_subject.csv` | 0.1 MB | between-subject complement; regenerating costs ~15 min via the notebook |
+| `all_component_results_with_significance.csv` | 0.6 MB | the component table (regenerate when the notebook runs) |
 | `showcase_*`, `supp_showcase_*`, `permutation_null_explained*` | 11 MB | the manuscript figures + captions |
-| `*_runtime_stats.json` | <1 MB | R1.M7 runtime/memory/convergence evidence |
+| `*_runtime_stats.json` | <1 MB | R1.M7 evidence — NOT disposable until a `..._clamp_removed` one exists; the present three describe earlier fits (TODO B3.4) |
 
 ## ARCHIVED — evidence behind FINDINGS, delete once the paper is accepted
 
@@ -51,6 +51,7 @@ Checked by grepping every script, notebook and doc outside `output/`.
 | `fit_penalized_models_adam_gradient.pkl` | 154 MB | 0 |
 | `fit_penalized_models_adam_gradient_previous.pkl` | 154 MB | 0 |
 | `fit_penalized_models_revision_full_scipy_no_ls_prior.pkl` | 156 MB | 0 |
+| `draft_figs/` | ~2 MB | manuscript figure candidates for inspection; delete once Fig. 6/7 are chosen |
 
 **~1.75 GB.** All predate this revision or are intermediate fits from it
 (pre-lengthscale-prior, pre-no-prune). None is referenced by any live code
