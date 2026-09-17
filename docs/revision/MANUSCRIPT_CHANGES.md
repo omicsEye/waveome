@@ -226,4 +226,10 @@ The notebook (cell 21) produces four panels. Their status against the above:
 - [ ] **M23. Borderline membership is unstable.** Going B=60 -> B=100 lost 6
   hits and gained 4; the count is stable, the membership is not. Manuscript
   claims should concern the population of hits, not named borderline
-  metabolites. (TODO C2, FINDINGS 27-28.)
+  metabolites. (FINDINGS 27-28.)
+
+  Recorded in `waveome_revision_tracker.md` under R1.M5/R2.5 (TODO C2, done).
+  Concretely, the text may say "167 metabolites associate with HBI" but must
+  not name a metabolite whose q sits within a few percent of 0.10 as though
+  the cutoff were sharp. The chosen figures are safe: sorbitol log_bf 27.83,
+  and neither nervonic acid nor bilirubin is near the boundary.

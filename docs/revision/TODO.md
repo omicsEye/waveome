@@ -169,13 +169,19 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
 
 ## C. Documentation only — no result changes, can run in parallel
 
-- [ ] **C1. Tracker row R1.M5/R2.5** still cites the superseded Stage 2
-  evidence (0.010/0.029/0.029 from the *binned* method). FINDINGS 25 has the
-  replacement from the shipped construction.
-- [ ] **C2. Record the borderline-stability caveat.** 6 hits lost, 4 gained
-  going B=60 -> B=100; the count is stable, individual membership is not.
-  Manuscript claims should concern the population of hits, not specific
-  borderline metabolites. FINDINGS 27, 28.
+- [x] **C1. Tracker row R1.M5/R2.5 — DONE.** Both sites in
+  `waveome_revision_tracker.md` (the item-5 bullet and the R1.M5/R2.5 row) now
+  carry the shipped construction's numbers: realized FDR 0.010/0.029/**0.048**
+  against nominal 0.01/0.05/0.10, power 0.884-0.893, with bootstrap 95% CIs.
+  The superseded 0.029 at q=0.10 came from the *binned* null; the old reading
+  is kept inline as a marked "Superseded" note so a reader who saw the earlier
+  draft can tell the difference. FINDINGS 25.
+- [x] **C2. Borderline-stability caveat — DONE.** The tracker's R1.M5/R2.5
+  row already warned that near-threshold results are unstable; it now carries
+  the measurement (B=60 -> B=100 lost 6 hits and gained 4), the rule that
+  follows (claim the population, never a named borderline metabolite), and the
+  check that the chosen figures are clear of the boundary. Mirrored into
+  MANUSCRIPT_CHANGES.md M23. FINDINGS 27, 28.
 
 ---
 
