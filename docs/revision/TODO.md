@@ -152,8 +152,20 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
       before renaming: seed 9102, `num_restart=3`, `prune_components=False`,
       scipy, `[SquaredExponential, Lin]`, all interaction flags False -- every
       value matches what cell 11 would call, so this re-runs the same fit.
-  - [ ] **B3.5 Cosmetic.** Version string says 0.1.0 (pyproject says 0.2.0);
-    `../iHMP/` paths; FINDINGS references without the `docs/revision/` prefix.
+  - [x] **B3.5 Cosmetic — DONE.** Four items, one of which was not cosmetic:
+    - Notebook header said `waveome v0.1.0`; pyproject says `0.2.0`. There is
+      no `__version__` anywhere in the package, so nothing else was stale.
+    - `../iHMP/data/...` replaced with `data/...` in the notebook, and
+      `ihmp_waveome_hpc_run.py` now resolves `DATA` from `__file__` instead.
+      The old relative path only worked when launched from a SIBLING of
+      `examples/iHMP`, so it broke silently depending on submit directory.
+    - Five `FINDINGS...` references given the `docs/revision/` prefix so they
+      locate the file.
+    - **`id_list` collision (a real bug, not cosmetic).** Cell 16 rebound
+      `id_list`, the name cells 8-9 use for the sampled participants in the
+      trajectory figure, to `[19, 13, 27, 17]`. Re-running cell 9 after cell
+      16 silently plotted the wrong participants. Cell 16's is now
+      `marginal_example_ids`.
 
 ## C. Documentation only — no result changes, can run in parallel
 
