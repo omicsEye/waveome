@@ -59,19 +59,55 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
     simply false. Cell 21, markdown cell 20 and the caption file now state the
     per-figure criterion instead of asserting a single mechanical rule, and
     print how many significant metabolites each figure was chosen from.
-  - [~] **B3.4 Provenance — half done.**
+  - [x] **B3.4 Provenance — DONE.**
     - [x] **Duplicate component table removed.** Cells 18 and 19 wrote the
       same dataframe to `all_component_results.csv` and
       `all_component_results_with_significance.csv`, so the two files were
       byte-identical (md5 `861f45aa…`) and neither name told you which was
       current. Cell 18 no longer writes; the `_with_significance` name is
       kept because `diagnose_se_collapse.py` reads that path.
-    - [ ] **R1.M7 operating point still describes a different fit.**
-      MAINTAINER RE-RUN NEEDED — not run here. The three
-      `*_runtime_stats.json` files in `output/` belong to earlier
-      configurations; the pickle behind every reported result
-      (`..._ls_prior_no_prune_clamp_removed.pkl`) has none, because it
-      predates the instrumentation in cell 11's fit branch.
+    - [x] **R1.M7 operating point — RESOLVED 2026-09-16.** The maintainer
+      re-ran the fit; `output/ihmp_penalized_fit_runtime_stats.json` now
+      measures the pickle every reported result uses.
+
+      ```
+      wall_clock_min      89.65      sec_per_metabolite   9.538
+      peak_memory_gb      20.68      convergence_rate     0.982
+      mean_n_iterations  294.9       median_n_iterations  280.0
+      n_metabolites        564       n_models_with_stats   564
+      ```
+
+      **Report peak memory WITH the hardware.** Iterations and convergence
+      match the pre-fix proxy almost exactly (294.9 vs 294.7; 0.982 vs
+      0.982), so the fit behaved identically -- but peak memory is 20.68 GB
+      against the proxy's 8.37 GB. That difference tracks core count and
+      parallel worker layout, not the method, and will be read as a method
+      property if reported bare.
+
+      **Re-fit reproduced the artifact.** 560 of 564 models bitwise
+      identical. Of the 4 that differ, 3 differ only in a
+      `categorical[participant_id]` variance at ~1e-4 relative and have no
+      live tested component (every log_bf pinned at the exact parameter
+      penalty, q=1.00), so their statistics cannot move. The fourth,
+      `HILp_TF42`, IS a reported hit (`lin:hbi`, q=0.0086) and its
+      `lin[hbi]` variance moved 1.79% relative -- but its statistic is
+      unchanged to four decimals on both pickles (log_bf 4.7000,
+      DE 50.40%), because the drop-one refit lands in the same place.
+      The backup `ihmp_penalized_fit_PREFIT_BACKUP.pkl` can be deleted once
+      this is considered settled.
+
+      **New, unrelated, small:** a fresh recomputation of `HILp_TF42`'s
+      statistic gives log_bf 4.7000 where
+      `ihmp_permutation_significance.csv` stores 4.68. The gap is present on
+      BOTH pickles, so it predates the re-fit -- the stored CSV and a fresh
+      recompute disagree slightly somewhere. Not urgent, but worth resolving
+      before the numbers are final.
+
+      Historical context for the above:
+      The three earlier
+      `*_runtime_stats.json` files belonged to earlier configurations, and
+      the pickle behind every reported result had none because it predated
+      the instrumentation in cell 11's fit branch.
 
       | stats file | prune | convergence | wall clock | sec/metabolite | peak GB |
       |---|---|---|---|---|---|
