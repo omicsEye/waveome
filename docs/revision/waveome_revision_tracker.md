@@ -131,6 +131,33 @@ The doc's proposal is an Efron-style **two-groups / local-FDR empirical-Bayes** 
 | ID | Reviewer ask (brief) | Text comment / response strategy | Code / analysis action | Type · Effort · Status |
 |---|---|---|---|---|
 | R1.M7 | No quantitative runtime/memory/inducing-points/convergence/per-metabolite scaling reporting | **LOCKED scope (no standalone benchmark):** (a) **scaling curves** — runtime + peak memory vs N (subjects × obs) and vs #inducing points, single-core CPU-time for clean shape — **piggybacked on the simulation parameter sweeps** (reuse the existing N ladder {10,50,100,500}); (b) **real-world operating point** — total runtime, peak memory, per-metabolite cost, iterations-to-converge — captured by **instrumenting the forced iHMP re-run**. Convergence metric = iterations-to-tolerance + final loss, summarized at baseline config. Answers the reviewer's "per-metabolite / measured numbers, not just node specs" complaint. | **ANALYSIS:** add lightweight time/memory/iteration logging (`psutil`, already a dep) to the sim sweep and the iHMP run; tabulate curves + one realistic multi-core wall-clock number. No extra runs. | ANALYSIS · Med · planned |
+
+**R1.M7 measured operating point (iHMP, 2026-09-16).** From
+`examples/iHMP/output/ihmp_penalized_fit_runtime_stats.json`, measured on the
+pickle every reported result uses.
+
+| quantity | value |
+|---|---|
+| wall clock | 89.65 min (5379 s) |
+| per metabolite | 9.538 s (564 metabolites) |
+| peak memory | 20.68 GB |
+| iterations to converge | mean 294.9, median 280.0 |
+| convergence rate | 0.982 (564/564 models reporting) |
+
+**Hardware, which must be reported alongside the memory figure:** Apple M5
+Pro, 15 cores (15 physical / 15 logical), 48 GB RAM, macOS 26.7; fitting is
+parallel across metabolites at `num_jobs=-1`, so all 15 cores are in use.
+Peak memory is a whole-process-tree figure and scales with worker count --
+the same configuration recorded 8.37 GB in an earlier run, while iterations
+(294.7 vs 294.9) and convergence (0.982 vs 0.982) were essentially identical.
+**Reported bare, the memory number reads as a property of the method; it is a
+property of the parallelism.** State cores and RAM with it, or quote memory
+per worker.
+
+*Confirm before submission:* the numbers above assume the fit was run on this
+workstation rather than on Pegasus. If it was run on the cluster, substitute
+that node's specification.
+
 | R1.m6 | Report package versions, optimizer tolerances, init scheme, seeds, fallback/failure rates | Add a reproducibility paragraph + table. Note the standard seed and L-BFGS-B settings; report how often fits fell back. | Pull versions from `pyproject.toml`; surface fallback counts from fit logs. (Use seed **9102** for any new runs.) | REPORT · Low · partial |
 | R2.m10 | Several GitHub examples are "In Progress" | Either finish/label them clearly as illustrative-WIP, or hide the unfinished ones before resubmission so the toolkit looks complete. | Tidy `README.md` "In progress" section; gate or finish those notebooks. | CODE-FIX · Low · none |
 
