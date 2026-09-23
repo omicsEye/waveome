@@ -32,7 +32,7 @@ double-counted the lengthscale prior. Both are gone.
   Also affects Discussion para 2 ("SCFAs and bile acids are consistently
   depleted...") and para 3 ("reduced SCFAs compromise gut barrier integrity").
 
-- [ ] **M2. Oxalate is no longer significant — and it has its own figure.**
+- [x] **M2. DONE.** Oxalate is no longer significant — and it has its own figure.**
   Submitted Table 2 leads with oxalate at log_bf=47.7. Now log_bf=-2.74,
   q=1.00 on *all four* strata: it sits at the exact dead-component parameter
   penalty. Figure `oxalate_parts_output.png` (Fig. 7) and its caption must be
@@ -47,7 +47,7 @@ double-counted the lengthscale prior. Both are gone.
   it cannot carry a "strong association" narrative either. Replace the figure
   or rewrite to a linear claim on the surviving feature.
 
-- [ ] **M4. Table 2 (temporal associations) loses 8 of 9 rows.**
+- [x] **M4. DONE.** Table 2 (temporal associations) rebuilt, 9 rows -> 6.
   Current time_from_max hits, complete list (6 metabolites, not 9):
 
   | Metabolite | Compound | Kernel | log_bf | q |
@@ -70,10 +70,10 @@ double-counted the lengthscale prior. Both are gone.
 
 ## B. Counts and numbers
 
-- [ ] **M5. "Seventy-two metabolites showed significant associations with HBI"
+- [x] **M5. DONE.** "Seventy-two metabolites showed significant associations with HBI"
   -> 167.** Metabolite-level, q<=0.10. Component-level the strata are
   `lin:hbi` 165, `SE:hbi` 3, of 564 tested each.
-- [ ] **M6. "Nine metabolites exhibited significant temporal associations"
+- [x] **M6. DONE.** "Nine metabolites exhibited significant temporal associations"
   -> 6.** See M4.
 - [ ] **M7. Every log Bayes factor in the text, Table 2, and the heatmap
   changes** — the `calc_bic` correction removed a double-counted prior term.
@@ -239,3 +239,34 @@ The notebook (cell 21) produces four panels. Their status against the above:
   not name a metabolite whose q sits within a few percent of 0.10 as though
   the cutoff were sharp. The chosen figures are safe: sorbitol log_bf 27.83,
   and neither nervonic acid nor bilirubin is near the boundary.
+
+---
+
+## Applied to `sn-article-revised.tex` (2026-09-22)
+
+M1, M2, M4, M5, M6 are in the working copy; `sn-article.tex` is untouched.
+Compiles clean (`pdflatex`, exit 0, no errors).
+
+**Figure added:** `figures/nervonic_acid_parts_output.{png,pdf}` replaces
+`oxalate_parts_output.png` as Figure 7 (`\label{fig:nervonic}`).
+
+**Relationship column re-derived**, not carried over: each entry is read off
+the corrected additive decomposition over +/-60 days around the maximum. The
+old descriptions came from the buggy decomposition (FINDINGS 29) and from
+metabolites that are no longer significant.
+
+**Citations now unused** after M1/M2 -- safe to leave, or prune from the .bib:
+`kaczmarczyk_altered_2022`, `parada_venegas_short_2019`,
+`xu_characterization_2022`, `bai_bile_2024`, `gkentzis_urolithiasis_2016`,
+`jose_extraintestinal_2008`, `li_gut_2022`, `liu_microbial_2021`,
+`siener_intestinal_2024`, `thomas_emerging_2022`.
+
+**Flagged for the authors, not resolved:**
+- Two of the six temporal hits (`NH4_C56:2 TAG`, `NH4_C52:6 TAG`) are
+  annotated *redundant ion* in the source metabolomics table. The table and
+  Discussion now say so, but whether they are independent findings is a
+  chemistry call.
+- The functional-class list is deliberately vague ("several classes...
+  lipids (lysophospholipids and sphingomyelins prominent among them)")
+  pending the curated re-derivation in M8. Naming a definitive set needs
+  chemical annotation, not regex on metabolite names.
