@@ -169,7 +169,7 @@ double-counted the lengthscale prior. Both are gone.
 
 ## D. Methods text
 
-- [ ] **M12. Rewrite "Significance criterion and reproducibility".** The
+- [x] **M12. DONE.** Rewrote "Significance criterion and reproducibility". The
   submitted rule — "a metabolite was deemed to show a significant association
   if the corresponding kernel variance parameter remained above 1e-4" — is
   exactly what the reviewer objected to and is no longer what the code does.
@@ -178,7 +178,7 @@ double-counted the lengthscale prior. Both are gone.
   B1=100 derived as (m/n_live)/q_target); conditional quantile regression of
   pooled centred draws on each test's null SD; BH within stratum at q<=0.10;
   seed 9102.
-- [ ] **M13. Add the between-subject complement.** New method, no text yet.
+- [x] **M13. DONE.** Added the between-subject complement. New method, no text yet.
   Within-subject permutation preserves each unit's covariate values, so
   between-unit association is untestable by it — and HBI carries 41% of its
   variance between units, time_from_max 47%. `between_subject_significance`
@@ -186,7 +186,7 @@ double-counted the lengthscale prior. Both are gone.
   Pearson residual, Spearman, permute unit means (20,000 draws), BH.
   **Result: 0/564 for both covariates** — a null result that needs reporting,
   since it bounds what the cross-sectional HBI claims can mean.
-- [ ] **M14. State the multiplicity structure.** 564 metabolites x 2 kernels x
+- [x] **M14. DONE.** Multiplicity structure stated. 564 metabolites x 2 kernels x
   2 covariates; BH applied within each of the four strata. The submitted text
   has no multiplicity control at all.
 
@@ -243,6 +243,28 @@ The notebook (cell 21) produces four panels. Their status against the above:
 ---
 
 ## Applied to `sn-article-revised.tex` (2026-09-22)
+
+M12-M14 replaced the single "Significance criterion and reproducibility"
+subsection with four: **Model specification**, **Significance criterion**
+(six paragraphs: component evidence, null distribution, draw allocation,
+p-values, multiplicity, calibration, and how to read log BF against q),
+**Between-participant associations**, and **Reproducibility**.
+
+The old rule is named and retired explicitly rather than quietly dropped --
+"That rule is not a test: it thresholds a shrinkage estimate, carries no null
+distribution, and controls no error rate" -- because R1.M5/R2.5 asked about
+it directly and a reviewer will look for the acknowledgement.
+
+The between-participant section reports a NULL result (0/564 for both
+covariates) and draws the consequence: the cross-sectional associations are
+within-participant associations, and the paper makes no claim that metabolite
+levels separate participants by average disease activity. That is a real
+narrowing of scope and should be read as such.
+
+Every number verified against the data at edit time: 168 significant HBI
+components, 29 of them with negative log BF, 2256 tests, B1=100, 41%/47%
+between-participant variance for HBI / days-from-max.
+
 
 M3 replaces Figure 6: `lithocholate_hbi.png` -> `sorbitol_hbi_conditional.png`
 (`\label{fig:sorbitol_ids}`). The old caption asserted "a common squared
