@@ -15,7 +15,13 @@ double-counted the lengthscale prior. Both are gone.
 
 ## A. Claims that are now UNSUPPORTED — highest priority
 
-- [ ] **M1. The SCFA claim fails.** Abstract: "we recover well-established
+- [x] **M1. The SCFA claim fails — DONE (sn-article-revised.tex).** Five sites, not the three originally listed: abstract, Results L155 (class list), Discussion L221 (class list), L222 (literature support), L225 (mechanism clause). The Results copy of the six-class list was missed on the first pass and found by re-grepping.
+
+  Rather than delete the SCFA finding, the Discussion now states it as a null result and explains it: the established SCFA depletion is a case/control contrast against healthy individuals, while this analysis asks whether a metabolite tracks severity *within* a Crohn's cohort. Numbers quoted: butyrate/propionate/valerate-isovalerate q=1.00, caproate q=0.27.
+
+  Three citations are now unused (`kaczmarczyk_altered_2022`, `parada_venegas_short_2019`, `xu_characterization_2022`) — harmless to LaTeX, but drop them from the .bib if the journal objects.
+
+  ORIGINAL FINDING: **The SCFA claim fails.** Abstract: "we recover well-established
   biomarkers, such as short-chain fatty acids, secondary bile acids, and
   specific lipid species". Discussion repeats it with citations. Under the
   permutation criterion **no canonical SCFA is significant for HBI**:
