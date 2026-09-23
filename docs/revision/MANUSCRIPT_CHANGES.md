@@ -39,7 +39,7 @@ double-counted the lengthscale prior. Both are gone.
   replaced, and the Discussion sentence citing oxalate/CD urolithiasis
   (6 references) removed or requalified.
 
-- [ ] **M3. The lithocholate figure's stated mechanism is not supported.**
+- [x] **M3. DONE.** The lithocholate figure's stated mechanism is not supported.
   Caption of `lithocholate_hbi.png` (Fig. 6) claims "a common squared
   exponential HBI kernel where higher HBI is associated with lower
   lithocholate". Lithocholate's `SE:hbi` is now q=1.00. One lithocholate
@@ -117,7 +117,7 @@ double-counted the lengthscale prior. Both are gone.
   glycochenodeoxycholate (10.50), 1-methylguanosine (10.44), choline (10.32),
   C18:1 LPC plasmalogen (10.17), C16:0 SM (9.74), urate (9.57), C18:1 LPC
   (9.45), C34:1 PC plasmalogen (9.40), glutamine (9.22).
-- [~] **M10. Replace Fig. 6 (lithocholate) and Fig. 7 (oxalate).** Draft
+- [x] **M10. DONE — both figures are now in sn-article-revised.tex.** Draft
   candidates rendered to `output/draft_figs/` (disposable). Component
   liveness verified against actual kernel variances, not `deviance_explained`
   — DE is unreliable (butyrate shows 13 components >5% DE with 0 alive).
@@ -243,6 +243,18 @@ The notebook (cell 21) produces four panels. Their status against the above:
 ---
 
 ## Applied to `sn-article-revised.tex` (2026-09-22)
+
+M3 replaces Figure 6: `lithocholate_hbi.png` -> `sorbitol_hbi_conditional.png`
+(`\label{fig:sorbitol_ids}`). The old caption asserted "a common squared
+exponential HBI kernel where higher values of HBI are associated with lower
+lithocholate" -- lithocholate's SE[hbi] is now q=1.00, and the one lithocholate
+feature that is significant sits on lin[hbi] at log_bf -1.01, too weak to carry
+the sentence. Sorbitol states the same *kind* of claim (individual offset plus a
+common covariate kernel) on evidence that holds: log_bf 27.8, q=0.001, the
+largest log Bayes factor of the 167 HBI hits, and its live components are
+exactly cat[participant_id] 0.377 + lin[hbi] 0.107. Note the kernel is LINEAR,
+so the caption no longer claims a nonlinear HBI effect.
+
 
 M1, M2, M4, M5, M6 are in the working copy; `sn-article.tex` is untouched.
 Compiles clean (`pdflatex`, exit 0, no errors).
