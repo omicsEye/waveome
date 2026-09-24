@@ -304,3 +304,34 @@ metabolites that are no longer significant.
   lipids (lysophospholipids and sphingomyelins prominent among them)")
   pending the curated re-derivation in M8. Naming a definitive set needs
   chemical annotation, not regex on metabolite names.
+
+### M13 language softened (2026-09-23)
+
+The between-participant null is power-limited, not strong: 49 participant-level
+points, and the largest correlation seen (Spearman |rho| = 0.45, nominal
+p = 0.002) does not survive correction across 564 metabolites. The text now
+reads it as "an absence of detectable between-participant signal at this sample
+size rather than as evidence that none exists", which is both softer and more
+accurate than the original wording.
+
+### M8 blocker found: the reported count is FEATURES, not compounds
+
+| | features | distinct names | distinct HMDB ids |
+|---|---|---|---|
+| HBI hits | **167** | **154** | 152 |
+| days-from-max hits | 6 | 6 | **4** |
+
+13 metabolite names appear twice among the HBI hits (alanine, arginine,
+proline, leucine, phenylalanine, C16:0 SM, C18:0 LPC, C18:1 LPC,
+glycocholate, ... ) -- the same compound measured as separate features, in
+most cases on different chromatography methods. Two of the six temporal hits
+have no HMDB id at all ('redundant ion').
+
+**This affects M5, which is already written as "One hundred sixty-seven
+metabolites".** That is defensible only if "metabolite" means "annotated
+feature". Needs an author decision: report 167 features, 154 distinct
+compounds, or both.
+
+Annotation quality for the class re-derivation: 164 of 167 carry a real HMDB
+id, but 39 of those are starred, i.e. representative ids standing for a class
+of isomers rather than a specific compound.
