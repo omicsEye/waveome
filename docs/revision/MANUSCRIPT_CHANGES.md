@@ -75,7 +75,16 @@ double-counted the lengthscale prior. Both are gone.
   `lin:hbi` 165, `SE:hbi` 3, of 564 tested each.
 - [x] **M6. DONE.** "Nine metabolites exhibited significant temporal associations"
   -> 6.** See M4.
-- [ ] **M7. Every log Bayes factor in the text, Table 2, and the heatmap
+- [x] **M7. DONE by verification — no stale values remain in the text.** Every
+  numeric claim in the iHMP Results and Discussion was re-checked against
+  `ihmp_permutation_significance.csv` on 2026-09-24 and matches: sorbitol
+  27.827/q=0.0010, C24:1 SM 7.620/q=0.0003, betaine 11.491/q=0.0003, nervonic
+  acid -1.066/q=0.0159, butyrate q=1.0000, caproate best q=0.2714, and all six
+  Table 2 rows. The M1-M6 rewrites had already replaced every value carried
+  over from the submitted version; nothing was left behind. The heatmap figure
+  itself is still stale (M9).
+
+  ORIGINAL: **Every log Bayes factor in the text, Table 2, and the heatmap
   changes** — the `calc_bic` correction removed a double-counted prior term.
   Do not carry any submitted number forward.
 - [x] **M8. CLOSED by author decision — keep it general.**
