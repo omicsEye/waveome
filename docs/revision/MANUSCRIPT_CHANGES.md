@@ -78,7 +78,11 @@ double-counted the lengthscale prior. Both are gone.
 - [ ] **M7. Every log Bayes factor in the text, Table 2, and the heatmap
   changes** — the `calc_bic` correction removed a double-counted prior term.
   Do not carry any submitted number forward.
-- [ ] **M8. "These metabolites clustered into six functional classes"** —
+- [x] **M8. CLOSED by author decision — keep it general.**
+  The class list is descriptive orientation for the reader, not a result the
+  paper argues, so it stays qualitative rather than being re-derived as a
+  curated six-class breakdown. Original finding: "These metabolites clustered
+  into six functional classes" —
   re-derive from the new 167. The class list is currently asserted from the
   old 72 and at least one class (SCFAs) no longer has a member (M1).
 
@@ -327,10 +331,12 @@ glycocholate, ... ) -- the same compound measured as separate features, in
 most cases on different chromatography methods. Two of the six temporal hits
 have no HMDB id at all ('redundant ion').
 
-**This affects M5, which is already written as "One hundred sixty-seven
-metabolites".** That is defensible only if "metabolite" means "annotated
-feature". Needs an author decision: report 167 features, 154 distinct
-compounds, or both.
+**RESOLVED (author decision): report both.** The Results now read "167
+metabolite features --- corresponding to 154 distinct annotated compounds,
+since some compounds are measured as more than one feature". The temporal
+sentence says "six metabolite features ... resolve to four uniquely
+identified compounds", and the Discussion caveat compares "six features
+against 167, only four of them uniquely identified".
 
 Annotation quality for the class re-derivation: 164 of 167 carry a real HMDB
 id, but 39 of those are starred, i.e. representative ids standing for a class
