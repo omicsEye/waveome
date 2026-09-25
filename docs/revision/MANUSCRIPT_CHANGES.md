@@ -208,18 +208,38 @@ double-counted the lengthscale prior. Both are gone.
 
 The notebook (cell 21) produces four panels. Their status against the above:
 
-- [ ] **M15.** `proline` (HILp_QI578) — linear HBI, richest decomposition of
+- [x] **M15. SUPERSEDED — proline is not in the manuscript.** It was the
+  candidate when selection was by "richest decomposition"; the HBI figure is
+  now sorbitol, chosen because its model is an individual offset plus a common
+  linear HBI kernel (the structure the figure needs) and it carries the
+  largest log BF of all 167 hits. Verified: 0 mentions of proline in
+  sn-article-revised.tex. ORIGINAL: `proline` (HILp_QI578) — linear HBI, richest decomposition of
   the 165 hits (6 components >5% DE). Uncontested.
-- [ ] **M16.** `serine` (HILn_QI110) — linear time_from_max, richest of the 4
+- [x] **M16. SUPERSEDED as a FIGURE; serine remains a RESULT.** The temporal
+  figure is nervonic acid, which carries the nonlinear claim and the
+  sphingolipid coherence. Serine is still reported as one of the six temporal
+  hits in Table 2 (Lin, log BF 1.35, q=0.008, declines after max) and named in
+  the Results. ORIGINAL: `serine` (HILn_QI110) — linear time_from_max, richest of the 4
   (4 components vs 1). Uncontested, and it is one of only 6 temporal hits.
 - [x] **M17. DONE — bilirubin is now Supplementary Figure S1.** `bilirubin` (HILp_QI19549) — the nonlinearity claim:
   `lin[hbi]` q=1.00 while `SE[hbi]` q=0.0092, i.e. a linear model misses it
   entirely. **This is the natural replacement for the lithocholate figure
   (M3)**, which made an SE claim the data no longer supports.
-- [ ] **M18.** `metronidazole` (HILp_QI2850) — supplemental positive control,
+- [x] **M18. CHANGED — metronidazole is a TEXT result, not a figure.** The
+  supplemental figure slot went to bilirubin (M17), which carries the
+  nonlinearity claim with a positive log BF. Metronidazole's positive-control
+  role is made explicitly in the Results instead (M21), and it appears as a
+  bar in Figure 5 labelled (SE). This is a deliberate change from the original
+  plan, not an oversight. ORIGINAL: `metronidazole` (HILp_QI2850) — supplemental positive control,
   SE:hbi log_bf=4.90 q=0.0092. Confounding by indication (antibiotic for
   active Crohn's), so it validates the method rather than the biology.
-- [ ] **M19. Consider a temporal showcase to replace oxalate (M2).** Serine
+- [x] **M19. DONE — nervonic acid is the temporal showcase.** Chosen over
+  serine because it carries a nonlinear (SE) temporal claim and because
+  C24:1 SM is independently significant for HBI, so the figure illustrates a
+  sphingolipid class the cross-sectional results support rather than a
+  singleton. Its negative log BF (-1.07) is handled by the Methods paragraph
+  on reading log BF against q, and stated in the Table 2 caption.
+  ORIGINAL: **Consider a temporal showcase to replace oxalate (M2).** Serine
   (M16) already covers linear time_from_max. If a temporal *nonlinear* panel
   is wanted, the only candidates are nervonic acid (log_bf=-1.07) and
   NH4_C52:6 TAG (-2.80), both with negative log_bf — see M20.
@@ -460,3 +480,22 @@ all significant features and therefore reaches q=0.0684. It now names the
 three individually-shown metabolites with their q-values (sorbitol 0.001,
 nervonic acid 0.016, bilirubin 0.009) and says explicitly that Figure 5 spans
 the full range of admitted evidence, which is why every bar carries its own q.
+
+### M15-M19 swept (2026-09-25)
+
+All four were written against the candidate set from before the figures were
+chosen (proline / serine / bilirubin / metronidazole). The final set is
+different, so these close as superseded rather than as work performed.
+
+Verified consistent across manuscript and notebook:
+
+| slot | figure | produced by |
+|---|---|---|
+| Fig. 5 | `ihmp_hbi_effect_sizes.png` | notebook cell 15 |
+| Fig. 6 | `sorbitol_hbi_conditional.png` | cell 21, `CONDITIONAL` |
+| Fig. 7 | `nervonic_acid_parts_output.png` | cell 21, `SHOWCASE` main |
+| Fig. S1 | `bilirubin_hbi_parts.png` | cell 21, `SHOWCASE` supp |
+
+Mentions in `sn-article-revised.tex`: proline 0, serine 3, metronidazole 2,
+sorbitol 6, nervonic acid 6, bilirubin 5. Proline is correctly absent; serine
+and metronidazole survive as text results rather than figures.
