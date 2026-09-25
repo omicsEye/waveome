@@ -167,3 +167,39 @@ other number). Then 10 and 4 — both are claims the data does not support, both
 cheap. Then 5 and 6 together as one pass, which is "where this revision stops
 reading as a retreat". 2 and 3 need the HPC decision; the honest interim is a
 narrowed sentence, not silence.
+
+---
+
+## Triage log
+
+### FIXED 2026-09-25 — findings 1, 10, 4
+
+**1 (BLOCKER).** Discussion line 227 now reads "identifying six metabolite
+features --- four uniquely identified compounds --- with significant dynamic
+changes". Swept every spelled-out count in the file afterwards; the remaining
+ones (One hundred sixty-seven, Six metabolite features, Two of the six, six
+features against 167, four of them) are all correct.
+
+**10 (MAJOR).** Table 2 cell changed from "Peaks $\sim$45 d before max" to
+"Elevated around max, declining after". The Fig. 7 caption was changed to
+match and now states explicitly that the fitted maximum falls before the
+peak-severity point but that its location is poorly determined and no claim
+about a lag is made. This honours the side-verification in M10 (95% interval
+-148 to +25 days) that the earlier text ignored.
+
+**4 (MAJOR).** The SCFA sentence no longer quotes q-values for untested
+components. It now distinguishes the two cases: the HBI kernel components of
+butyrate, propionate and valerate/isovalerate collapsed to the variance floor
+and were never tested, while the two caproate features were tested and were
+not significant (q = 0.27 and q = 0.30).
+
+Verified before writing: all three SCFAs have HBI kernel variances at exactly
+1.0e-10, the optimizer floor. Tightened the wording from "the ... components"
+to "the HBI kernel components" because propionate and valerate retain other
+live components (4 and 1 respectively) -- only butyrate's model collapsed
+entirely.
+
+Also corrected: caproate's second feature (q = 0.2964) is now reported
+alongside the first (q = 0.2714); the earlier text quoted only one of two.
+
+pdflatex exit 0, no undefined references.
