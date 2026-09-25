@@ -211,7 +211,7 @@ The notebook (cell 21) produces four panels. Their status against the above:
   the 165 hits (6 components >5% DE). Uncontested.
 - [ ] **M16.** `serine` (HILn_QI110) — linear time_from_max, richest of the 4
   (4 components vs 1). Uncontested, and it is one of only 6 temporal hits.
-- [ ] **M17.** `bilirubin` (HILp_QI19549) — the nonlinearity claim:
+- [x] **M17. DONE — bilirubin is now Supplementary Figure S1.** `bilirubin` (HILp_QI19549) — the nonlinearity claim:
   `lin[hbi]` q=1.00 while `SE[hbi]` q=0.0092, i.e. a linear model misses it
   entirely. **This is the natural replacement for the lithocholate figure
   (M3)**, which made an SE claim the data no longer supports.
@@ -233,7 +233,7 @@ The notebook (cell 21) produces four panels. Their status against the above:
   q and log_bf side by side; restrict figures to log_bf>0; or state the
   distinction explicitly. **Methodology is frozen — this is a reporting
   decision, not a criterion change.**
-- [ ] **M21. Adrenate (C18n_QI43) is a known artifact.** It reaches SE:hbi
+- [x] **M21. DONE.** Adrenate (C18n_QI43) is a known artifact. It reaches SE:hbi
   significance on a floor-variance (dead) component. It is separately
   significant via lin:hbi, so the metabolite-level count of 167 is unaffected,
   but **do not report "3 nonlinear HBI associations" — it is 2**
@@ -350,3 +350,25 @@ against 167, only four of them uniquely identified".
 Annotation quality for the class re-derivation: 164 of 167 carry a real HMDB
 id, but 39 of those are starred, i.e. representative ids standing for a class
 of isomers rather than a specific compound.
+
+### M21 resolved (2026-09-24): nonlinearity reframed and named
+
+Author decision on all three points.
+
+1. **Biology vs pharmacology separated.** The two nonlinear HBI associations
+   are of different kinds and the Results now says so. Bilirubin is the
+   biological result (lin q=1.00, SE q=0.009 -- a linear model misses it).
+   Metronidazole is an antibiotic for active Crohn's, so its rise at high HBI
+   reads as confounding by indication; it is reported as evidence the method
+   recovers real structure it was not told to look for, since a prescribing
+   threshold is exactly the abrupt non-monotone feature a linear term cannot
+   represent. Not as a biomarker.
+2. **Both named** in the Results, along with adrenate as the
+   variance-collapsed third that is not counted.
+3. **Bilirubin added as Supplementary Figure S1**
+   (`figures/bilirubin_hbi_parts.png`). The supplement previously had no
+   figures, so `\setcounter{figure}{0}` plus
+   `\renewcommand{\thefigure}{S\arabic{figure}}` was added at the start of
+   the Supplementary section -- otherwise it would have printed as "Figure 12"
+   while the text called it "Supplementary Figure". Verified in the compiled
+   PDF: the text reads "Supplementary Figure S1" and the caption "Fig. S1".
