@@ -247,7 +247,7 @@ The notebook (cell 21) produces four panels. Their status against the above:
   attainable q (q=0.0003 at B=100), so they cannot be ranked against one
   another. Report those q values as bounds, and do not describe any of them as
   "the most significant".
-- [ ] **M23. Borderline membership is unstable.** Going B=60 -> B=100 lost 6
+- [x] **M23. DONE — in the manuscript at two places.** Going B=60 -> B=100 lost 6
   hits and gained 4; the count is stable, the membership is not. Manuscript
   claims should concern the population of hits, not named borderline
   metabolites. (FINDINGS 27-28.)
@@ -436,3 +436,27 @@ overstating effects.
 component an endpoint difference can understate an interior peak. Bars are
 linear components unless marked (SE); metronidazole is the one SE bar in the
 current selection.
+
+### M23 in the manuscript (2026-09-25)
+
+Two placements, because the fact and its consequence belong in different
+sections.
+
+**Methods, after Calibration** -- the technical statement: raising the budget
+from 60 to 100 draws lost six features and gained four (~6% churn) while the
+count barely moved (166 -> 165), and every feature lost had a live component
+(variance 0.003-0.187), so these were marginal calls crossing the threshold
+rather than artifacts being cleaned up. Concludes that the count is more
+stable than boundary membership.
+
+**Discussion limitations** -- the consequence for reading the results: report
+a population of associated metabolites, not a definitive roster, and do not
+single out individual borderline features.
+
+One correction made during the edit. The limitations sentence first read "the
+metabolites we highlight in figures were chosen well clear of that boundary",
+which is false for Figure 5: the bar chart is selected by EFFECT SIZE among
+all significant features and therefore reaches q=0.0684. It now names the
+three individually-shown metabolites with their q-values (sorbitol 0.001,
+nervonic acid 0.016, bilirubin 0.009) and says explicitly that Figure 5 spans
+the full range of admitted evidence, which is why every bar carries its own q.
