@@ -122,7 +122,8 @@ double-counted the lengthscale prior. Both are gone.
 
 ## C. Figures to regenerate
 
-- [ ] **M9. `ihmp_hbi_heatmap.png` (Fig. 5), "top twenty by log Bayes
+- [x] **M9. DONE — figure TYPE changed, see the rationale block below.**
+  ORIGINAL: `ihmp_hbi_heatmap.png` (Fig. 5), "top twenty by log Bayes
   factor".** Entirely new membership. New top 20: sorbitol (27.83),
   lactate (21.07), docosahexaenoate (18.90), succinate (13.61), malate
   (13.22), eicosadienoate (12.75), C32:0 PC (12.63), C16 carnitine (11.80),
@@ -225,7 +226,10 @@ The notebook (cell 21) produces four panels. Their status against the above:
 
 ## F. Presentation problems to decide on
 
-- [ ] **M20. 29 of 168 significant HBI components have NEGATIVE log_bf**
+- [x] **M20. DONE — dissolved by the M9 figure change, plus a Methods
+  paragraph.** The figure no longer colours by a quantity that can contradict
+  the significance claim, and the Methods explain the log BF / q distinction
+  directly. ORIGINAL: **29 of 168 significant HBI components have NEGATIVE log_bf**
   (min -5.47, median +2.95). A component can clear BH while dropping it
   *improves* BIC, because significance is judged against the permutation null,
   not against zero. The heatmap colors by log_bf, so these render as evidence
@@ -238,7 +242,8 @@ The notebook (cell 21) produces four panels. Their status against the above:
   significant via lin:hbi, so the metabolite-level count of 167 is unaffected,
   but **do not report "3 nonlinear HBI associations" — it is 2**
   (metronidazole, bilirubin). See TODO A1.
-- [ ] **M22. Ties at the resolution floor.** Many HBI hits share the minimum
+- [x] **M22. DONE for the figure** (bars at the floor print as `q <= 0.0003`,
+  a bound). Still to check elsewhere in the text. ORIGINAL: **Ties at the resolution floor.** Many HBI hits share the minimum
   attainable q (q=0.0003 at B=100), so they cannot be ranked against one
   another. Report those q values as bounds, and do not describe any of them as
   "the most significant".
@@ -372,3 +377,62 @@ Author decision on all three points.
    the Supplementary section -- otherwise it would have printed as "Figure 12"
    while the text called it "Supplementary Figure". Verified in the compiled
    PDF: the text reads "Supplementary Figure S1" and the caption "Fig. S1".
+
+---
+
+## Why Figure 5 changed from a heatmap to a bar chart (for the response letter)
+
+The submitted Figure 5 was a kernel x metabolite heatmap of the top twenty
+metabolites, coloured by log Bayes factor. It is replaced by a diverging bar
+chart of effect sizes. Three independent reasons, any one of which would have
+forced a change:
+
+1. **The kernel axis no longer separates anything.** Under the permutation
+   criterion 165 of 168 significant HBI components are linear and 3 are
+   squared exponential, and exactly one metabolite (adrenate, the
+   variance-collapsed artifact) is significant on both. One row of the
+   heatmap was empty. In the submitted version, with 72 metabolites selected
+   by a variance threshold, both kernels contributed and the axis was
+   informative.
+
+2. **No colour scale worked.** Colour had to encode something.
+   - *log Bayes factor*, as submitted: 29 of the 168 significant components
+     have a negative log BF, and the notebook drew them with `vmin=0`, so
+     they were clamped to the bottom of the scale and rendered as though
+     they carried no evidence at all. Removing the clamp is worse, not
+     better: the figure would then colour significant findings as evidence
+     against themselves.
+   - *q-value*: no dynamic range. 36% of hits tie at q=0.0003 and there are
+     35 distinct values in total across 0.0003-0.068. The figure would be a
+     near-uniform block, and at the floor q is a bound rather than an
+     estimate, so the colour would not mean what it appeared to mean.
+
+3. **Effect size answers the question the figure is actually asked.** A
+   reader looking at "metabolites associated with disease severity" wants to
+   know which ones change and by how much. Significance now decides
+   membership and effect size decides bar length, which separates the two
+   questions instead of conflating them in one channel.
+
+**Why log2 fold-change specifically.** The likelihood is negative binomial
+with a log link and the kernel components are additive on that latent scale,
+so a component's contribution is multiplicative on the response: the
+fold-change is exactly the component's effect and does not depend on where
+the other covariates are held. log2 rather than a raw ratio because it is
+symmetric -- a doubling is +1 and a halving is -1 -- which a raw ratio is not
+(2x against 0.5x), and an asymmetric quantity would distort a diverging
+scale.
+
+**Why the 5th-95th percentile range and not the full range.** The quantity is
+the fitted contribution at the top of the range minus the contribution at the
+bottom, in log2 units. Over the FULL observed range that is HBI 0 to 18 --
+but only one observation sits at 18, against a median of 2. Full-range
+fold-changes therefore extrapolate into territory a single data point
+supports and inflate magnitudes about 2.5x (median |log2FC| 2.85 against
+1.16). The ordering is essentially unaffected (Spearman 0.967, 19 of the top
+20 in common), so restricting to HBI 0-7.1 costs nothing and stops the figure
+overstating effects.
+
+**Residual caveat, stated in the caption.** For a squared exponential
+component an endpoint difference can understate an interior peak. Bars are
+linear components unless marked (SE); metronidazole is the one SE bar in the
+current selection.
