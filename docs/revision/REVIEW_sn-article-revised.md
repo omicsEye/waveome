@@ -1,0 +1,169 @@
+# Independent review of `sn-article-revised.tex` (2026-09-25)
+
+Produced by an independent review agent with access to both `.tex` files,
+`MANUSCRIPT_CHANGES.md`, and the three result CSVs. Two axes were requested:
+(1) narrative coherence and scientific rigour, (2) style consistency with the
+submitted `sn-article.tex`.
+
+## Verification of the agent's key factual claims
+
+Three load-bearing claims were re-checked directly before triage. **All three
+hold.**
+
+| claim | verified |
+|---|---|
+| "nine metabolites" survives in the Discussion | YES — line 227 |
+| SCFAs were screened out at B0=10, never tested at B1=100 | YES — butyrate/propionate/valerate all `n_draws=10`, `null_sd` ~1e-7, `log_bf` at the exact parameter penalty. Caproate IS tested at 100, as **two** features (q=0.2714 and q=0.2964); the text quotes only one |
+| 14 tests retain a 60-draw budget | YES — `n_draws` distribution {10: 1422, 60: 14, 100: 820}; **0** of the 14 are significant |
+
+The agent's summary that "the numbers are, with two exceptions, correct" is
+consistent with our own M7 sweep; the two exceptions it found (the caproate
+second feature, and the nervonic acid lag) are both real and both ours.
+
+---
+
+## BLOCKER
+
+**1. Results says six temporal metabolites; Discussion says nine.**
+Discussion line 227: *"identifying nine metabolites with significant dynamic
+changes"*, immediately followed by a list of six. Results says six, Table 2
+has six rows, and the same paragraph later says "six features against 167".
+`MANUSCRIPT_CHANGES.md` marks M6 DONE — it is not. **This is our error: the
+Results sentence was fixed and the Discussion sentence was missed.**
+Fix: "identifying six metabolite features — four uniquely identified
+compounds — with significant dynamic changes", then re-grep every spelled-out
+count in the file.
+
+## MAJOR
+
+**2. Simulation results are pre-correction while Methods says "replaced
+throughout".** Figs. 3-4 were produced under the old BIC and under the
+variance>1e-4 rule that Methods line 451 now calls "not a test". Either
+re-run, or narrow the sentence to "replaced it for the iHMP analysis" and
+state which rule defines a waveome hit in the benchmark. (This is M11.)
+
+**3. The paper never states how a waveome feature counts as "selected" in the
+simulation benchmark.** All six comparators have explicit rules in the
+supplement; `tab:comparators` has no waveome row. Pre-existing, but acute now
+that the paper's central claim is that thresholding a shrinkage estimate is
+not inference.
+
+**4. The SCFA null quotes q-values from components screened out at 10 draws.**
+Butyrate, propionate and valerate/isovalerate never reached B1=100; q=1.00 is
+the screening branch's assignment on a degenerate null. The Discussion builds
+a biological argument on it, which contradicts the paper's own line 465,
+"untested is not the same as tested and null". Also: caproate has two
+features (q=0.27 and q=0.30); only one is quoted.
+Suggested replacement: *"the SCFA components collapsed to the variance floor
+and carried no fitted effect (butyrate, propionate, valerate/isovalerate);
+the two caproate features were tested and non-significant (q = 0.27, 0.30)."*
+
+**5. The between-participant null appears only in Methods.** The most
+consequential sentence in the revision is invisible to anyone reading
+Abstract -> Results -> Discussion, while the Abstract still promises
+"candidates for cross-sectional disease severity" unqualified. Reported in
+the open it reads as rigour; in Methods only, as burial.
+
+**6. Calibration and the permutation framework are absent from Abstract,
+Introduction and Results — significant UNDER-claiming.** "permutation" and
+"Benjamini" appear nowhere before line 155 and never in the Abstract. The
+"three primary advances" list omits the one contribution most likely to win
+acceptance. The revision reads as damage control rather than an improved
+paper.
+
+**7. Three different counts circulate (167 features / 168 components / 165
+stratum) without reconciliation.** All three are individually correct; 168 is
+introduced in Methods without derivation. Fix the vocabulary once: *features*
+(167) vs *components* (168), and say "the linear-kernel HBI stratum" where
+165 is meant.
+
+**8. The functional-class claim is orphaned.** The heatmap that carried it is
+gone; no figure or table now lists the 167 features or supports "clustered",
+a word implying an analysis not performed. Fix: "span" instead of "clustered",
+plus a supplementary table of all 167 features. The table also defuses #7.
+
+**9. Methods narrates the revision history.** The self-denunciation of the old
+rule is response-letter prose in the archival record. State the method
+positively; move the critique to the response letter.
+
+**10. Table 2 states a temporal lag the analysis does not support, and
+contradicts the figure caption.** Table: "Peaks ~45 d before max"; caption:
+"rises into the window around peak severity and decays afterwards".
+`MANUSCRIPT_CHANGES.md` M10 records our own side-verification: the peak's 95%
+interval is -148 to +25 days, **"Do not state a lag."** We stated it anyway,
+to two significant figures, on the only nonlinear temporal finding.
+
+**11. Sorbitol is the flagship figure and is also named as a possible
+confounder** in a retained Discussion sentence, without acknowledging the
+tension. The same paragraph does this properly for metronidazole.
+
+**12. New prose is in a visibly different voice.** Rhetorical antithesis,
+colon-driven appositives, self-commentary on the exposition. Objective
+markers: `---` appears 12 times in the revision and 0 in the original;
+`\emph{}` 5 times versus 0.
+
+## MINOR
+
+13. British spellings introduced into an American paper: favours, centred
+    (x3), labelled (x2), grey (x2) — with "grey" adjacent to retained "gray"
+    describing the same visual element.
+14. Captions carry Methods content at 2-3x the length of retained captions.
+    The q-annotation convention and (SE) marking are earned; the percentile
+    rationale and Spearman 0.97 belong in Methods.
+15. Math-mode numerals ($564$, $154$, $41\%$) against the original's plain
+    integers — both forms now appear in the same paper.
+16. `q=1.00` / `q=0.27` set outside math mode, unlike every other q.
+17. "credible intervals" (new) vs "confidence intervals" (retained) for the
+    same GP posterior band. The new text is *more* correct; propagate rather
+    than revert.
+18. Straight apostrophes in new text vs curly in retained (Crohn's x5 vs
+    Crohn's x6).
+19. `\paragraph{}` introduced as a structural level the paper never otherwise
+    uses (7 instances; 0 in the original). Confirm it compiles as intended
+    under `sn-jnl.cls`.
+20. Mixed word/numeral in one clause ("One hundred sixty-seven ... 165 ... and
+    two"); inconsistent hyphenation of squared(-)exponential.
+21. Table 2 caption says B=100; 14 of 2,256 tests retain a 60-draw budget from
+    an earlier run. **None is significant**, so nothing substantive is wrong,
+    but the same CSV is the reproducibility artifact.
+
+## NITPICK
+
+22. nominal p = 0.002 quoted where the data gives 0.00160.
+23. Eleven now-uncited bibliography entries.
+24. Inconsistent HMDB zero-padding; "redundant ion" occupies a column headed
+    "HMDB ID".
+25. Metronidazole appears as a bar in the effect-size figure, unremarked,
+    after the Results disclaim it as a biomarker.
+
+## WHAT WORKS WELL
+
+- **Numerical integrity is high.** ~25 quantities checked against three CSVs
+  and the raw metabolomics table; no substantive error. Rounding conventions
+  consistent.
+- **The Methods significance section is genuinely strong** — null
+  construction, two-stage draw allocation with B1 derived from the BH
+  requirement, pooled-quantile p-values, within-stratum correction with a
+  stated reason for not pooling, floored p reported as a bound, calibration
+  with bootstrap CIs.
+- **The negative results are handled with unusual integrity** — the
+  between-participant 0/564, the SCFA null, declining to count adrenate's
+  floor-variance SE, flagging redundant adducts, stating the draw-budget
+  churn. Finding 5 is a complaint about *where* they appear, not *that* they
+  do.
+- **The bilirubin example is the right choice** — null linear term,
+  significant SE term, positive log BF.
+- **Retiring the headline findings was done properly** — oxalate, SCFAs,
+  4-methylcatechol and taurolithocholate removed from every site including
+  mechanism clauses and citation clusters; betaine explicitly relocated.
+- **Figure/text coupling is complete** — every new figure referenced, no
+  dangling references, old figure labels fully gone, all four image files
+  present as PNG and PDF.
+
+## Agent's suggested triage order
+
+1 first (one word, and the kind of error that makes a reviewer distrust every
+other number). Then 10 and 4 — both are claims the data does not support, both
+cheap. Then 5 and 6 together as one pass, which is "where this revision stops
+reading as a retreat". 2 and 3 need the HPC decision; the honest interim is a
+narrowed sentence, not silence.
