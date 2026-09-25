@@ -175,7 +175,7 @@ double-counted the lengthscale prior. Both are gone.
     log_bf +0.25) is a good figure and the only SE claim with positive
     log_bf. Suggest keeping it as a supplemental/third panel so the
     nonlinearity claim is carried by a positive log_bf somewhere.
-- [ ] **M11. Confirm the simulation figures need no change.**
+- [~] **M11. RISK BOUNDED — a re-run IS required. Not run here.**
   `sens_spes_sim_cross.png` and `sim_kl_divergence.png` predate the `calc_bic`
   correction, which touches `calc_metric` and therefore the *search* variant.
   **Unverified — flag for the maintainer**, this is an HPC re-run, not
@@ -499,3 +499,45 @@ Verified consistent across manuscript and notebook:
 Mentions in `sn-article-revised.tex`: proline 0, serine 3, metronidazole 2,
 sorbitol 6, nervonic acid 6, bilirubin 5. Proline is correctly absent; serine
 and metronidazole survive as text results rather than figures.
+
+### M11 risk assessment (2026-09-25) — the simulation figures WILL change
+
+Asked to bound the risk cheaply before committing to a cluster run. The
+answer is that a re-run is needed; no local experiment can substitute.
+
+**Mechanism.** The search variant scores candidate models with
+`calc_metric(metric="BIC")` (`model_search.py:119`, `utilities.py:856`) and
+retains every model within `metric_diff=6` BIC units of the best
+(`full_kernel_search`). The `calc_bic` correction changed `calc_metric` from
+`log_posterior_density` to the ELBO, so the difference between old and new
+scores is exactly the **log prior density**, doubled into BIC units. That
+term is not constant across candidate models, so it does not cancel in a
+comparison.
+
+**Magnitude, two independent estimates.**
+
+| basis | spread in the differing term | vs. tolerance 6 |
+|---|---|---|
+| 60 fitted iHMP models (Horseshoe + lengthscale priors) | **34 BIC units** | 5.7x |
+| a single SE lengthscale moving over 0.3-30 under LogNormal(1.0, 0.5) | **28 BIC units** | 4.7x |
+
+The second estimate matters because search models carry only the lengthscale
+prior, not the Horseshoe, so the first could have been an overestimate
+specific to the penalized fits. It is not: one SE kernel whose lengthscale
+wanders across the plausible range moves the old BIC by up to 28 units and
+the new BIC by zero.
+
+**Conclusion.** A term varying by 28-34 BIC units cannot leave a 6-unit
+retention tolerance undisturbed. `sens_spes_sim_cross.png` (feature selection
+sensitivity/specificity) depends directly on which kernels the search keeps,
+and `sim_kl_divergence.png` depends on the selected model, so both are
+affected through the same path. The `waveome_search` rows of the stored
+`sim_waveome_output/*.pickle` should be treated as stale.
+
+The penalized variant is affected too, but far less: its selection is by
+shrinkage rather than BIC comparison, so `calc_metric` does not gate it.
+
+**Not attempted locally:** re-running even one replicate means rebuilding the
+harness, because `sim_waveome_hpc_run.py` executes its driver at import. The
+mechanism test above is decisive without it. Simulation re-run is a separate
+track from the iHMP analysis.
