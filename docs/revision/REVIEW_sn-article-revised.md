@@ -260,3 +260,51 @@ asked about (R1.M5/R2.5). Two things must both happen before submission:
 If (1) does not happen, the sentence must be narrowed to "We have replaced it
 for the iHMP analysis" and the simulation Methods must state which selection
 rule defines a waveome hit in the benchmark (finding 3, also still open).
+
+### FIXED 2026-10-01 — findings 12-16, 18, 20 (style pass)
+
+Author instruction: no `\emph` and no em-dashes anywhere in the manuscript,
+and the revision must read in the same voice as the submitted version.
+
+| marker | before | after | original |
+|---|---|---|---|
+| `---` (em-dash) | 8 | **0** | 0 |
+| `\emph{}` | 4 | **0** | 0 |
+| straight apostrophes in words | present | **0** | 0 |
+| favours / centred / labelled / grey | present | **0** | 0 |
+
+The 13 em-dash and `\emph` sites were rewritten rather than stripped, using
+the constructions the original actually uses: parentheses for appositives,
+commas for short interpolations, and separate sentences where the clause was
+carrying its own argument. Three sentences were split in the process (the
+log BF / q explanation, the follow-up-studies caveat, and the
+between-participant power statement), which also brings the sentence lengths
+closer to the original's.
+
+Mechanical fixes alongside: American spellings restored; `q=1.00` and
+`q=0.27` set in math mode like every other q; bare integers unwrapped from
+math mode (564, 154, 49, 168, 2,256, 41\%, ...) to match the original's
+"564 labeled metabolites".
+
+**Three unicode em-dashes at L129, L218 and L220 were left in place.** They
+are the original's own usage (`sn-article.tex` contains the same three), so
+removing them would move the revision further from the submitted style, not
+closer. Flagged for an author call rather than changed.
+
+**Remaining en-dashes are correct typography**, not em-dashes:
+`Benjamini--Hochberg` (x4), `kernel--covariate`, and the ranges
+`0.884--0.893` and `1--4`.
+
+### STILL OPEN after the style pass
+
+- **17.** "credible intervals" (new sorbitol caption) vs "confidence
+  intervals" (retained GP captions) for the same posterior band. The new term
+  is the correct one, so fixing this properly means editing retained captions.
+  Author call.
+- **19.** `\paragraph{}` x7 in the Methods; the original uses
+  `\subsubsection*{}` at that depth and never `\paragraph`. Compiles fine,
+  but it is a structural level the paper otherwise does not use.
+- **7, 11.** The 167 / 168 / 165 vocabulary, and the sorbitol
+  flagship-vs-confounder tension.
+- **22-25.** Nitpicks: p = 0.002 vs 0.0016, eleven uncited bib entries,
+  HMDB zero-padding, metronidazole unremarked in Figure 5.
