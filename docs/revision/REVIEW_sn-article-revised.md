@@ -308,3 +308,76 @@ closer. Flagged for an author call rather than changed.
   flagship-vs-confounder tension.
 - **22-25.** Nitpicks: p = 0.002 vs 0.0016, eleven uncited bib entries,
   HMDB zero-padding, metronidazole unremarked in Figure 5.
+
+### CLOSED 2026-10-01 — remaining items worked in order
+
+**R1.M7 response letter.** The operating point is filled in with the measured
+numbers (89.7 min, 9.54 s/metabolite, 20.7 GB, median 280 iterations,
+convergence 0.982), stated alongside the 15-core / 48 GB hardware and with an
+explicit note that peak memory is a whole-process figure for a run
+parallelized across all 15 cores. The `[RESULT PENDING]` tag now covers only
+the scaling curves, which come from the simulation sweep.
+
+**6c/6d/6e (credit).** Abstract gains a second sentence naming the
+permutation test and its calibration, rather than crowding the existing one.
+The Introduction now claims four primary advances, with the inference
+procedure inserted as Second and the application and library renumbered.
+Results open with the calibration figures before the iHMP application.
+
+**7 (vocabulary).** 168 is now derived where it first appears: "the 168
+significant HBI components (the 167 features reported above, with adrenate
+contributing two)". The churn sentence says "the linear-kernel HBI stratum"
+instead of "the HBI hit list", so 166/165 is no longer attached to the same
+phrase as 167.
+
+**11 (sorbitol).** The Results now say why sorbitol is the figure and
+acknowledge the confound in the same breath: "Sorbitol is shown because its
+model has the structure the figure illustrates, an individual offset plus a
+single linear component; as a dietary polyol its association may reflect
+intake rather than pathophysiology, a point we return to in the Discussion."
+
+**17 (intervals).** Propagated rather than reverted. The two retained GP
+captions described Bayesian posterior and prior bands as "confidence
+intervals"; both now read "credible". The bootstrap interval in the
+calibration sentence correctly remains "confidence". This edits retained
+text, which is a deliberate choice: the new term is the correct one.
+
+**19 (`\paragraph`).** KEPT, with rationale. It renders as a proper heading
+under `sn-jnl.cls` (verified in the compiled PDF) and the Methods significance
+section is long enough that removing the seven headings would leave an
+undifferentiated block. The original never uses `\paragraph` only because it
+never had a subsection at this depth.
+
+**22, 24, 25.** p = 0.002 -> 0.0016. "redundant ion" removed from the column
+headed "HMDB ID" and folded into the dagger footnote. The Figure 5 caption now
+says metronidazole appears among the increases and is a positive control, not
+a candidate biomarker.
+
+**23. NOT actioned, author call.** Eleven bibliography entries are now
+uncited: `kaczmarczyk_altered_2022`, `parada_venegas_short_2019`,
+`xu_characterization_2022`, `gkentzis_urolithiasis_2016`,
+`jose_extraintestinal_2008`, `liu_microbial_2021`, `siener_intestinal_2024`,
+`plamada_polyphenolsgut_2021`, `bai_bile_2024`, `li_gut_2022`,
+`thomas_emerging_2022`. Harmless to BibTeX. Removing references from the .bib
+is an editorial decision, and some may be wanted again if the Discussion is
+expanded.
+
+### Final style audit against `sn-article.tex`
+
+| marker | revised | original |
+|---|---|---|
+| `---` | 0 | 0 |
+| `\emph{}` | 0 | 0 |
+| favours / centred / labelled / grey | 0 | 0 |
+| straight apostrophes in words | 0 | 5 |
+
+The revision now has fewer straight apostrophes than the original, because
+the normalisation pass also caught five in retained text.
+
+### Remaining open, all on the simulation track
+
+- **2.** "We have replaced it throughout" is false until the sweep is re-run.
+- **3.** The benchmark supplement documents a selection rule for all six
+  comparators but none for waveome.
+- **M11.** Figures 3-4 regenerate regardless; the search variant's selections
+  will move (28-34 BIC units against a 6-unit retention tolerance).
