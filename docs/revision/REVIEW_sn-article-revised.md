@@ -203,3 +203,60 @@ Also corrected: caproate's second feature (q = 0.2964) is now reported
 alongside the first (q = 0.2714); the earlier text quoted only one of two.
 
 pdflatex exit 0, no undefined references.
+
+### FIXED 2026-10-01 — findings 5a, 5b(partial), 8
+
+Minimal truthful set applied. The test used was: does the paper currently
+state something untrue or actively mislead a reader who does not reach the
+Methods? Three things qualified.
+
+**5a.** Results now carries the between-participant null in the reader's
+path: "These associations are established within participants. A
+complementary test for between-participant differences, in which each
+participant contributes a single summary observation, identified no
+metabolite for either covariate (Methods)."
+
+**5b.** Abstract scope named. "novel candidates for cross-sectional and
+temporal disease severity" -> "novel candidates for disease severity and its
+temporal dynamics, assessed within participants". In epidemiology
+"cross-sectional" implies a between-subject comparison, which is exactly what
+the data do not support.
+
+**8.** "These metabolites clustered into several functional classes" ->
+"span". No clustering analysis was performed; "clustered" asserted one.
+
+**Finding 21 dropped after checking.** All six Table 2 rows, and all 168
+significant HBI components, used B=100. The caption describes its own table
+accurately. The 14 tests at a 60-draw budget exist only in the CSV and none
+is significant, so no claim in the paper rests on them.
+
+**Deliberately NOT applied: credit/framing edits.** The Abstract calibration
+clause, the Introduction fourth advance, and the Results calibration
+paragraph (findings 6c/6d/6e) are improvements to how the revision lands, not
+corrections. Omitting a strength is not untruthful. Left for an author pass.
+
+---
+
+## OPEN — BLOCKS SUBMISSION
+
+**Finding 2: "We have replaced it throughout" (Methods, L451) is false today.**
+
+The simulation benchmark still selects waveome features by the variance
+> 1e-4 rule, in the same paragraph that calls that rule "not a test".
+
+Author decision (2026-10-01): leave the sentence as written, because the
+simulation will be re-run with the permutation method and the sentence
+becomes true at that point. This is recorded rather than fixed.
+
+**The risk this carries.** If the simulation re-run slips or is descoped, a
+false statement ships, in the Methods section the reviewers specifically
+asked about (R1.M5/R2.5). Two things must both happen before submission:
+
+1. the simulation sweep is re-run under the corrected BIC and the permutation
+   significance criterion (see M11 -- the search variant's selections WILL
+   change; 28-34 BIC units of movement against a 6-unit retention tolerance);
+2. Figures 3-4 are regenerated and this sentence re-verified.
+
+If (1) does not happen, the sentence must be narrowed to "We have replaced it
+for the iHMP analysis" and the simulation Methods must state which selection
+rule defines a waveome hit in the benchmark (finding 3, also still open).
