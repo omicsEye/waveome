@@ -1,15 +1,14 @@
 # Libraries
 import copy
+import os
 import pickle
 import re
-import sys
 import time
 import warnings
 
 import gpflow
 import numpy as np
 import pandas as pd
-import ray
 import statsmodels as sm
 import tensorflow as tf
 from joblib import Parallel, delayed
@@ -452,7 +451,6 @@ def calc_kl_all(n, p, x, y, est_m, m_type, log_y=False, y_pred = None, y_std = N
 
 # Wrap everything in a large function
 @ignore_warnings(category=ConvergenceWarning)
-@ray.remote
 def run_simulation(
     input_df=None,
     kern_out=None,
@@ -460,7 +458,8 @@ def run_simulation(
     num_units=10,
     epsilon=0,
     alpha=1,
-    random_seed=0
+    random_seed=0,
+    num_jobs=-1
 ):
     
     np.random.seed(random_seed)
@@ -549,7 +548,7 @@ def run_simulation(
         outcome_likelihood="negativebinomial",
         Y_transform=None
     )
-    gps_sim_pen.penalized_optimization(random_seed=random_seed)
+    gps_sim_pen.penalized_optimization(random_seed=random_seed, num_jobs=num_jobs)
 
     # Which features were chosen?
     gpp_feats = retrieve_features_in_models(gps_sim_pen)
@@ -617,7 +616,7 @@ def run_simulation(
         outcome_likelihood="negativebinomial",
         Y_transform=None
     )
-    gps_sim_search.run_search(random_seed=random_seed)
+    gps_sim_search.run_search(random_seed=random_seed, num_jobs=num_jobs)
 
     # Which features were chosen?
     gps_feats = retrieve_features_in_models(gps_sim_search)
@@ -1392,108 +1391,186 @@ def run_simulation(
 
     return output_df
 
-# Get array task input
-task_id = int(sys.argv[1])
+def make_grid(run_id):
+    """Cross-join of simulation settings; 32 contiguous rows per setting."""
+    rate_list = [2, 4, 8, 16]
+    units_list = [10, 50, 100, 500]
+    epsilon_list = [0, 1, 10]
+    alpha_list = [1, 10, 100]
+    model_list = [
+        "waveome_penalized", "waveome_search",
+        "mixed_lm", "glm",
+        "gam", "lasso",
+        "ard", "nb_ard"
+    ]
+    output_list = ["y1", "y2", "y3", "y4"]
 
-# Set simulation parameter values
-run_id = 5 * (task_id-1) + np.arange(5)
-rate_list = [2, 4, 8, 16]
-units_list = [10, 50, 100, 500]
-epsilon_list = [0, 1, 10]
-alpha_list = [1, 10, 100]
-model_list = [
-    "waveome_penalized", "waveome_search",
-    "mixed_lm", "glm",
-    "gam", "lasso",
-    "ard", "nb_ard"
-]
-output_list = ["y1", "y2", "y3", "y4"]
-
-# Cross-join to get all possible combinations
-sim_output = pd.DataFrame(
-    np.concatenate(
-        [
-            x.flatten()[:, None]
-            for x in np.meshgrid(
-                rate_list,
-                units_list,
-                epsilon_list,
-                alpha_list,
-                run_id,
-                model_list,
-                output_list
-            )
-        ]
-        , axis=1
-    ),
-    columns=[
-        "rate", "units", 
-        "epsilon", "alpha", "run_id", 
-        "model", "output"
-    ],
-)
-sim_output = sim_output.astype({
-    "rate": float,
-    "units": int,
-    "epsilon": float,
-    "alpha": float,
-    "run_id": int,
-    "model": str,
-    "output": str
-})
-
-# Initialize the cluster
-ray.init(num_cpus=8)
-
-sim_output_list = []
-num_iters = int(sim_output.shape[0] / 32)
-np.random.seed(task_id)
-rand_order_iters = np.random.choice(range(num_iters), size=num_iters, replace=False)
-start_time = time.time()
-
-for i in rand_order_iters:
-    start_idx = 32*i
-    end_idx = 32*(i+1)
-    # print(f"Starting simulation {sim_output.run_id.values[start_idx]}")
-    sim_output_list.append(
-        run_simulation.remote(
-            input_df=sim_output.iloc[start_idx:end_idx, :],
-            kern_out=kern_out,
-            rate=sim_output.rate.values[start_idx],
-            num_units=sim_output.units.values[start_idx],
-            epsilon=sim_output.epsilon.values[start_idx],
-            alpha=sim_output.alpha.values[start_idx],
-            random_seed=sim_output.run_id.values[start_idx]
-        )
+    # Cross-join to get all possible combinations
+    sim_output = pd.DataFrame(
+        np.concatenate(
+            [
+                x.flatten()[:, None]
+                for x in np.meshgrid(
+                    rate_list,
+                    units_list,
+                    epsilon_list,
+                    alpha_list,
+                    run_id,
+                    model_list,
+                    output_list
+                )
+            ]
+            , axis=1
+        ),
+        columns=[
+            "rate", "units", 
+            "epsilon", "alpha", "run_id", 
+            "model", "output"
+        ],
     )
+    return sim_output.astype({
+        "rate": float,
+        "units": int,
+        "epsilon": float,
+        "alpha": float,
+        "run_id": int,
+        "model": str,
+        "output": str
+    })
 
-# Retrieve results
-sim_output = ray.get(sim_output_list)
-# # Run simulation (randomize iters)
-# np.random.seed(task_id)
-# with tqdm_joblib(tqdm(desc="Simulation", total=num_iters)) as progress_bar:
-#     sim_output = Parallel(n_jobs=32, verbose=1)(
-#         delayed(run_simulation)(
-#             input_df=sim_output.iloc[(32*i):(32*(i+1)), :],
-#             kern_out=kern_out,
-#             rate=sim_output.rate.values[(32*i)],
-#             num_units=sim_output.units.values[(32*i)],
-#             epsilon=sim_output.epsilon.values[(32*i)],
-#             alpha=sim_output.alpha.values[(32*i)],
-#             random_seed=sim_output.run_id.values[(32*i)]
-#         )
-#         for i in np.random.choice(range(num_iters), size=num_iters, replace=False)
-#     )
 
-# Concatenate all of the runs
-sim_results = pd.concat(sim_output, axis=0)
+# Cells expecting at least this many observations (units * rate) are "large":
+# units=100 at rate 16, and every units=500 setting.
+LARGE_CELL_OBS = 1000
 
-end_time = time.time()
-print("----%.2f seconds----"%(end_time - start_time))
 
-# Save output as pickle file
-with open(f"./sim_waveome_output/sim_waveome_results_{task_id}.pickle", "wb") as handle:
-    pickle.dump(sim_results, handle, protocol=pickle.HIGHEST_PROTOCOL)
+def list_cells(num_replicates, size="all"):
+    """Every (run_id, rate, units, epsilon, alpha) cell, largest first.
 
-# Clear Ray
-# ray.shutdown()
+    Cells are ordered by expected observation count (units * rate),
+    descending, so the slowest cells start first and do not become a long
+    tail, and each task's chunk holds cells of similar cost. `size` keeps
+    only the "small" or "large" cells (split at LARGE_CELL_OBS) so the two
+    groups can be submitted with different resources.
+    """
+    settings = list(
+        make_grid([0])
+        .drop_duplicates(["rate", "units", "epsilon", "alpha"])
+        [["rate", "units", "epsilon", "alpha"]]
+        .itertuples(index=False)
+    )
+    cells = [
+        (run_id, *setting)
+        for run_id in range(num_replicates)
+        for setting in settings
+    ]
+    if size == "small":
+        cells = [c for c in cells if c[1] * c[2] < LARGE_CELL_OBS]
+    elif size == "large":
+        cells = [c for c in cells if c[1] * c[2] >= LARGE_CELL_OBS]
+    # Stable sort: ties keep run_id-major order
+    return sorted(cells, key=lambda c: -c[1] * c[2])
+
+
+def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
+    """Run one setting and replicate, writing its own pickle.
+
+    A cell whose pickle already exists is skipped, so a killed or timed-out
+    job resumes where it stopped. The pickle is written to a temporary name
+    and renamed, so an interrupted write never leaves a partial file that
+    would later be skipped.
+    """
+    out_path = os.path.join(
+        out_dir,
+        f"cell_rate{rate:g}_units{units}_eps{epsilon:g}_alpha{alpha:g}_run{run_id}.pickle"
+    )
+    if os.path.exists(out_path):
+        print(f"Skipping {out_path}: already done")
+        return
+
+    sim_output = make_grid([run_id])
+    input_df = sim_output[
+        (sim_output.rate == rate)
+        & (sim_output.units == units)
+        & (sim_output.epsilon == epsilon)
+        & (sim_output.alpha == alpha)
+    ]
+    if input_df.shape[0] != 32:
+        raise ValueError(
+            f"(rate, units, epsilon, alpha) = ({rate}, {units}, {epsilon}, "
+            f"{alpha}) is not a grid setting"
+        )
+
+    start_time = time.time()
+    sim_results = run_simulation(
+        input_df=input_df,
+        kern_out=kern_out,
+        rate=rate,
+        num_units=units,
+        epsilon=epsilon,
+        alpha=alpha,
+        random_seed=run_id,
+        num_jobs=num_jobs
+    )
+    print("----%.2f seconds----"%(time.time() - start_time))
+
+    tmp_path = out_path + ".tmp"
+    with open(tmp_path, "wb") as handle:
+        pickle.dump(sim_results, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp_path, out_path)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Single-output waveome simulation sweep. Each process runs "
+        "its cells one after another; parallelism comes from running several "
+        "processes (a SLURM array, or e.g. xargs -P locally). Pass an array "
+        "task id to run that task's chunk of cells, or --single with one "
+        "setting to run a single cell."
+    )
+    ap.add_argument("task_id", type=int, nargs="?",
+                    help="1-based task id; runs cells "
+                    "[(task_id-1)*cells_per_task, task_id*cells_per_task)")
+    ap.add_argument("--cells-per-task", type=int, default=12)
+    ap.add_argument("--num-replicates", type=int, default=75)
+    ap.add_argument("--size", choices=["all", "small", "large"], default="all",
+                    help=f"only cells with units * rate below (small) or at "
+                    f"least (large) {LARGE_CELL_OBS}")
+    ap.add_argument("--count-tasks", action="store_true",
+                    help="print the number of array tasks needed and exit")
+    ap.add_argument("--single", action="store_true")
+    ap.add_argument("--rate", type=float, default=2)
+    ap.add_argument("--units", type=int, default=10)
+    ap.add_argument("--epsilon", type=float, default=0)
+    ap.add_argument("--alpha", type=float, default=1)
+    ap.add_argument("--run-id", type=int, default=0)
+    ap.add_argument("--num-jobs", type=int,
+                    default=int(os.environ.get("SLURM_CPUS_PER_TASK", 4)),
+                    help="CPUs for each GPSearch fit's Ray cluster "
+                    "(default: $SLURM_CPUS_PER_TASK, else 4, one per outcome)")
+    ap.add_argument("--out-dir", default="./sim_waveome_output/cells")
+    args = ap.parse_args()
+
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    if args.count_tasks:
+        n_cells = len(list_cells(args.num_replicates, args.size))
+        print(-(-n_cells // args.cells_per_task))
+    elif args.single:
+        run_cell(
+            args.rate, args.units, args.epsilon, args.alpha, args.run_id,
+            args.out_dir, args.num_jobs
+        )
+    elif args.task_id is not None:
+        cells = list_cells(args.num_replicates, args.size)
+        lo = (args.task_id - 1) * args.cells_per_task
+        hi = min(args.task_id * args.cells_per_task, len(cells))
+        if lo >= len(cells):
+            ap.error(f"task {args.task_id} is past the last of {len(cells)} cells")
+        print(f"Task {args.task_id}: cells {lo}-{hi - 1} of {len(cells)}")
+        for run_id, rate, units, epsilon, alpha in cells[lo:hi]:
+            run_cell(rate, units, epsilon, alpha, run_id, args.out_dir, args.num_jobs)
+    else:
+        ap.error("pass a task_id, or --single")

@@ -1,13 +1,31 @@
 #!/bin/sh
 
+# One-time setup (login node, from examples/simulations). Installs a snapshot
+# of the library, not an editable link, so library edits cannot reach a sweep
+# that is already running; re-run the last line after changing waveome/.
+#   module load gcc/12.2.0 python3/3.10.11
+#   python3 -m venv $HOME/venvs/waveome
+#   . $HOME/venvs/waveome/bin/activate
+#   pip install --upgrade pip && pip install ../../. scikit-learn
+#
+# Submit the large cells (units * rate >= 1000) and the small cells
+# separately, so each group can get its own resources (override any #SBATCH
+# line below on the sbatch command line, e.g. -t or --mem):
+#   . $HOME/venvs/waveome/bin/activate
+#   sbatch --array=1-$(python sim_waveome_hpc_run.py --size large --cells-per-task 4 --count-tasks) \
+#       --export=ALL,SIZE=large,CELLS_PER_TASK=4 sim_waveome_hpc_script.sh
+#   sbatch --array=1-$(python sim_waveome_hpc_run.py --size small --cells-per-task 12 --count-tasks) \
+#       --export=ALL,SIZE=small,CELLS_PER_TASK=12 sim_waveome_hpc_script.sh
+# Finished cells are skipped, so resubmitting the same command resumes.
+
 # Specify output files
 #SBATCH -o ./job_%A/sim_waveome_%a.out
 #SBATCH -e ./job_%A/sim_waveome_%a.err
 
-# Single-node job with 8 tasks
+# One process per array task; each GPSearch fit runs its 4 outcomes in parallel
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 
 # Use large memory queue
 # SBATCH -p highMem
@@ -18,9 +36,7 @@
 # Time limit (14 days)
 #SBATCH -t 14-00:00:00
 
-# Array ID
-# SBATCH --array=1-10
-#SBATCH --array=1-15
+# Array ID: given on the sbatch command line (see above)
 
 # Debug check
 # SBATCH -p large-gpu
@@ -38,12 +54,21 @@ module load python3/3.10.11
 # module --ignore_cache load "gcc/12.2.0"
 # module --ignore_cache load "python3/3.10.11"
 
-# Packages to install
-python3 pip install --upgrade --user pip
-# python3 pip install --no-cache-dir tensorflow tensorflow_probability
-python3 pip install --no-cache-dir --user ../../.
-python3 pip install --user "ray[default]" statsmodels scikit-learn
+# Environment built once by the setup above
+VENV=${VENV:-$HOME/venvs/waveome}
+if [ ! -f "$VENV/bin/activate" ]; then
+    echo "No environment at $VENV; run the one-time setup at the top of this script" >&2
+    exit 1
+fi
+. "$VENV/bin/activate"
 
-# Now run script
-python sim_waveome_hpc_run.py $SLURM_ARRAY_TASK_ID
+if [ -z "$SLURM_ARRAY_TASK_ID" ] || [ -z "$SIZE" ] || [ -z "$CELLS_PER_TASK" ]; then
+    echo "Submit as an array with SIZE and CELLS_PER_TASK exported (see top of script)" >&2
+    exit 1
+fi
 
+# One thread per Ray worker: the CPUs are already split across workers by
+# --num-jobs (defaults to $SLURM_CPUS_PER_TASK)
+export TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=1
+
+python sim_waveome_hpc_run.py $SLURM_ARRAY_TASK_ID --size $SIZE --cells-per-task $CELLS_PER_TASK
