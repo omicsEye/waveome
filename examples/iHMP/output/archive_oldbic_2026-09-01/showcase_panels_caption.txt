@@ -1,8 +1,0 @@
-Additive decomposition of two metabolite models.
-
-Each panel shows the fitted additive kernel components of a single metabolite model; the component for the covariate under test is the one named in the title. Metabolites were selected by a single rule: among those significant for the covariate (q<=0.10, within-subject permutation), the one whose model has the most components explaining >5% of deviance. Selection by q-value alone would not identify a unique metabolite, since 72 of the 140 hbi hits share the minimum attainable q and all three time_from_max hits tie at 0.0101.
-
-proline (HILp_QI578) -- hbi: linear component log_bf=7.9, q<=0.0004 (within-subject permutation, B=60, null SD=0.90).
-serine (HILn_QI110) -- time_from_max: linear component log_bf=0.9, q<=0.0101 (within-subject permutation, B=120, null SD=0.20).
-
-Both selected components are linear. Components without a q-value were not permutation-tested -- only hbi and time_from_max were -- and untested is not the same as tested and null.

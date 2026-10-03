@@ -22,7 +22,8 @@ model pickles rather than results.
 
 ## ARCHIVED — evidence behind FINDINGS, delete once the paper is accepted
 
-`examples/iHMP/output/archive_oldbic_2026-09-01/` (see its README)
+`examples/iHMP/output/archive_oldbic_2026-09-01/` (see its README). Local only:
+untracked and git-ignored, so it is not in `main`.
 
 - old-BIC permutation draws, significance CSVs, component tables, and figures
   — the evidence for FINDINGS 20-22 (the -4.8 / -1.0 mass points, 95%-dead SE

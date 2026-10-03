@@ -13,3 +13,5 @@
 __pycache__
 build/
 dist/
+# Old-BIC evidence for FINDINGS 20-22; kept locally until the paper is accepted
+examples/iHMP/output/archive_oldbic_2026-09-01/
