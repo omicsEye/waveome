@@ -27,6 +27,11 @@ changes mid-implementation, update the tracker first, then this plan.
    covariate) pair**. Empirical p = `(1 + #{null ≥ obs}) / (1 + B)`.
 5. **Null source**: simulation = known-null components (and as a cross-check target);
    iHMP = subject-level permutation.
+   **Amended by author 2026-10-02:** the simulation sweep (Figs 3-4) uses the same
+   permutation null as iHMP (`permutation_significance` → `calc_permutation_pvalues`
+   → BH per stratum), so the benchmark validates the procedure actually applied.
+   Known-null components are the ground truth that hits are scored against, not
+   the null distribution.
 6. **Permutation scheme**: single within-unit **circular shift** for every within-unit-
    varying covariate; **across-unit block permutation** for constant-within-unit
    covariates; **target permuted with adjusters held fixed** (roles user-supplied;
