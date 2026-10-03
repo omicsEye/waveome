@@ -63,14 +63,15 @@ def pred_kernel_parts(
     x_idx_min = X[:, x_idx].min() if x_idx_min is None else x_idx_min
     x_idx_max = X[:, x_idx].max() if x_idx_max is None else x_idx_max
 
-    # Get variance pieces
+    # Get per-component detail: deviance_explained (explanatory share of
+    # this component) and log_bf (the significance-testing statistic),
+    # both from the same refit -- see calc_feature_importance_components.
     if var_explained is None:
-        var_contribs = calc_feature_importance_components(model=m_copy, data=data)
+        detail = calc_feature_importance_components(
+            model=m_copy, data=data, full_detail=True
+        )
     else:
-        var_contribs = copy.deepcopy(var_explained)
-
-    var_percent = var_contribs
-    var_percent[-1] *= 100
+        detail = copy.deepcopy(var_explained)
 
     # Get kernel names
     # TODO: Fix this issue up, empty kernel does not produce the correct
@@ -434,14 +435,18 @@ def pred_kernel_parts(
             )
 
         # Add title for specific feature
-        # split product terms over two lines
+        # split product terms over two lines. Report both stats from the
+        # same refit: deviance_explained (explanatory share) and log_bf
+        # (the significance-testing statistic) -- see
+        # calc_feature_importance_components.
         ax[plot_row_idx, plot_col_idx].set(
             title=(
                 f"""{replace_kernel_variables(
                     k_name,
                     col_names
                 ).replace('*', '*'+chr(10))}"""
-                f"""({round(var_percent[plot_idx], 1)})"""
+                f"""{chr(10)}(DE={round(detail[plot_idx]['deviance_explained'] * 100, 1)}%, """
+                f"""logBF={round(detail[plot_idx]['log_bf'], 1)})"""
             )
         )
         # Reset col index if at end and increment row index
@@ -458,7 +463,7 @@ def pred_kernel_parts(
         m,
         data,
         ax[plot_row_idx, plot_col_idx],
-        var_percent=var_percent[plot_idx],
+        var_percent=detail[plot_idx]["deviance_explained"] * 100,
         cat_idx=resid_cat_idx,
         cat_color_pal=cat_color_pal,
         **residual_dict
@@ -509,8 +514,16 @@ def plot_residuals(
     )
 
     # Set title and labels
+    # A component panel's DE is its share of the MODEL'S GAIN over null;
+    # this panel's number is a share of TOTAL deviance. Reporting the
+    # model's explanatory power here gives the reader the anchor to convert
+    # between them -- without it "DE=56.8%" reads as 56.8% of the outcome
+    # when it is 56.8% of an 11.7% explained portion, i.e. ~6.6% of total.
+    # Only the explained share is shown: the unexplained share is its
+    # complement, so printing both spent the space twice.
     ax.set(
-        title=f"residuals ({round(var_percent, 1)}%)",
+        title=(f"residuals\n"
+               f"model explains {round(100 - var_percent, 1)}% of deviance"),
         xlabel="fitted value",
         ylabel=f"{resid_type} residual"
     )

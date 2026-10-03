@@ -15,9 +15,11 @@ from .kernels import Categorical, Empty
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import make_folds
 from .utilities import (
+    VAR_CUTOFF_DEFAULT,
     calc_bic,
     calc_feature_importance_components,
     convert_data_to_tensors,
+    feature_importance_detail_to_flat,
     find_variance_components,
     find_variance_components_tf,
     gp_likelihood_crosswalk,
@@ -27,6 +29,18 @@ from .utilities import (
 )
 
 f64 = gpflow.utilities.to_default_float
+
+
+def _kernel_is_effectively_constant(k):
+    """True if `k` is a bare Constant() kernel, or a Sum/Product combination
+    whose every child is Constant() -- i.e. the kernel has no dependence on
+    input locations, regardless of top-level wrapping.
+    """
+    if k.name == "constant":
+        return True
+    if hasattr(k, "kernels"):
+        return all(kk.name == "constant" for kk in k.kernels)
+    return False
 
 
 class BaseGP(gpflow.models.SVGP):
@@ -142,6 +156,10 @@ class BaseGP(gpflow.models.SVGP):
         self.kernel_name = ""
         self.verbose = verbose
         self.optimizer = None
+        self.n_iterations = None
+        self.converged = None
+        self.opt_status = None
+        self.opt_message = None
         self.num_trainable_params = np.nan
         self.num_latent_gps = num_latent_gps
 
@@ -178,7 +196,11 @@ class BaseGP(gpflow.models.SVGP):
         return None
 
     def randomize_params(
-        self, loc: float = 0.0, scale: float = 1.0, random_seed: int = None
+        self,
+        loc: float = 0.0,
+        scale: float = 1.0,
+        random_seed: int = None,
+        smart_init: bool = True,
     ) -> None:
         """Randomize model parameters from sampled normal distribution.
 
@@ -190,6 +212,23 @@ class BaseGP(gpflow.models.SVGP):
             Standard deviation of normal distribution to sample from.
         random_seed: int
             Random seed for reproducibility.
+        smart_init: bool
+            If True (default), kernel lengthscales and kernel variances are
+            redrawn afterward from distributions matched to their role,
+            instead of being left at the generic N(0,1)-unconstrained draw.
+            The generic scheme treats a lengthscale, a horseshoe-penalized
+            variance, and every other positive-constrained parameter
+            identically, which concentrates restarts around a short,
+            "rough function" lengthscale unsuited to standardized
+            covariates. Validated on 20 randomly-sampled iHMP metabolites at
+            the default penalization_factor=1.0: cuts the typical
+            (median) log-likelihood disagreement between independent
+            restarts-of-5 fits by ~6x, with no observed downside (see
+            docs/revision/FINDINGS.md, "Full-model fit stability"). Sampling
+            variance from its own attached horseshoe prior directly was
+            tried and rejected -- Cauchy-like tails make it a bad
+            initialization distribution even though it is a fine belief
+            about the converged value.
 
         Returns
         -------
@@ -230,6 +269,20 @@ class BaseGP(gpflow.models.SVGP):
 
                 # Assign those values to the trainable variable
                 p.assign(p.transform_fn(unconstrain_vals))
+
+        if smart_init:
+            rng = np.random.default_rng(random_seed)
+
+            def _smart_randomize_kernel(k):
+                if hasattr(k, "lengthscales"):
+                    k.lengthscales.assign(rng.lognormal(mean=1.0, sigma=0.5))
+                if hasattr(k, "variance") and k.variance.prior is not None:
+                    k.variance.assign(rng.lognormal(mean=0.0, sigma=1.0))
+                if hasattr(k, "kernels"):
+                    for sub_k in k.kernels:
+                        _smart_randomize_kernel(sub_k)
+
+            _smart_randomize_kernel(self.kernel)
         return None
 
     def optimize_params(
@@ -276,6 +329,21 @@ class BaseGP(gpflow.models.SVGP):
         tf.keras.backend.clear_session()
         gpflow.utilities.reset_cache_bijectors(self)
 
+        # Make sure we freeze inducing points if the kernel is effectively
+        # Constant() (no dependence on input locations), otherwise we get an
+        # unconnected gradient error, regardless of optimizer.
+        # issue: https://github.com/GPflow/GPflow/issues/1600
+        if _kernel_is_effectively_constant(self.kernel):
+            gpflow.utilities.set_trainable(self.inducing_variable, False)
+
+            # A Constant() kernel gives a rank-deficient prior covariance,
+            # which makes adam/gradient's NaturalGradient step on q_mu/q_sqrt
+            # hit a CheckNumerics/VerifyFinite failure. scipy doesn't use
+            # natural gradients, so fall back to it whenever adam/gradient
+            # would otherwise run (explicitly requested, or auto-selected).
+            if optimizer in (None, "adam/gradient"):
+                optimizer = "scipy"
+
         # Can we just use BFGS for "smaller" models? Exclude variational params
         # tot_params = 0
         # for var_set in [
@@ -304,6 +372,12 @@ class BaseGP(gpflow.models.SVGP):
                     " using Scipy optimizer",
                 )
             self.optimizer = "scipy"
+            # Set here so a run where every attempt raises still leaves
+            # these defined, rather than stale from a previous call.
+            self.n_iterations = None
+            self.converged = False
+            self.opt_status = None
+            self.opt_message = None
 
             optimizer = gpflow.optimizers.Scipy()
             opt_options = {
@@ -313,15 +387,9 @@ class BaseGP(gpflow.models.SVGP):
                 #     "maxcor": 100
             }
 
-            # Make sure we freeze inducing points if the kernel is Constant()
-            # otherwise we get unconnected gradient error
-            # issue: https://github.com/GPflow/GPflow/issues/1600
-            if self.kernel.name == "constant":
-                gpflow.utilities.set_trainable(self.inducing_variable, False)
-
             for attempt in range(5):
                 try:
-                    optimizer.minimize(
+                    opt_result = optimizer.minimize(
                         closure=self.training_loss_closure(
                             data=data,
                             # compile=False
@@ -331,6 +399,14 @@ class BaseGP(gpflow.models.SVGP):
                         method="L-BFGS-B",
                         options=opt_options,
                     )
+                    self.n_iterations = int(opt_result.nit)
+                    self.converged = bool(opt_result.success)
+                    # status/message identify *why* L-BFGS-B stopped when
+                    # converged=False (e.g. line-search/precision failure
+                    # vs genuinely hitting maxiter/maxfun) -- diagnostic
+                    # only, not currently used to change behavior.
+                    self.opt_status = int(opt_result.status)
+                    self.opt_message = str(opt_result.message)
                     break
                 except Exception as e:
                     if self.verbose:
@@ -345,6 +421,10 @@ class BaseGP(gpflow.models.SVGP):
         ) or optimizer == "adam/gradient":
             # Set optimizer otherwise
             self.optimizer = "adam/gradient"
+            # opt_status/opt_message are scipy L-BFGS-B diagnostics --
+            # clear them so a prior scipy call's values don't linger.
+            self.opt_status = None
+            self.opt_message = None
 
             # Stop Adam from optimizing the variational parameters
             gpflow.set_trainable(self.q_mu, False)
@@ -364,6 +444,9 @@ class BaseGP(gpflow.models.SVGP):
 
         elif optimizer == "adam":
             self.optimizer = "adam"
+            # See the adam/gradient branch above for why these are reset.
+            self.opt_status = None
+            self.opt_message = None
             adam_opt = Adam(learning_rate=adam_learning_rate)
 
             @tf.function
@@ -395,6 +478,7 @@ class BaseGP(gpflow.models.SVGP):
             compiled_loss = self.training_loss_closure(data=data, compile=True)
 
         loss_list = []
+        converged = False
 
         # Save initial values
         previous_values = gpflow.utilities.deepcopy(
@@ -456,15 +540,19 @@ class BaseGP(gpflow.models.SVGP):
                     len(loss_list) > 1
                     and loss_list[-2] - loss_list[-1] < convergence_threshold
                 ):
+                    converged = True
                     if self.verbose:
                         print(f"Optimization converged - stopping early (round {i})")
                     break
 
         # If we have reached the end of iterations and still
         # not converged then...
-        if i == (num_opt_iter - 1):
+        if i == (num_opt_iter - 1) and not converged:
             if self.verbose:
                 print(f"Optimization not converged after {i+1} rounds")
+
+        self.n_iterations = i + 1
+        self.converged = converged
 
         return None
 
@@ -489,6 +577,10 @@ class BaseGP(gpflow.models.SVGP):
         # Set initial log likelihood to track during restarts
         max_ll = -np.inf
         best_variables = {}
+        best_n_iterations = None
+        best_converged = False
+        best_opt_status = None
+        best_opt_message = None
 
         for i in range(num_restart):
             if self.verbose:
@@ -514,11 +606,23 @@ class BaseGP(gpflow.models.SVGP):
                 best_variables = gpflow.utilities.deepcopy(
                     gpflow.utilities.parameter_dict(self)
                 )
+                # optimize_params sets these on self as plain Python
+                # attributes, not gpflow Parameters, so multiple_assign
+                # below won't restore them -- track them alongside
+                # best_variables instead.
+                best_n_iterations = self.n_iterations
+                best_converged = self.converged
+                best_opt_status = self.opt_status
+                best_opt_message = self.opt_message
                 if self.verbose:
                     print("Found better parameters!")
 
         # Set trainable variables to the best found
         gpflow.utilities.multiple_assign(self, best_variables)
+        self.n_iterations = best_n_iterations
+        self.converged = best_converged
+        self.opt_status = best_opt_status
+        self.opt_message = best_opt_message
 
         return None
 
@@ -542,7 +646,13 @@ class BaseGP(gpflow.models.SVGP):
             Xnew, full_cov=full_cov, full_output_cov=full_output_cov
         )
 
-    def get_feature_importances(self, data=None, return_value="log_bf"):
+    def get_feature_importances(
+        self,
+        data=None,
+        return_value="log_bf",
+        refit=True,
+        refit_options=None,
+    ):
         """Calculates feature importance for each additive kernel component.
 
         Arguments
@@ -551,20 +661,46 @@ class BaseGP(gpflow.models.SVGP):
             Tuple of (X, Y) data to use for calculating feature importance.
         return_value: str
             Value to return for each component. Options are:
-            "log_bf" (default - log bayes factor), "statistic" (chi-squared),
-            "de" (deviance explained). See calc_feature_importance_components
-            for more details.
+            "log_bf" (default - log bayes factor, = -0.5 * delta_bic),
+            "statistic" (raw delta_bic = BIC_full - BIC_reduced),
+            anything else (marginal deviance explained). See
+            calc_feature_importance_components for more details.
+        refit: bool
+            If True (default), each reduced (component-dropped) model is
+            re-optimized -- warm-started from the full model's fitted
+            parameters -- before importances are computed. If False,
+            reproduces the legacy no-refit behavior.
+        refit_options: dict
+            Passed through to `optimize_params(...)` for each reduced-model
+            refit. Ignored when refit=False.
 
         Returns
         -------
         None
-            Feature importances in self.feature_importances
+            Feature importances in self.feature_importances. When
+            refit=True, the full per-component detail (delta_bic, log_bf,
+            deviance_explained -- all from the same refit) is also stored in
+            self.feature_importance_detail.
         """
 
         # var_list = calc_rsquare(self, data=data)
-        importance_list = calc_feature_importance_components(
-            model=self, data=data, return_value=return_value
-        )
+        if refit:
+            detail_list = calc_feature_importance_components(
+                model=self,
+                data=data,
+                refit=True,
+                refit_options=refit_options,
+                full_detail=True,
+            )
+            self.feature_importance_detail = detail_list
+            importance_list = feature_importance_detail_to_flat(
+                detail_list, return_value
+            )
+        else:
+            self.feature_importance_detail = None
+            importance_list = calc_feature_importance_components(
+                model=self, data=data, return_value=return_value, refit=False
+            )
 
         # Fix ListWrapper issue with Tensorflow tensors
         self.feature_importances = list(importance_list)
@@ -572,10 +708,31 @@ class BaseGP(gpflow.models.SVGP):
         return None
 
     def calc_metric(self, data=None, metric="BIC"):
+        """BIC for this fitted model.
+
+        Uses the ELBO, not `log_posterior_density`. BIC approximates the log
+        marginal likelihood as `log L(theta_hat) - (k/2) log n`, in which the
+        `k log n` term IS the Occam factor standing in for the prior's
+        contribution. Passing the log posterior (= ELBO + log prior) adds
+        `log p(theta_hat)` on top of that, counting the prior twice -- and
+        `calc_bic` documents its argument as a log-likelihood.
+
+        This was not a neutral mislabeling. The double-count does not cancel
+        in the drop-one comparison that produces `log_bf`, because the two
+        sides differ exactly where it matters: an observed component that is
+        alive has a substantial prior penalty which dropping it hands back,
+        while the same component under permutation collapses to the variance
+        floor and has almost none. So the old form charged live components
+        more than dead ones -- a bias against precisely the components
+        carrying real effects, invisible to any null-only calibration. On
+        proline's SE[time_from_max] it flipped the sign of the excess over
+        its permutation null (-0.671 before, +1.781 after). See
+        docs/revision/FINDINGS.md sections 21-22.
+        """
         assert metric == "BIC", "Only BIC currently allowed."
         if metric == "BIC":
             return calc_bic(
-                loglik=self.log_posterior_density(data),
+                loglik=self.maximum_log_likelihood_objective(data),
                 n=data[0].shape[0],  # self.X.shape[0],
                 k=len(self.trainable_parameters),
             )
@@ -591,15 +748,38 @@ class BaseGP(gpflow.models.SVGP):
         )
 
     def plot_parts(
-        self, x_idx, col_names, data=None, lik=None, unit_idx=None, **kwargs
+        self, x_idx, col_names, data=None, lik=None, unit_idx=None,
+        prune_before_plot=True, **kwargs
     ):
         if lik is None:
             lik = self.likelihood
+
+        model_to_plot = self
+        # None (e.g. feature_importances was computed with refit=False)
+        # falls back to a fresh full_detail=True refit inside
+        # pred_kernel_parts.
+        var_explained = self.feature_importance_detail
+        if prune_before_plot:
+            # Significance testing runs on the full (unpruned) candidate
+            # kernel, so a no-prune model can have a dozen+ terms per
+            # metabolite, most of them horseshoe-shrunk noise. Prune a
+            # copy just for display -- reuses the same variance-threshold
+            # logic already used elsewhere, doesn't touch self.
+            plot_data = (
+                convert_data_to_tensors(*data) if data is not None else self.data
+            )
+            model_to_plot = gpflow.utilities.deepcopy(self)
+            model_to_plot.cut_kernel_components(data=plot_data)
+            # Pruning changes which terms exist, so the original
+            # feature_importance_detail's indices no longer line up --
+            # let pred_kernel_parts recompute fresh for the pruned kernel.
+            var_explained = None
+
         return pred_kernel_parts(
-            self,
+            model_to_plot,
             x_idx=x_idx,
             col_names=col_names,
-            var_explained=self.feature_importances,
+            var_explained=var_explained,
             lik=lik,
             data=data,
             unit_idx=unit_idx,
@@ -808,6 +988,7 @@ class PenalizedGP(BaseGP):
 
         # Set initial factor given
         self.set_penalization_factor(penalization_factor)
+        self.set_lengthscale_prior()
 
         # Set unit col as none for now
         self.unit_col = None
@@ -861,6 +1042,34 @@ class PenalizedGP(BaseGP):
             for key, val in gpflow.utilities.parameter_dict(self).items():
                 if "kernel" in key and "variance" in key:
                     val.prior = prior
+
+    def set_lengthscale_prior(self, use_prior=True):
+        """Set a LogNormal(1.0, 0.5) prior on kernel lengthscale parameters
+        (median ~2.7, 90% CI ~[1.1, 6.6] in standardized input units --
+        matches MultiOutputPSVGP's existing lengthscale prior).
+
+        Without this, a lengthscale is free to collapse arbitrarily close
+        to zero -- letting a squared-exponential term fit per-observation
+        noise while BIC still only charges it 2 parameters (variance +
+        lengthscale), regardless of how much effective flexibility that
+        actually costs. Confirmed on real iHMP components: 3 of 4
+        "significant" SE-kernel hits had lengthscales far below the
+        typical spacing between adjacent observed covariate values (one
+        by a factor of >1000x) and flipped to non-significant once this
+        prior was added and the model refit; the fourth (a genuine
+        smooth effect) was essentially unchanged. See docs/revision/
+        FINDINGS.md, "T2 (continued)" for the full investigation.
+        """
+        if use_prior:
+            prior = tfd.LogNormal(
+                loc=gpflow.utilities.to_default_float(1.0),
+                scale=gpflow.utilities.to_default_float(0.5),
+            )
+        else:
+            prior = None
+        for key, val in gpflow.utilities.parameter_dict(self).items():
+            if "kernel" in key and "lengthscales" in key:
+                val.prior = prior
 
     def penalization_search(
         self,
@@ -1025,7 +1234,7 @@ class PenalizedGP(BaseGP):
 
     #     return None
 
-    def cut_kernel_components(self, data=None, var_cutoff: float = 0.1):
+    def cut_kernel_components(self, data=None, var_cutoff: float = VAR_CUTOFF_DEFAULT):
         """Prune out kernel components with small variance parameters and large
         lengthscale parameters (w.r.t. input domain).
 
@@ -1033,6 +1242,7 @@ class PenalizedGP(BaseGP):
         ----------
         model
         var_cutoff
+            Numerical pre-filter threshold.
 
         Returns
         -------

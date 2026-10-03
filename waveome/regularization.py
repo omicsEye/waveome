@@ -6,7 +6,7 @@ from joblib import Parallel, delayed
 
 from .kernels import Categorical
 from .model_fitting import kernel_test_reg
-from .utilities import find_variance_components
+from .utilities import VAR_CUTOFF_DEFAULT, find_variance_components
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
@@ -467,13 +467,14 @@ def lam_search(
     return out
 
 
-def cut_kernel_components(model, var_cutoff: float = 0.001):
+def cut_kernel_components(model, var_cutoff: float = VAR_CUTOFF_DEFAULT):
     """Prune out kernel components with small variance parameters
 
     Parameters
     ----------
     model
     var_cutoff
+        Numerical pre-filter threshold.
 
     Returns
     -------

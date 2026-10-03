@@ -5,12 +5,16 @@ import numpy as np
 import pandas as pd
 
 from waveome.model_search import GPSearch
+from pathlib import Path
+
+# Resolve data next to this script, not next to the caller's cwd.
+DATA = Path(__file__).resolve().parent / "data"
 
 # Data Read
 mbx = pd.read_csv(
-    "../iHMP/data/iHMP_labeled_metabolomics.csv", low_memory=False
+    DATA / "iHMP_labeled_metabolomics.csv", low_memory=False
 )
-mtd = pd.read_csv("../iHMP/data/iHMP_metadata.csv", low_memory=False)
+mtd = pd.read_csv(DATA / "iHMP_metadata.csv", low_memory=False)
 
 # Print out sizes
 

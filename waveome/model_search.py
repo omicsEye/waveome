@@ -1,5 +1,7 @@
 import os
 import re
+
+from scipy.stats import rankdata
 import time
 import warnings
 
@@ -29,11 +31,16 @@ from .model_classes import PSVGP, MultiOutputPSVGP
 from .predictions import gp_predict_fun, pred_kernel_parts
 from .regularization import full_kernel_build, make_folds
 from .utilities import (
+    calc_between_unit_fraction,
+    calc_residuals,
+    calc_bh_qvalues,
     calc_bic,
     calc_rsquare,
     check_if_model_exists,
+    calc_permutation_pvalues,
     convert_data_to_tensors,
     find_variance_components,
+    permute_covariate,
     print_kernel_names,
     replace_kernel_variables,
     run_ray_process,
@@ -42,6 +49,129 @@ from .utilities import (
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["RAY_FUNCTION_SIZE_ERROR_THRESHOLD"] = "30000000"
 f64 = gpflow.utilities.to_default_float
+
+# Tiered thresholds for the collinearity input check: moderate collinearity
+# only warns, strong collinearity halts unless explicitly acknowledged.
+COLLINEARITY_WARN_CUTOFF = 0.8
+COLLINEARITY_HALT_CUTOFF = 0.95
+
+
+def _pooled_correlations(X_df, cont_idx):
+    """Pairwise Pearson correlation among continuous covariates, computed
+    across the whole dataset (not per-unit): two covariates that are only
+    collinear within a unit but have enough spread *between* units are not
+    flagged here, since that between-unit variation is real, usable
+    information for telling them apart. A pair is skipped if either
+    covariate has no variation at all (correlation undefined).
+
+    Returns a dict {(i, j): r} keyed by original column index pairs
+    (i < j), for every finite, computable pair.
+    """
+    cont_df = X_df.iloc[:, cont_idx]
+
+    corr_out = {}
+    n = len(cont_idx)
+    for a in range(n):
+        for b in range(a + 1, n):
+            col_a, col_b = cont_df.iloc[:, a], cont_df.iloc[:, b]
+            if col_a.std() < 1e-12 or col_b.std() < 1e-12:
+                continue
+            r = np.corrcoef(col_a, col_b)[0, 1]
+            if np.isfinite(r):
+                corr_out[(cont_idx[a], cont_idx[b])] = r
+    return corr_out
+
+
+# max_calls=1, max_retries=5: same rationale as penalized_optimization's own
+# worker -- long sequences of GPflow/TF fits in one process accumulate an
+# unbounded resource leak, and recycling per task avoids it.
+@ray.remote(max_calls=1, max_retries=5)
+def _permutation_draw_remote(model, X, y, unit_ids, col, targets, seed):
+    """One permutation draw (seed=None -> the observed statistic).
+
+    Refits the full model on the permuted data, then drops each target
+    component and refits again, exactly mirroring
+    calc_feature_importance_components. The observed statistic goes through
+    this same path so optimizer/ELBO noise is common to both sides and
+    cancels in the ranking.
+
+    Returns ({kernel_index: log_bf}, error_string_or_None) -- one failed
+    component must not abort a batch of tens of thousands of draws.
+    """
+    try:
+        Xp = X
+        if seed is not None:
+            Xp = X.copy()
+            Xp[:, col] = permute_covariate(
+                X[:, col], unit_ids, np.random.default_rng(seed)
+            )
+        data = convert_data_to_tensors(Xp, y.reshape(-1, 1))
+        optimizer = getattr(model, "optimizer", None) or "scipy"
+
+        def _bic(m):
+            # optimize_params(adam/gradient) leaves q_mu/q_sqrt untrainable,
+            # which would skew calc_metric's parameter count; restore for the
+            # measurement, then put the flags back.
+            flags = (m.q_mu.trainable, m.q_sqrt.trainable)
+            set_trainable(m.q_mu, True)
+            set_trainable(m.q_sqrt, True)
+            try:
+                return m.calc_metric(data=data, metric="BIC")
+            finally:
+                set_trainable(m.q_mu, flags[0])
+                set_trainable(m.q_sqrt, flags[1])
+
+        full = gpflow.utilities.deepcopy(model)
+        full.num_trainable_params = np.nan
+        full.optimize_params(data=data, optimizer=optimizer)
+        bic_full = _bic(full)
+
+        out = {}
+        for idx in targets:
+            reduced = gpflow.utilities.deepcopy(full)
+            reduced.kernel.kernels.pop(idx)
+            reduced.num_trainable_params = np.nan
+            reduced.optimize_params(data=data, optimizer=optimizer)
+            out[idx] = float(-0.5 * (bic_full - _bic(reduced)))
+        return out, None
+    except Exception as exc:  # noqa: BLE001 - reported per draw, not raised
+        return None, str(exc)
+
+
+# max_calls=1, max_retries=5: same rationale as the other Ray workers here.
+@ray.remote(max_calls=1, max_retries=5)
+def _subject_residuals_remote(model, X, y, drop_idx, resid_type):
+    """Refit without a covariate's components; return per-observation residuals.
+
+    The covariate is removed rather than retained so its signal stays IN the
+    residuals -- that is what the subject-level test then looks for.
+    """
+    try:
+        data = convert_data_to_tensors(X, y.reshape(-1, 1))
+        m = gpflow.utilities.deepcopy(model)
+        for i in sorted(drop_idx, reverse=True):
+            m.kernel.kernels.pop(i)
+        m.num_trainable_params = np.nan
+        m.optimize_params(
+            data=data, optimizer=getattr(model, "optimizer", None) or "scipy")
+        return calc_residuals(
+            m, X=data[0], Y=data[1], resid_type=resid_type).ravel(), None
+    except Exception as exc:  # noqa: BLE001 - reported per task, not raised
+        return None, str(exc)
+
+
+def _component_covariate_names(kernel_name, feat_names):
+    """Map each '+'-joined additive kernel component to its (kernel_type,
+    covariate) label pair (product terms keep all factors, joined with
+    '*')."""
+    kernel_types, cov_names = [], []
+    for term in kernel_name.split("+"):
+        idxs = [int(x) for x in re.findall(r"\[(\d+)\]", term)]
+        kernel_types.append(re.sub(r"\[\d+\]", "", term))
+        cov_names.append(
+            "*".join(feat_names[i] for i in idxs) if idxs else term
+        )
+    return kernel_types, cov_names
 
 
 class GPSearch:
@@ -66,6 +196,12 @@ class GPSearch:
         currently only supports 'gaussian', 'bernoulli',
         or 'poisson' (experimental)
 
+    acknowledge_collinearity: bool
+        If any two continuous covariates are strongly collinear across the
+        whole dataset (correlation above COLLINEARITY_HALT_CUTOFF),
+        initialization raises a ValueError unless this is set to True.
+        Default False.
+
     Attributes
     ----------
     """
@@ -79,6 +215,7 @@ class GPSearch:
         Y_transform=None,
         categorical_vars=[],
         outcome_likelihood="gaussian",
+        acknowledge_collinearity=False,
     ):
         X = X.copy()
 
@@ -151,6 +288,50 @@ class GPSearch:
             0
         ].tolist()
 
+        # Collinearity input check, computed across the whole dataset (not
+        # per-unit): moderate collinearity warns, strong collinearity halts
+        # unless the caller explicitly acknowledges it -- no input()
+        # prompts, so this is safe inside a batch/HPC job. Deliberately not
+        # unit-centered: two covariates can be perfectly collinear within a
+        # single unit's own timeline (e.g. elapsed time measured three
+        # different ways) while still being genuinely distinguishable once
+        # units with different offsets are compared -- that between-unit
+        # spread is real, usable information, not noise to strip out.
+        if len(self.cont_idx) > 1:
+            corr_pairs = _pooled_correlations(X, self.cont_idx)
+            halt_pairs = {
+                p: r for p, r in corr_pairs.items() if abs(r) > COLLINEARITY_HALT_CUTOFF
+            }
+            warn_pairs = {
+                p: r
+                for p, r in corr_pairs.items()
+                if COLLINEARITY_WARN_CUTOFF < abs(r) <= COLLINEARITY_HALT_CUTOFF
+            }
+
+            def _pair_str(pairs):
+                return ", ".join(
+                    f"{self.feat_names[i]}~{self.feat_names[j]} (r={r:.2f})"
+                    for (i, j), r in pairs.items()
+                )
+
+            if warn_pairs:
+                warnings.warn(
+                    "Moderate collinearity detected between: "
+                    f"{_pair_str(warn_pairs)}"
+                )
+            if halt_pairs:
+                if not acknowledge_collinearity:
+                    raise ValueError(
+                        "Strong collinearity detected between: "
+                        f"{_pair_str(halt_pairs)}. Pass "
+                        "acknowledge_collinearity=True to GPSearch(...) to "
+                        "proceed anyway."
+                    )
+                warnings.warn(
+                    "Proceeding despite strong collinearity "
+                    f"(acknowledge_collinearity=True): {_pair_str(halt_pairs)}"
+                )
+
         # Standardize continuous X columns
         if standardize_X:
             self.X_means = self.X.iloc[:, self.cont_idx].mean(axis=0)
@@ -215,6 +396,7 @@ class GPSearch:
         random_seed=None,
         ray_dashboard=False,
         ray_logging=False,
+        prune_components=True,
     ):
         # Set model selection type
         self.model_selection_type = "penalized"
@@ -247,6 +429,14 @@ class GPSearch:
         variational_options["likelihood"] = self.likelihood
 
         # Parallel model building function
+        # max_calls=1: recycle the worker process after every metabolite --
+        # long sequential GPflow/TF model fits in one process have been
+        # observed to accumulate an unbounded resource leak, eventually
+        # causing a fatal crash or a silent non-finite result. max_retries=5
+        # recovers from the rare case where a worker dies mid-task. Do not
+        # remove/relax either without re-validating against that failure
+        # mode (confirmed via subprocess isolation: zero failures across
+        # 150 isolated fits vs. frequent failures in one long-lived process).
         @ray.remote(max_calls=1, max_retries=5)
         def model_build_steps_remote(
             self_X,
@@ -374,8 +564,19 @@ class GPSearch:
                         ),
                     )
 
-            # Clean up final model
-            mod.cut_kernel_components(data=convert_data_to_tensors(self_X, self_Y))
+            # Clean up final model. cut_kernel_components does no
+            # refitting -- it only discards components below the variance/
+            # lengthscale cutoffs from the already-converged fit -- so
+            # skipping it does not change the fitted model, only whether
+            # near-zero components remain present for get_feature_importances
+            # below to compute a log_bf for (via its existing clamp/refit
+            # logic) instead of never seeing them at all. Set False to get
+            # a log_bf for every originally-specified component on every
+            # metabolite, not just the ones that survive pruning -- needed
+            # to test significance against the full candidate population
+            # rather than only the (pruning-selected) survivors.
+            if prune_components:
+                mod.cut_kernel_components(data=convert_data_to_tensors(self_X, self_Y))
 
             # TODO: Prune kernel (specifically interactions)
 
@@ -1236,7 +1437,12 @@ class GPSearch:
                 self.models[feat].get_feature_importances(
                     data=convert_data_to_tensors(
                         self.X.to_numpy(), self.Y[feat].to_numpy().reshape(-1, 1)
-                    )
+                    ),
+                    # This legacy stepwise path predates the refit-based
+                    # significance work and isn't Ray-parallelized here --
+                    # keep it on the pre-existing cheap plug-in behavior
+                    # rather than silently inheriting refit=True's cost.
+                    refit=False,
                 )
 
             ray.shutdown()
@@ -1279,22 +1485,59 @@ class GPSearch:
         var_cutoff=0.8,
         metric_cutoff=None,
         feature_name=None,
+        outcomes=None,
         show_vals=True,
         figsize=None,
         cluster=True,
         print_drop_count=False,
         **clustermap_kwargs,
     ):
+        """Heatmap of per-component feature importance across outcomes.
 
+        Shows where the model attributes explanatory power -- a magnitude
+        question. It deliberately does not encode significance: colour here
+        is deviance explained, most components in a saturated kernel are
+        never tested at all, and layering a q-value cut on top of
+        `var_cutoff` would stack two selections with unrelated
+        justifications. Use `permutation_significance` /
+        `between_subject_significance` for that, and pass the outcomes they
+        select via `outcomes=` if you want the two views combined.
+
+        Parameters
+        ----------
+        outcomes : list of str, optional
+            Restrict to these outcomes (default: all). Lets a caller supply
+            a selection made elsewhere -- e.g. the significant set from a
+            permutation test -- while keeping the selection logic out of the
+            plotting code.
+
+            Note that `var_cutoff` still applies on top of this: it keeps
+            only outcomes whose model explains at least that fraction of
+            deviance, which is a strong filter (on the iHMP cohort the 0.8
+            default keeps 5 of 564). Pass `var_cutoff=0` to plot a curated
+            selection exactly as given.
+        """
         # Specify output dataframe
         out_info = pd.DataFrame()
+
+        if outcomes is None:
+            outcomes = self.out_names
+        else:
+            unknown = [o for o in outcomes if o not in self.out_names]
+            if unknown:
+                raise ValueError(
+                    f"plot_heatmap: unknown outcome(s) {unknown!r}; "
+                    f"expected names from self.out_names."
+                )
+            if not len(outcomes):
+                raise ValueError("plot_heatmap: `outcomes` is empty.")
 
         # Drop counters
         n_feature_drops = 0
         n_explained_drops = 0
 
-        # Loop through all models
-        for o in self.out_names:
+        # Loop through the selected models
+        for o in outcomes:
 
             # Copy model
             m_copy = gpflow.utilities.deepcopy(self.models[o])
@@ -1381,8 +1624,17 @@ class GPSearch:
             col_cluster = True
             row_cluster = True
             assert len(out_info.index) > 1, (
-                "Not enough models meet criteria (clustermap) requested!"
-                f"  (N={len(out_info.index)})"
+                "Not enough models meet criteria (clustermap) requested! "
+                f"(N={len(out_info.index)} of {len(outcomes)} outcomes). "
+                f"{n_explained_drops} were dropped by var_cutoff={var_cutoff}"
+                + (f" / metric_cutoff={metric_cutoff}"
+                   if metric_cutoff is not None else "")
+                + (f", {n_feature_drops} for lacking feature_name="
+                   f"{feature_name!r}" if feature_name is not None else "")
+                + ". var_cutoff keeps only outcomes whose model explains at "
+                "least that fraction of deviance, and it applies on top of "
+                "any `outcomes` you passed -- set var_cutoff=0 to plot a "
+                "selection as given."
             )
         else:
             col_cluster = False
@@ -1513,6 +1765,39 @@ class GPSearch:
                             )
                         )
 
+        fig, axes = pkp[0], pkp[1]
+
+        # Drop grid slots plot_parts left unused. An unused axes still draws
+        # its frame, so it reads as a panel whose content failed to render
+        # rather than as spare grid -- a 5-component model on a 4-column grid
+        # showed three of them.
+        for ax in list(np.asarray(axes).flatten()):
+            if not (ax.has_data() or ax.get_title()):
+                if ax in fig.axes:
+                    fig.delaxes(ax)
+
+        # Annotate each component with its q-value, when one exists. Without
+        # this a panel shows deviance explained and log_bf but nothing about
+        # significance, and those two can point the opposite way: a component
+        # can draw a compelling curve at DE=8.5% that a third of permutations
+        # reproduce. Components with no permutation result get no line at all
+        # rather than a placeholder, so output is unchanged for anyone who
+        # has not run permutation_significance.
+        perm = getattr(self, "permutation_results", None)
+        if perm is not None and len(perm):
+            sub = perm[perm["metabolite"] == out_label]
+            lut = {(r.kernel_type, r.covariate): r.q_value
+                   for r in sub.itertuples()}
+            for ax in np.asarray(axes).flatten():
+                m = re.match(r"^(\w+)\[(\w+)\]", ax.get_title())
+                if m is None:
+                    continue
+                q = lut.get((m.group(1), m.group(2)))
+                if q is None:
+                    continue
+                ax.set_title(ax.get_title() + f"\nq={q:.3g}"
+                             + ("  SIGNIFICANT" if q <= 0.10 else ""))
+
         return pkp
 
     def plot_feature_metrics(
@@ -1600,6 +1885,636 @@ class GPSearch:
             # Plot
             p = sns.barplot(data=metric_df, y="name", x="metric")
             return p
+
+    def get_significance_table(self, include_significance=True):
+        """Flatten every metabolite's per-component log_bf and marginal
+        deviance-explained into one long DataFrame, with the kernel type,
+        covariate name, and a `stratum` label (= "kernel_type:covariate").
+
+        `stratum` is the unit significance is assessed within: squared_
+        exponential and lin components for the same covariate have different
+        null distributions, so pooling them is wrong for both (frozen
+        decision 4). Pass it as `groups=` to any stratified procedure, or
+        join this table to `GPSearch.permutation_significance`'s output on
+        (metabolite, kernel_type, covariate).
+
+        Significance is not computed here -- it comes from
+        `permutation_significance`, which builds its own null rather than
+        assuming one for log_bf. If that has been run on this object, its
+        p/q-values are joined on by default so callers do not have to merge
+        by hand; components outside the covariates it tested get NaN, which
+        is the honest value (they were never tested, and are not the same as
+        tested-and-not-significant).
+
+        Parameters
+        ----------
+        include_significance : bool
+            Join `self.permutation_results` (default). Raises if they are
+            absent rather than quietly returning a table with no p/q
+            columns -- that silence surfaced later as a bare
+            ``KeyError: 'q_value'`` in downstream code. Set False for
+            evidence and magnitude alone.
+
+        Returns
+        -------
+        pd.DataFrame with columns: metabolite, kernel_type, covariate,
+        log_bf, deviance_explained, stratum, and -- when permutation results
+        are available -- p_value, q_value, null_centre, null_sd, n_draws.
+        One row per additive kernel component per metabolite (the trailing
+        leftover-noise entry in feature_importance_detail, which has no
+        covariate label, is excluded).
+        """
+        rows = []
+        for name, model in self.models.items():
+            kernel_types, cov_names = _component_covariate_names(
+                model.kernel_name, self.feat_names
+            )
+            detail = getattr(model, "feature_importance_detail", None)
+            if detail is None:
+                raise ValueError(
+                    f"get_significance_table: model {name!r} has no "
+                    "feature_importance_detail -- call "
+                    "get_feature_importances(refit=True) on it first "
+                    "(refit=False and never-called models don't populate "
+                    "the per-component detail this method needs)."
+                )
+            for kernel_type, cov_name, comp in (
+                zip(kernel_types, cov_names, detail[:-1])
+            ):
+                if comp["log_bf"] is None or not np.isfinite(comp["log_bf"]):
+                    continue
+                rows.append({
+                    "metabolite": name,
+                    "kernel_type": kernel_type,
+                    "covariate": cov_name,
+                    "log_bf": comp["log_bf"],
+                    "deviance_explained": comp["deviance_explained"],
+                    "stratum": f"{kernel_type}:{cov_name}",
+                })
+        table = pd.DataFrame(rows)
+
+        perm = getattr(self, "permutation_results", None)
+        if include_significance:
+            if perm is None or not len(perm):
+                raise ValueError(
+                    "get_significance_table: include_significance=True but "
+                    "no permutation results are attached to this object.\n"
+                    "Significance is NOT stored on the fitted model and is "
+                    "NOT restored by unpickling one -- re-loading a saved "
+                    "GPSearch discards it, which is the usual cause here.\n"
+                    "Fix: run GPSearch.permutation_significance(...) and "
+                    "assign its output to `.permutation_results`, or assign "
+                    "a saved run read back from CSV.\n"
+                    "Pass include_significance=False for evidence and "
+                    "magnitude alone."
+                )
+            cols = [c for c in ("p_value", "q_value", "null_centre",
+                                "null_sd", "n_draws") if c in perm.columns]
+            table = table.merge(
+                perm[["metabolite", "kernel_type", "covariate"] + cols],
+                on=["metabolite", "kernel_type", "covariate"], how="left",
+            )
+        return table
+
+    def permutation_significance(
+        self,
+        covariates,
+        B0=10,
+        B1=None,
+        q_target=0.05,
+        B1_min=100,
+        B1_max=500,
+        random_seed=9102,
+        checkpoint_path=None,
+        resume=True,
+        num_processes=None,
+        ray_dashboard=False,
+        ray_logging=False,
+        verbose=True,
+    ):
+        """Permutation significance for each kernel component of `covariates`.
+
+        Each covariate is permuted at the level its variance lives at (see
+        `permute_covariate`): values shuffled inside each unit for a
+        covariate that varies within units, or the unit-level value shuffled
+        across units for one that is constant within them. The drop-one
+        `log_bf` is then recomputed on the permuted data exactly as on the
+        real data -- the observed statistic is itself recomputed through this
+        same path rather than read from `feature_importance_detail`, so
+        optimizer and ELBO idiosyncrasies occur on both sides and cancel in
+        the ranking.
+
+        For a covariate that varies within units this tests the WITHIN-unit
+        association. Between-unit structure is preserved by the shuffle, so
+        it sits in the observed statistic and in every null draw alike: it
+        can neither manufacture a hit nor be credited as one. A covariate
+        holding much of its variance between units is therefore only
+        partially covered, and a warning is emitted.
+
+        Draws are allocated adaptively. Every component gets `B0` screening
+        draws; only those whose null is non-degenerate are topped up to `B1`.
+        A component that collapses under every permutation has a point-mass
+        null and an observed value sitting on it, so more draws cannot change
+        its p-value -- in simulation that was ~60% of components, and skipping
+        them cut the work by roughly the same fraction.
+
+        Parameters
+        ----------
+        covariates : list of str
+            Covariate names (columns of X) to test.
+        B0, B1 : int
+            Screening and topped-up permutation counts.
+        random_seed : int
+            Base seed; each (component, draw) gets a deterministic offset.
+        checkpoint_path : str, optional
+            Append completed draws here as they land, rather than only at the
+            end. Strongly recommended: a full run takes tens of hours, and
+            without this an interruption forfeits all of it.
+        resume : bool
+            If True (default) and `checkpoint_path` exists, reload it and
+            queue only the draws it is missing. Seeds are a deterministic
+            function of (metabolite, covariate, draw) and `random_seed`, so a
+            resumed draw is identical to the one it replaces -- resuming does
+            not perturb the null. Screening draws in particular are reusable
+            across runs over the same covariates and seed.
+
+        Returns
+        -------
+        pd.DataFrame with one row per (metabolite, kernel_type, covariate):
+        log_bf, null_centre, null_sd, n_draws, p_value, q_value, stratum.
+        Also stored as `self.permutation_results`, and the raw draws as
+        `self.permutation_draws` so diagnostics never need a re-run.
+        """
+        # Fail now, not in ~23 h. calc_permutation_pvalues imports
+        # statsmodels lazily at the very END of this method, so a missing
+        # install would surface only after every draw had been computed.
+        try:
+            import statsmodels.api  # noqa: F401
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "permutation_significance needs statsmodels (the conditional "
+                "quantile regression in calc_permutation_pvalues uses "
+                "QuantReg), and it is not importable. Install it before "
+                "starting -- the p-value step runs only after every "
+                "permutation draw, so this would otherwise fail at the very "
+                "end of a run that takes hours."
+            ) from exc
+
+        names = list(self.models.keys())
+        if not names:
+            raise ValueError("permutation_significance: no fitted models")
+
+        prior = pd.DataFrame(columns=["metabolite", "covariate", "kernel_type",
+                                      "kernel_idx", "draw", "log_bf"])
+        done_keys = set()
+        if resume and checkpoint_path and os.path.exists(checkpoint_path):
+            prior = pd.read_csv(checkpoint_path)
+            # A kill during the final append can leave a truncated line, which
+            # parses as a row with NaNs. Drop those outright -- otherwise they
+            # enter done_keys as bogus entries and (because groupby drops NaN
+            # keys) slip past the completeness check below.
+            n_raw = len(prior)
+            prior = prior.dropna(
+                subset=["metabolite", "covariate", "draw", "log_bf"]
+            ).reset_index(drop=True)
+            prior["draw"] = prior["draw"].astype(int)
+            n_torn = n_raw - len(prior)
+            # Keep only the covariates being tested now. A checkpoint is
+            # shared across runs, so it can hold covariates this call does not
+            # target -- topping up one covariate from a full run is the normal
+            # case. Their rows are irrelevant here (and the completeness check
+            # below has no `targets` entry for them). The file itself is only
+            # ever appended to, so their draws stay on disk.
+            # Scope to BOTH axes of this call, not just covariates: a run
+            # over a subset of metabolites would otherwise compute its top-up
+            # set from metabolites it does not hold, and names.index() on one
+            # of them raises.
+            prior = prior[
+                prior["covariate"].isin(covariates)
+                & prior["metabolite"].isin(names)
+            ].reset_index(drop=True)
+            done_keys = set(
+                zip(prior["metabolite"], prior["covariate"], prior["draw"])
+            )
+            if verbose:
+                other = n_raw - n_torn - len(prior)
+                print(f"resuming from {checkpoint_path}: {len(prior)} rows, "
+                      f"{len(done_keys)} draws already complete"
+                      + (f"; {n_torn} truncated row(s) dropped" if n_torn else "")
+                      + (f"; {other} row(s) outside this run's scope ignored"
+                         if other else ""))
+        kernel_types, cov_names = _component_covariate_names(
+            self.models[names[0]].kernel_name, self.feat_names
+        )
+        unit_ids = self.X.iloc[:, self.unit_idx].to_numpy()
+
+        targets = {}
+        for cov in covariates:
+            if cov not in self.feat_names:
+                raise ValueError(f"unknown covariate {cov!r}")
+            idxs = [i for i, c in enumerate(cov_names) if c == cov]
+            if not idxs:
+                raise ValueError(f"covariate {cov!r} has no kernel components")
+            targets[cov] = idxs
+            frac = calc_between_unit_fraction(
+                self.X[cov].to_numpy(), unit_ids
+            )
+            varies = any(
+                np.ptp(self.X[cov].to_numpy()[unit_ids == u]) > 0
+                for u in np.unique(unit_ids)
+            )
+            if verbose:
+                print(f"{cov}: components {idxs} "
+                      f"({[kernel_types[i] for i in idxs]}), "
+                      f"between-unit variance fraction {frac:.2f}")
+            if varies and frac > 1 / 3:
+                warnings.warn(
+                    f"{cov}: {frac:.0%} of its variance is between-unit, but "
+                    "it varies within units so the within-unit test is used. "
+                    "That component of its variation is NOT covered -- a "
+                    "non-significant result understates the covariate. "
+                    "(At ~100% between-unit, e.g. baseline age recorded at "
+                    "each visit, the within-unit test is uninformative.)"
+                )
+
+        if done_keys:
+            # A draw writes one row per kernel component of its covariate, and
+            # a kill mid-append can leave a group short. Re-queue any such
+            # group rather than resuming on a truncated draw.
+            counts = prior.groupby(["metabolite", "covariate", "draw"]).size()
+            partial = {k for k, n in counts.items()
+                       if n < len(targets[k[1]])}
+            if partial:
+                keep = ~prior.set_index(
+                    ["metabolite", "covariate", "draw"]).index.isin(partial)
+                prior = prior[keep].reset_index(drop=True)
+                done_keys -= partial
+                if verbose:
+                    print(f"  discarded {len(partial)} incomplete draw(s) "
+                          "from the checkpoint")
+
+        try:
+            ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
+                     configure_logging=ray_logging)
+        except RuntimeError:
+            ray.shutdown()
+            ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
+                     configure_logging=ray_logging)
+
+        X_ref = ray.put(self.X.to_numpy())
+        unit_ref = ray.put(unit_ids)
+        model_refs = {n: ray.put(self.models[n]) for n in names}
+        y_refs = {n: ray.put(self.Y[n].to_numpy()) for n in names}
+
+        def _launch(items):
+            futs = []
+            for name, cov, b in items:
+                mi = names.index(name)
+                seed = (None if b < 0 else
+                        random_seed + 100003 * mi
+                        + 7919 * covariates.index(cov) + b)
+                futs.append((name, cov, b, _permutation_draw_remote.remote(
+                    model_refs[name], X_ref, y_refs[name], unit_ref,
+                    self.feat_names.index(cov), targets[cov], seed)))
+            return futs
+
+        def _collect(futs, label):
+            if verbose:
+                print(f"{len(futs)} {label} draws queued")
+            rows, n_fail, done_n = [], 0, 0
+            pending = [f[3] for f in futs]
+            meta = {f[3]: f[:3] for f in futs}
+            t0 = time.time()
+            while pending:
+                done, pending = ray.wait(
+                    pending, num_returns=min(100, len(pending)))
+                batch = []
+                for ref in done:
+                    name, cov, b = meta[ref]
+                    res, err = ray.get(ref)
+                    done_n += 1
+                    if err is not None:
+                        n_fail += 1
+                        continue
+                    for idx, val in res.items():
+                        batch.append({
+                            "metabolite": name, "covariate": cov,
+                            "kernel_type": kernel_types[idx],
+                            "kernel_idx": idx, "draw": b, "log_bf": val,
+                        })
+                rows.extend(batch)
+                if checkpoint_path and batch:
+                    # Flush every batch: a run of this length that persists
+                    # nothing until the end forfeits everything if it is
+                    # interrupted, and re-screening alone costs ~10 hours.
+                    header = not os.path.exists(checkpoint_path)
+                    pd.DataFrame(batch).to_csv(
+                        checkpoint_path, mode="a", header=header, index=False)
+                if verbose:
+                    el = time.time() - t0
+                    print(f"  {done_n}/{len(futs)} ({el/60:.1f} min, "
+                          f"{el/max(done_n,1):.2f} s/draw, {n_fail} failed)",
+                          flush=True)
+            return pd.DataFrame(rows)
+
+        def _todo(items):
+            """Drop (metabolite, covariate, draw) triples already on disk."""
+            return [it for it in items if it not in done_keys]
+
+        screen = [(n, c, b) for c in covariates for n in names
+                  for b in range(-1, B0)]
+        todo = _todo(screen)
+        if verbose and len(todo) < len(screen):
+            print(f"resuming: {len(screen) - len(todo)} of {len(screen)} "
+                  "screening draws already done")
+        new = _collect(_launch(todo), "screening") if todo else None
+        parts = [d for d in (prior, new) if d is not None and len(d)]
+        draws = pd.concat(parts, ignore_index=True) if parts else prior
+
+        sd = (draws[draws.draw >= 0]
+              .groupby(["metabolite", "covariate", "kernel_type"])["log_bf"]
+              .std())
+        need = sorted({(m, c) for (m, c, _), v in sd.items()
+                       if pd.notna(v) and v >= 1e-6})
+
+        # How many draws the top-up needs is a function of how many survived
+        # the screen, which is only knowable now -- so derive it rather than
+        # make the caller guess. The finest p obtainable is 1/N over the
+        # pooled live draws, and BH's rank-1 threshold is q/m, so
+        #
+        #     B1  >=  (m / n_live) / q_target
+        #
+        # Draws are pooled, so each live component's draws serve every other
+        # one: the more that survive, the fewer each needs. m/n_live is a
+        # degeneracy multiplier, and it is what made two covariates in the
+        # same study need different budgets (hbi 2.0x, time_from_max 4.4x).
+        #
+        # Per COVARIATE rather than per stratum, because one draw yields
+        # log_bf for every kernel type of that covariate at once.
+        #
+        # Clipped below by B1_min because the resolution requirement says
+        # nothing about how stably each component's own null SD is estimated
+        # -- that is a separate failure mode (FINDINGS 27), where B=60 was
+        # unbiased but noisy enough to flip a call. Clipped above by B1_max
+        # so a stratum where almost everything collapsed cannot demand an
+        # unbounded run.
+        B1_by_cov = {}
+        for c in covariates:
+            live_c = len({m_ for (m_, c_) in need if c_ == c})
+            if B1 is not None:
+                B1_by_cov[c] = B1
+            else:
+                req = int(np.ceil((len(names) / max(live_c, 1)) / q_target))
+                B1_by_cov[c] = int(np.clip(req, B1_min, B1_max))
+                if verbose:
+                    print(f"  {c}: {live_c} live of {len(names)} -> "
+                          f"resolution wants B1>={req} at q={q_target}"
+                          f"; using {B1_by_cov[c]}"
+                          + (" (B1_min floor)" if req < B1_min else "")
+                          + (" (B1_max cap -- q_target NOT reachable)"
+                             if req > B1_max else ""))
+        if verbose:
+            print(f"topping up {len(need)} of {len(names)*len(covariates)} "
+                  f"components with a non-degenerate null to "
+                  f"B={ {c: B1_by_cov[c] for c in covariates} }")
+        if need:
+            top = _todo([(m, c, b) for (m, c) in need
+                         for b in range(B0, B1_by_cov[c])])
+            if verbose and not top:
+                print("resuming: all top-up draws already done")
+            if top:
+                draws = pd.concat([draws, _collect(_launch(top), "top-up")],
+                                  ignore_index=True)
+        ray.shutdown()
+        self.permutation_draws = draws
+
+        out = []
+        for (cov, kt), g in draws.groupby(["covariate", "kernel_type"]):
+            obs = g[g.draw == -1].set_index("metabolite")["log_bf"].to_dict()
+            nul = {m: v["log_bf"].to_numpy()
+                   for m, v in g[g.draw >= 0].groupby("metabolite")}
+            res = calc_permutation_pvalues(obs, nul)
+            res["q_value"] = calc_bh_qvalues(res["p_value"].to_numpy())
+            res = res.reset_index().rename(columns={"key": "metabolite"})
+            res["covariate"], res["kernel_type"] = cov, kt
+            res["stratum"] = f"{kt}:{cov}"
+            res["log_bf"] = res["metabolite"].map(obs)
+            out.append(res)
+
+        results = pd.concat(out, ignore_index=True)
+
+        # Warn when the permutation budget is too coarse for BH to work.
+        # The finest p obtainable is 1/N over the pooled non-degenerate
+        # draws. If that floor sits ABOVE BH's rank-1 threshold (q/m) then
+        # the most extreme test in the stratum cannot be rejected however
+        # extreme it is, and the budget -- not the data -- is deciding.
+        #
+        # Being merely TIED at the floor is a different, milder condition:
+        # those tests are genuinely more extreme than every pooled draw, so
+        # the answer is right but they cannot be ranked against each other.
+        # Reported separately, because conflating the two cries wolf: at
+        # B1=60 lin:hbi had 85 tests tied at the floor while its floor
+        # (6e-05) still cleared BH's threshold (8.9e-05) comfortably.
+        # lin:time_from_max did NOT clear it, and is exactly the stratum
+        # where doubling B1 later moved a hit from q=0.009 to q=1.00
+        # (FINDINGS 27).
+        Q_REF = 0.05
+        for stratum, g in results.groupby("stratum"):
+            live = g[g["null_sd"] > 1e-6]
+            if not len(live):
+                continue
+            pooled = int(live["n_draws"].sum())
+            floor = 1.0 / max(pooled, 1)
+            bh_rank1 = Q_REF / len(g)
+            n_tied = int((g["p_value"] <= floor * 1.01).sum())
+            if floor > bh_rank1:
+                need = int(np.ceil(len(g) / (Q_REF * len(live))))
+                warnings.warn(
+                    f"{stratum}: permutation budget too coarse for "
+                    f"q={Q_REF}. Finest attainable p is {floor:.2g} but BH "
+                    f"needs {bh_rank1:.2g} to reject the top-ranked test; "
+                    f"the budget is deciding, not the data. B1="
+                    f"{B1_by_cov.get(stratum.split(':')[1], B1)} gave "
+                    f"{pooled:,} pooled draws over {len(live)} live tests; "
+                    f"B1>={need} is required. Raise B1 and re-run with "
+                    "resume=True to top up.",
+                    stacklevel=2,
+                )
+            elif n_tied > 1:
+                warnings.warn(
+                    f"{stratum}: {n_tied} tests are tied at the resolution "
+                    f"floor p={floor:.2g} (their observed statistic beats "
+                    "every pooled draw). Their q-values are bounds and they "
+                    "cannot be ranked against one another; raise B1 to "
+                    "separate them. BH itself is unaffected -- the floor "
+                    f"({floor:.2g}) clears its threshold ({bh_rank1:.2g}).",
+                    stacklevel=2,
+                )
+
+        self.permutation_results = results
+        return results
+
+    def between_subject_significance(
+        self,
+        covariates,
+        n_permutations=20000,
+        random_seed=9102,
+        resid_type="pearson",
+        num_processes=None,
+        ray_dashboard=False,
+        ray_logging=False,
+        verbose=True,
+    ):
+        """Subject-level significance -- the complement to
+        `permutation_significance`.
+
+        A within-unit permutation preserves each unit's own covariate values,
+        so between-unit association sits in the null on both sides of the
+        comparison and can neither create a hit nor be credited as one. For a
+        covariate carrying much of its variance between units (see
+        `calc_between_unit_fraction`; hbi is 41% in the iHMP cohort,
+        time_from_max 47%) that leaves a real share of its variation
+        untested. This covers it.
+
+        Per (outcome, covariate):
+          1. refit with ALL of that covariate's kernel components dropped, so
+             the residuals retain whatever the rest of the model cannot
+             explain -- including any covariate signal, which is the point
+          2. reduce each unit to two numbers: mean covariate, mean residual
+          3. Spearman correlation across units (rank-based, since a clinical
+             index is typically bounded and discrete -- hbi has 14 distinct
+             values and skew +2.03)
+          4. permute the unit-level covariate means and recompute
+          5. empirical p, then Benjamini-Hochberg within each covariate
+
+        Exact and design-agnostic: each unit contributes exactly ONE number,
+        so units are freely exchangeable under the null however many
+        observations each has. It is the move OmicsLonDA makes with a
+        subject-level group label, applied to a continuous value.
+
+        Cost is one refit per (outcome, covariate). The permutation itself is
+        arithmetic -- Spearman is Pearson on ranks, so permuting the unit
+        means just permutes their ranks and every draw is one matrix product.
+
+        Parameters
+        ----------
+        covariates : list of str
+            Covariate names to test.
+        n_permutations : int
+            Must satisfy n >= m/q for Benjamini-Hochberg to be able to reject
+            at rank 1 (m outcomes, level q); at m=564 and q=0.05 that is
+            11,280. The default is deliberately generous because these draws
+            cost almost nothing -- an earlier version used 200 and floored
+            every p-value at 5e-3, 56x above the threshold, reporting a
+            meaningless zero.
+
+        Returns
+        -------
+        pd.DataFrame with one row per (outcome, covariate): spearman_abs,
+        p_value, q_value, n_units. Also stored as
+        `self.between_subject_results`.
+        """
+        names = list(self.models.keys())
+        if not names:
+            raise ValueError("between_subject_significance: no fitted models")
+        kernel_types, cov_names = _component_covariate_names(
+            self.models[names[0]].kernel_name, self.feat_names
+        )
+        X = self.X.to_numpy()
+        unit_ids = X[:, self.unit_idx]
+        units = np.unique(unit_ids)
+
+        targets = {}
+        for cov in covariates:
+            if cov not in self.feat_names:
+                raise ValueError(f"unknown covariate {cov!r}")
+            idxs = [i for i, c in enumerate(cov_names) if c == cov]
+            if not idxs:
+                raise ValueError(f"covariate {cov!r} has no kernel components")
+            targets[cov] = idxs
+            if verbose:
+                print(f"{cov}: dropping components {idxs} "
+                      f"({[kernel_types[i] for i in idxs]}) to build residuals")
+
+        floor = n_permutations + 1
+        if verbose:
+            print(f"{len(units)} units; p-value floor 1/{floor} = "
+                  f"{1 / floor:.2g} (BH rank-1 at q=0.05 needs "
+                  f"{0.05 / len(names):.2g})")
+
+        try:
+            ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
+                     configure_logging=ray_logging)
+        except RuntimeError:
+            ray.shutdown()
+            ray.init(num_cpus=num_processes, include_dashboard=ray_dashboard,
+                     configure_logging=ray_logging)
+        X_ref = ray.put(X)
+        jobs = []
+        for cov in covariates:
+            for n in names:
+                jobs.append((n, cov, _subject_residuals_remote.remote(
+                    ray.put(self.models[n]), X_ref,
+                    ray.put(self.Y[n].to_numpy()), targets[cov], resid_type)))
+
+        if verbose:
+            print(f"\n{len(jobs)} refits queued "
+                  f"({len(names)} outcomes x {len(covariates)} covariates)")
+        t0 = time.time()
+        resid, n_fail, done = {}, 0, 0
+        pending = [j[2] for j in jobs]
+        meta = {j[2]: j[:2] for j in jobs}
+        while pending:
+            ready, pending = ray.wait(
+                pending, num_returns=min(100, len(pending)))
+            for ref in ready:
+                res, err = ray.get(ref)
+                done += 1
+                if err is None:
+                    resid[meta[ref]] = res
+                else:
+                    n_fail += 1
+            if verbose:
+                el = time.time() - t0
+                print(f"  {done}/{len(jobs)} ({el/60:.1f} min, "
+                      f"{n_fail} failed)", flush=True)
+        ray.shutdown()
+
+        rng = np.random.default_rng(random_seed)
+        rows = []
+        for cov in covariates:
+            ci = self.feat_names.index(cov)
+            cov_mean = np.array([X[unit_ids == u, ci].mean() for u in units])
+            # The unit-level covariate means are the same vector for every
+            # outcome, so one permutation set serves all of them.
+            rc = rankdata(cov_mean)
+            rc = (rc - rc.mean()) / np.linalg.norm(rc - rc.mean())
+            perms = np.array([rng.permutation(rc)
+                              for _ in range(n_permutations)])
+            for n in names:
+                r = resid.get((n, cov))
+                if r is None:
+                    continue
+                y_mean = np.array([r[unit_ids == u].mean() for u in units])
+                ry = rankdata(y_mean)
+                denom = np.linalg.norm(ry - ry.mean())
+                if denom == 0:          # residuals tied across every unit
+                    continue
+                ry = (ry - ry.mean()) / denom
+                obs = abs(float(rc @ ry))
+                null = np.abs(perms @ ry)
+                rows.append({
+                    "metabolite": n, "covariate": cov,
+                    "spearman_abs": obs, "n_units": len(units),
+                    "p_value": (1 + int(np.sum(null >= obs))) / (1 + len(null)),
+                })
+
+        results = pd.DataFrame(rows)
+        for cov, g in results.groupby("covariate"):
+            results.loc[g.index, "q_value"] = calc_bh_qvalues(
+                g["p_value"].to_numpy())
+        self.between_subject_results = results
+        return results
 
     def plot_marginal(
         self,

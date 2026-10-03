@@ -1,11 +1,13 @@
 import contextlib
 import time
+import warnings
 from ctypes import ArgumentError
 from xml.etree.ElementInclude import include
 
 import gpflow
 import joblib
 import numpy as np
+import pandas as pd
 import psutil
 import ray
 import scipy
@@ -15,6 +17,7 @@ import tqdm
 from gpflow.utilities import set_trainable
 from joblib import Parallel, delayed
 from ray.experimental import tqdm_ray
+from scipy.stats import norm
 from tensorflow_probability import distributions as tfd
 
 from .kernels import Empty
@@ -28,6 +31,17 @@ from .likelihoods import (
 
 
 f64 = gpflow.utilities.to_default_float
+
+# Numerical pre-filter for kernel-component pruning (cut_kernel_components in
+# model_classes.py and regularization.py) -- not a significance/selection rule.
+VAR_CUTOFF_DEFAULT = 1e-8
+
+# Floor on how small a kernel variance parameter's transform can go (see
+# set_variance_floor below). A horseshoe-shrunk variance pushed past ~8e-78
+# makes Horseshoe.log_prob's *gradient* underflow to -inf, poisoning the
+# whole gradient vector; this floor keeps every variance parameter far
+# enough from that danger zone that it can never be reached.
+VARIANCE_FLOOR = 1e-10
 
 
 def set_precision(precision: str = "float64"):
@@ -63,6 +77,36 @@ def get_precision():
 set_precision("float64")
 
 
+def set_variance_floor(floor: float = VARIANCE_FLOOR):
+    """
+    Floor how small any positive-constrained (softplus-transformed)
+    parameter can numerically become -- in particular, kernel variances.
+
+    Without this, a horseshoe-shrunk kernel variance can be pushed by the
+    optimizer past a numerical danger zone (empirically, below ~8e-78):
+    Horseshoe.log_prob's *gradient* underflows to exactly -inf there (its
+    value stays finite), poisoning the whole gradient vector and causing
+    scipy's L-BFGS-B to fail its line search on the very first step (0
+    iterations) instead of converging or even failing informatively.
+    Confirmed as the root cause of every one of 417/564 non-converged
+    full-model fits in a real no-prune run -- every non-converged model had
+    a variance collapsed into this zone, every converged model didn't --
+    producing log_bf values up to 26 million as a result.
+
+    The default (VARIANCE_FLOOR = 1e-10) sits two orders of magnitude below
+    VAR_CUTOFF_DEFAULT (1e-8, the numerical pre-filter used elsewhere to
+    decide a term has collapsed, see cut_kernel_components), preserving
+    that threshold's meaning, and is far below any real fitted variance in
+    this analysis -- it only ever binds in cases that are already
+    numerically meaningless.
+    """
+    gpflow.config.set_default_positive_minimum(floor)
+
+
+# Floor kernel variance parameters away from the Horseshoe-gradient danger zone
+set_variance_floor()
+
+
 def convert_data_to_tensors(X: np.array, Y: np.array):
 
     tensor_tuple = (
@@ -90,8 +134,7 @@ def calc_bic(loglik: float, n: int, k: int):
     float
         BIC
     """
-    # return k*np.log(n)-2*loglik
-    return 2 * k - 2 * loglik
+    return k * np.log(n) - 2 * loglik
 
 
 def coregion_freeze(k):
@@ -610,12 +653,11 @@ def calc_deviance_explained(
         return null_deviance, model_deviance
 
 
-def calc_feature_importance_components(
+def _calc_feature_importance_components_legacy(
     model, data=None, return_value="log_bf"
 ):
-    """Calculate deviance explained for entire model and use 1 - that for
-    residual component. Then for each kernel component calculate the return
-    value [log_bf, statistic, de].
+    """Legacy (pre-refit) no-refit plug-in predictive-log-density behavior.
+    Kept only for `calc_feature_importance_components(..., refit=False)`.
     """
 
     # Save output list
@@ -706,6 +748,518 @@ def calc_feature_importance_components(
     return de_list
 
 
+def feature_importance_detail_to_flat(detail_list, return_value="log_bf"):
+    """Project a `calc_feature_importance_components(..., full_detail=True)`
+    detail list down to the flat scalar-per-component list historically
+    returned by `calc_feature_importance_components`/`get_feature_importances`.
+
+    The trailing "leftover noise" entry is always reported in deviance-
+    explained units, regardless of `return_value` -- matching the pre-refit
+    contract.
+    """
+    key = {"statistic": "delta_bic", "log_bf": "log_bf"}.get(
+        return_value, "deviance_explained"
+    )
+    flat = [d[key] for d in detail_list[:-1]]
+    flat.append(detail_list[-1]["deviance_explained"])
+    return flat
+
+
+def calc_feature_importance_components(
+    model,
+    data=None,
+    return_value="log_bf",
+    refit=True,
+    refit_options=None,
+    full_detail=False,
+):
+    """Calculate an evidence statistic and marginal deviance explained for
+    each additive kernel component, by refitting the model with that
+    component dropped (frozen decision: refit required, warm-started from
+    the full model's fitted parameters). Every component is refit for real,
+    including already-collapsed ones -- an earlier shortcut that clamped a
+    collapsed component's variance and evaluated without refitting was
+    removed: it produced a near-deterministic log_bf regardless of
+    metabolite (evaluating a fixed clamped value, not a genuine
+    optimization result), creating an artificial point mass that broke
+    every downstream null-distribution assumption. See docs/revision/
+    FINDINGS.md for the investigation.
+
+    Parameters
+    ----------
+    return_value: str
+        "log_bf" (default): log Bayes factor, log_bf = -0.5 * delta_bic.
+        "statistic": raw delta_bic = BIC_full - BIC_reduced. Sign convention:
+            more negative delta_bic (equivalently, larger log_bf) = more
+            evidence the component matters.
+        anything else: marginal (drop-one) deviance explained.
+        Ignored when `full_detail=True`.
+    refit: bool
+        If True (default), each reduced (component-dropped) model is
+        re-optimized -- warm-started from the full model's fitted parameters
+        via deepcopy -- before delta_bic / deviance explained are computed.
+        If False, reproduces the legacy no-refit plug-in predictive-log-
+        density behavior (`_calc_feature_importance_components_legacy`).
+    refit_options: dict
+        Passed through to `model.optimize_params(...)` for each reduced-
+        model refit. Ignored when refit=False.
+    full_detail: bool
+        If True, return a list of dicts (one per component, in the same
+        order as the flat list, plus the trailing leftover-noise entry) with
+        keys "delta_bic", "log_bf", "deviance_explained" -- all computed
+        from the same refit, so callers needing more than one quantity do
+        not have to refit twice. Ignored when refit=False.
+    """
+    if not refit:
+        return _calc_feature_importance_components_legacy(
+            model, data=data, return_value=return_value
+        )
+
+    # Default the refit optimizer to whatever the full model itself was fit
+    # with, so delta_bic reflects only the dropped component, not an
+    # optimizer-quality mismatch between the two sides of the comparison.
+    # Previously hardcoded to 'adam/gradient' regardless of the full
+    # model's optimizer -- confirmed via a 7332-component real-data check
+    # (fit_penalized_models_revision_full_scipy_no_prune.pkl) that this
+    # mismatch only affects ~1.6% of components, but by up to several
+    # thousand log_bf units when it does (e.g. one component: 10130.2 with
+    # a mismatched adam/gradient refit vs 10.4 once refit with the full
+    # model's own scipy optimizer). See docs/revision/FINDINGS.md, "T2
+    # (continued)". A collapsed component's variance is floored well away
+    # from zero (see VARIANCE_FLOOR / set_variance_floor), which is what
+    # actually keeps its refit's gradient well-behaved -- not an avoided
+    # refit.
+    default_optimizer = getattr(model, "optimizer", None) or "adam/gradient"
+    refit_options = {"optimizer": default_optimizer, **(refit_options or {})}
+    actual_optimizer = refit_options["optimizer"]
+    if getattr(model, "optimizer", None) not in (None, actual_optimizer):
+        warnings.warn(
+            f"Full model was fit with optimizer={model.optimizer!r}, but "
+            f"component refits use {actual_optimizer!r}; delta_bic may "
+            "partly reflect differing optimizer quality, not just the "
+            "dropped component."
+        )
+    k = model.kernel
+
+    def _bic(m):
+        # optimize_params(optimizer="adam/gradient") leaves q_mu/q_sqrt
+        # untrainable afterward, which would otherwise skew calc_metric's
+        # BIC (k = len(trainable_parameters)). Restore before counting,
+        # then put the original trainable state back -- m may be the
+        # caller's live model, not a deepcopy, so this must not
+        # permanently flip its trainable flags as a side effect.
+        q_mu_trainable = m.q_mu.trainable
+        q_sqrt_trainable = m.q_sqrt.trainable
+        set_trainable(m.q_mu, True)
+        set_trainable(m.q_sqrt, True)
+        try:
+            return m.calc_metric(data=data, metric="BIC")
+        finally:
+            set_trainable(m.q_mu, q_mu_trainable)
+            set_trainable(m.q_sqrt, q_sqrt_trainable)
+
+    # Full-model deviance decomposition (used as the fixed reference for
+    # marginal deviance explained, and for the leftover-noise entry).
+    full_mu_hat, full_var_hat = model.predict_y(data[0])
+    null_lls, mod_lls, sat_lls = calc_deviance_explained(
+        model=model,
+        data=data,
+        model_mu=full_mu_hat,
+        model_var=full_var_hat,
+        return_deviance_explained=False,
+        aggregate=False,
+        return_loglik=True,
+    )
+    if np.sum(sat_lls) >= np.sum(mod_lls) and np.sum(mod_lls) >= np.sum(
+        null_lls
+    ):
+        full_de = 1 - (
+            -2 * np.sum(mod_lls - sat_lls) / (-2 * np.sum(null_lls - sat_lls))
+        )
+        full_de = max(min(1, full_de), 0)
+    else:
+        full_de = 0
+
+    full_bic = _bic(model)
+    if not np.isfinite(full_bic):
+        raise ValueError(
+            "calc_feature_importance_components: the full model's own BIC "
+            "is non-finite (fitted model appears degenerate); cannot "
+            "compute component importances. Re-fit the full model and "
+            "retry -- this has been observed as a rare, non-reproducible "
+            "numerical fault, not a deterministic property of the data."
+        )
+
+    def _refit(model_copy):
+        # Warm start: model_copy already holds the full model's fitted
+        # values (from the deepcopy) for every surviving parameter.
+        model_copy.num_trainable_params = np.nan
+        model_copy.optimize_params(data=data, **refit_options)
+        return model_copy
+
+    def _component_result(model_copy):
+        reduced_bic = _bic(model_copy)
+        delta_bic = full_bic - reduced_bic
+        log_bf = -0.5 * delta_bic
+
+        mod_mu_hat, mod_var_hat = model_copy.predict_y(data[0])
+        null_lls_r, sub_mod_lls, _ = calc_deviance_explained(
+            model=model_copy,
+            data=data,
+            model_mu=mod_mu_hat,
+            model_var=mod_var_hat,
+            return_deviance_explained=False,
+            aggregate=False,
+            return_loglik=True,
+        )
+        # Fraction of the full model's gain-over-null attributable to this
+        # component (high = important, ~0 = null).
+        denom = -2 * np.sum(null_lls_r - mod_lls)
+        if denom != 0:
+            marginal_de = (-2 * np.sum(sub_mod_lls - mod_lls)) / denom
+            marginal_de = max(min(1, marginal_de), 0)
+        else:
+            marginal_de = 0.0
+
+        # Returned at full precision. These used to be rounded here
+        # (delta_bic/log_bf to 1dp, deviance_explained to 3dp), which put a
+        # rounded copy of the statistic into every model's cached
+        # feature_importance_detail and from there into the component table,
+        # where it disagreed with the full-precision value in the
+        # permutation results on 2256 of 2256 tested rows. Rounding also
+        # erased the dead-component signature: a collapsed component's
+        # log_bf is exactly -0.5 * k * log(n) (-2.7361 / -5.4723 at n=238),
+        # which 1dp turns into -2.7 / -5.5. Round at display time instead.
+        # float() matters: these are tf.Tensor scalars, and np.round used to
+        # convert them as a side effect. Returning raw tensors leaks them into
+        # the cached detail, the component CSV and anything that serialises it.
+        return {
+            "delta_bic": float(delta_bic),
+            "log_bf": float(log_bf),
+            "deviance_explained": float(marginal_de),
+        }
+
+    def _refit_result_with_retry(make_reduced_kernel, max_attempts=2):
+        # The refit itself can occasionally return a non-finite result --
+        # observed to be a rare, non-reproducible numerical fault (not a
+        # deterministic function of the data or of how many prior fits
+        # happened in this process), so retrying with a fresh deepcopy can
+        # succeed even though nothing about the inputs changed. If every
+        # attempt is non-finite, return the last one anyway (with a
+        # warning) rather than raise, so one bad component doesn't stop
+        # every other component from being reported.
+        result = None
+        for _attempt in range(max_attempts):
+            model_copy = gpflow.utilities.deepcopy(model)
+            make_reduced_kernel(model_copy)
+            result = _component_result(_refit(model_copy))
+            if np.isfinite(result["log_bf"]):
+                return result
+        warnings.warn(
+            "calc_feature_importance_components: refit produced a "
+            f"non-finite log_bf after {max_attempts} attempts; returning "
+            "it as-is. This component's result should be treated as "
+            "unreliable."
+        )
+        return result
+
+    detail_list = []
+    if k.name == "sum":
+        for k_idx in range(len(k.kernels)):
+            result = _refit_result_with_retry(
+                lambda m, idx=k_idx: m.kernel.kernels.pop(idx)
+            )
+            detail_list.append(result)
+
+    else:
+        # If there is just a single term, the reduced model is the
+        # constant-kernel baseline (matches cut_kernel_components).
+        if k.name == "constant":
+            detail_list.append(
+                {"delta_bic": 0.0, "log_bf": 0.0, "deviance_explained": 0.0}
+            )
+        else:
+            result = _refit_result_with_retry(
+                lambda m: setattr(m, "kernel", gpflow.kernels.Constant())
+            )
+            detail_list.append(result)
+
+    # Gather the final bit for leftover noise (always deviance-explained
+    # units, matching the pre-refit contract).
+    detail_list.append(
+        {
+            "delta_bic": None,
+            "log_bf": None,
+            "deviance_explained": float(1 - full_de),
+        }
+    )
+
+    if full_detail:
+        return detail_list
+
+    return feature_importance_detail_to_flat(detail_list, return_value)
+
+
+def calc_empirical_pvalue(obs, null):
+    """Empirical p-value(s) against a null pool.
+
+    p = (1 + #{null >= obs}) / (1 + B) -- frozen decision (revision plan,
+    item 4). Larger values of the statistic mean more evidence (matches the
+    log_bf sign convention), so the tail counted is the upper tail.
+
+    Parameters
+    ----------
+    obs : scalar or array-like
+        Observed evidence statistic(s) (e.g. log_bf).
+    null : array-like
+        Pool of B null-distribution draws of the same statistic.
+
+    Returns
+    -------
+    A scalar p-value if `obs` is scalar, else an np.ndarray aligned to
+    `obs`.
+    """
+    obs_arr = np.atleast_1d(np.asarray(obs, dtype=float))
+    null_arr = np.asarray(null, dtype=float)
+    if null_arr.size == 0:
+        raise ValueError("calc_empirical_pvalue: null pool is empty.")
+    counts = (null_arr[None, :] >= obs_arr[:, None]).sum(axis=1)
+    pvals = (1 + counts) / (1 + null_arr.size)
+    return pvals.item() if np.ndim(obs) == 0 else pvals
+
+
+def calc_between_unit_fraction(values, unit_ids):
+    """Fraction of a covariate's variance that lies BETWEEN units.
+
+    Determines which permutation scheme a covariate needs, and warns when a
+    within-unit test leaves a large share of its variation untested. In the
+    iHMP cohort: hbi 0.41, time_from_max 0.47, study_days 0.74, age 1.00.
+    `age` is the cautionary case -- it technically varies within subject
+    (patients age during follow-up) while carrying essentially none of its
+    variance there, so "does it vary?" is the wrong question to ask.
+    """
+    values = np.asarray(values, dtype=float)
+    unit_ids = np.asarray(unit_ids)
+    grand = values.mean()
+    between = within = 0.0
+    for u in np.unique(unit_ids):
+        v = values[unit_ids == u]
+        between += v.size * (v.mean() - grand) ** 2
+        within += np.sum((v - v.mean()) ** 2)
+    total = between + within
+    return float(between / total) if total > 0 else np.nan
+
+
+def permute_covariate(values, unit_ids, rng, scheme="auto"):
+    """Permute one covariate under the null, preserving unit structure.
+
+    scheme="within": free shuffle of each unit's own values among its own
+    observations. Every unit keeps its own multiset, so ALL between-unit
+    structure survives untouched -- the null then targets "no within-unit
+    association", and any between-unit contribution appears identically in
+    the observed and permuted statistics and cancels.
+
+    scheme="across": permute the unit-level value across units (for
+    covariates that are constant within a unit, where a within-unit shuffle
+    is a no-op).
+
+    scheme="auto" picks "across" when the covariate is constant within every
+    unit, else "within".
+
+    A free shuffle is used rather than a circular shift: an additive kernel
+    never uses the covariate's time-ordering, only which value is attached to
+    which observation, so the extra restriction buys nothing and costs a much
+    smaller permutation space (n_i! vs n_i, and ties shrink the latter
+    further).
+
+    NOT used: a global shuffle across all observations. That destroys the
+    covariate's clustering by unit, and an SE kernel on a clustered covariate
+    partially proxies the unit random effect -- a real source of likelihood
+    gain that belongs in the null. Removing it made a 4.1-SD result look like
+    28.6 SD on real data. See docs/revision/FINDINGS.md.
+    """
+    values = np.asarray(values, dtype=float)
+    unit_ids = np.asarray(unit_ids)
+    units = np.unique(unit_ids)
+    if scheme == "auto":
+        scheme = ("across"
+                  if all(np.ptp(values[unit_ids == u]) == 0 for u in units)
+                  else "within")
+    out = values.copy()
+    if scheme == "across":
+        unit_vals = np.array([values[unit_ids == u][0] for u in units])
+        for u, v in zip(units, rng.permutation(unit_vals)):
+            out[unit_ids == u] = v
+    else:
+        for u in units:
+            idx = np.where(unit_ids == u)[0]
+            out[idx] = rng.permutation(values[idx])
+    return out
+
+
+def calc_permutation_pvalues(
+    observed,
+    null_draws,
+    tie_tol=1e-3,
+    degenerate_tol=1e-6,
+    n_tau=80,
+    min_p=1e-6,
+):
+    """Permutation p-values via conditional quantile regression on scale.
+
+    Each test's null is centred on its own median, because a within-unit
+    permutation deliberately leaves that test's between-unit structure in the
+    null, so every test's null sits at its own level.
+
+    The scales then differ by orders of magnitude -- measured null SDs run
+    from exactly 0 (the component collapses under every permutation) to ~21.
+    Pooling one shared tail across all tests is badly anti-conservative for
+    the wide-null minority: 37-38% false positives at nominal 5% in
+    simulation, invisible in the aggregate because the degenerate majority
+    dilutes it.
+
+    Rather than binning the scale (which works, but needs an arbitrary
+    cutpoint and over/under-shoots either side of it), the conditional
+    quantile function Q_tau(centred draw | null SD) is fit by quantile
+    regression over a grid of tau, and each test's p-value is read off as
+    1 - tau at the point where its own fitted conditional quantile reaches
+    its observed excess. No bins, smooth in scale, and every draw informs
+    every test. Validated in simulation: false-positive rates 0.047 / 0.048
+    against nominal 0.05, versus 0.070 / 0.032 for binning.
+
+    Parameters
+    ----------
+    observed : dict or pd.Series
+        key -> observed statistic.
+    null_draws : dict
+        key -> array of permutation draws for that key.
+    tie_tol : float
+        Statistics differing by less than this are the same value. Optimizer
+        noise puts genuinely-identical collapsed components a few 1e-4 apart;
+        without this, a null atom straddling the observed flips the p-value
+        (measured: 0.90 vs 0.31 for one collapsed state).
+    degenerate_tol : float
+        Null SD below this is treated as a point mass.
+
+    Returns
+    -------
+    pd.DataFrame indexed by key with columns p_value, null_centre, null_sd,
+    n_draws.
+    """
+    import statsmodels.api as sm
+
+    keys = [k for k in observed.keys() if k in null_draws]
+    centre, spread, excess = {}, {}, {}
+    for k in keys:
+        d = np.asarray(null_draws[k], dtype=float)
+        centre[k] = float(np.median(d))
+        spread[k] = float(np.std(d, ddof=1)) if d.size > 1 else 0.0
+        excess[k] = float(observed[k]) - centre[k]
+
+    y = np.concatenate([np.asarray(null_draws[k], float) - centre[k]
+                        for k in keys])
+    x = np.concatenate([np.full(len(null_draws[k]), spread[k]) for k in keys])
+    # Extend the tau grid only as far as the pooled draws actually support:
+    # the finest empirically-backed upper quantile is ~1/N, and asking a
+    # quantile regression for anything beyond that is extrapolation. A fixed
+    # floor here is a trap -- it silently caps every p-value, and if that cap
+    # sits above BH's q/m threshold the top-ranked test in a stratum can
+    # never be rejected no matter how extreme it is.
+    tail_floor = max(1.0 / max(y.size, 2), min_p)
+    taus = 1 - np.concatenate([
+        np.linspace(0.5, 0.02, n_tau // 2),
+        np.logspace(np.log10(0.02), np.log10(tail_floor),
+                    n_tau - n_tau // 2),
+    ])
+    model = sm.QuantReg(y, sm.add_constant(x))
+    coefs = []
+    for t in taus:
+        try:
+            coefs.append(model.fit(q=t, max_iter=2000).params)
+        except Exception:
+            coefs.append(coefs[-1] if coefs else np.zeros(2))
+    coefs = np.asarray(coefs)
+
+    rows = []
+    for k in keys:
+        if spread[k] < degenerate_tol:
+            # Point-mass null: the component collapses under every
+            # permutation, so the only statements available are "the
+            # observed sits on it" or the permutation floor.
+            n = len(null_draws[k])
+            p = 1.0 if excess[k] <= tie_tol else 1.0 / (1 + n)
+        else:
+            q = np.maximum.accumulate(coefs[:, 0] + coefs[:, 1] * spread[k])
+            idx = int(np.searchsorted(q, excess[k] - tie_tol))
+            p = (1.0 - taus[-1]) if idx >= len(taus) else float(1.0 - taus[idx])
+            p = max(p, min_p)
+        rows.append({"key": k, "p_value": p, "null_centre": centre[k],
+                     "null_sd": spread[k], "n_draws": len(null_draws[k])})
+    return pd.DataFrame(rows).set_index("key")
+
+
+def calc_bh_qvalues(pvalues):
+    """Benjamini-Hochberg q-values (adjusted p-values).
+
+    Standard step-up procedure: sort ascending, scale by n / rank, then
+    take the cumulative minimum from the largest p-value down so q-values
+    are monotone non-decreasing in the sorted p-value order.
+    """
+    pvals = np.asarray(pvalues, dtype=float)
+    n = pvals.size
+    order = np.argsort(pvals)
+    ranked = pvals[order] * n / (np.arange(n) + 1)
+    q_sorted = np.clip(np.minimum.accumulate(ranked[::-1])[::-1], 0, 1)
+    qvals = np.empty(n)
+    qvals[order] = q_sorted
+    return qvals
+
+
+def empirical_null_bh(obs_values, null_values, obs_groups=None, null_groups=None):
+    """Empirical-null p-values + BH q-values for a set of observed evidence
+    statistics (e.g. per-(kernel, covariate) log_bf), against a pool of
+    known-null draws of the same statistic.
+
+    Frozen decision (revision plan, item 4): significance = empirical-null +
+    BH, stratified per (kernel, covariate) pair. Pass `obs_groups`/
+    `null_groups` (parallel arrays of group labels, e.g. "kernel:covariate"
+    strings, one per entry in `obs_values`/`null_values`) to stratify: each
+    group gets its own null pool and its own BH pass. Omitting them pools
+    everything into one null distribution and one BH pass -- the plan's
+    acceptance check uses this only as the contrast case, since pooling
+    across strata that differ systematically over-rejects.
+
+    Returns
+    -------
+    (pvalues, qvalues) : np.ndarray pair, aligned to `obs_values`.
+    """
+    obs_values = np.asarray(obs_values, dtype=float)
+    null_values = np.asarray(null_values, dtype=float)
+
+    if obs_groups is None:
+        pvalues = calc_empirical_pvalue(obs_values, null_values)
+        qvalues = calc_bh_qvalues(pvalues)
+        return pvalues, qvalues
+
+    obs_groups = np.asarray(obs_groups)
+    null_groups = np.asarray(null_groups)
+    pvalues = np.full(obs_values.shape, np.nan)
+    qvalues = np.full(obs_values.shape, np.nan)
+
+    for g in np.unique(obs_groups):
+        obs_mask = obs_groups == g
+        null_mask = null_groups == g
+        if not np.any(null_mask):
+            raise ValueError(
+                f"empirical_null_bh: no null values found for group {g!r}."
+            )
+        p_g = calc_empirical_pvalue(obs_values[obs_mask], null_values[null_mask])
+        pvalues[obs_mask] = p_g
+        qvalues[obs_mask] = calc_bh_qvalues(p_g)
+
+    return pvalues, qvalues
+
+
 def individual_kernel_predictions(
     model,
     kernel_idx,
@@ -769,6 +1323,7 @@ def individual_kernel_predictions(
 
     # Copy model component of interest
     sub_model = gpflow.utilities.deepcopy(model)
+    component_selected = False
 
     # Make sure we have additive components, otherwise return the full model
     if sub_model.kernel.name == "sum":
@@ -779,9 +1334,13 @@ def individual_kernel_predictions(
                 "Not enough kernel components for index requested!"
             )
 
-        # TODO: Show that using the independent kernel is bad!
-        # Now subset the copied model to the specific kernel component
+        # Now subset the copied model to the specific kernel component.
+        # component_selected records that what follows is ONE PART of an
+        # additive model rather than a model in its own right -- the
+        # prediction below needs the full model's K_zz to evaluate it
+        # (FINDINGS.md section 29).
         sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
+        component_selected = True
 
     # # Then generate predictions
     # pred_mu, pred_var = sub_model.predict_f(X)
@@ -813,9 +1372,13 @@ def individual_kernel_predictions(
     #         sub_model.kernel = sub_model.kernel.kernels[kernel_idx]
     # pred_x = model_data[0] if X is None else X
 
-    # If there is only one kernel component then return
-    # standard marginal prediction
-    if sub_model.kernel.name != "sum":
+    # Dispatch on whether a component was pulled out of an additive model.
+    # This used to test `sub_model.kernel.name != "sum"`, but the kernel has
+    # already been swapped for the component by this point, so an ordinary
+    # component (linear, squared_exponential, ...) always took the
+    # single-model path and never reached the additive branch below.
+    if not component_selected:
+        # Not an additive model -- sub_model IS the model.
         pred_mu, pred_var = sub_model.predict_f(X)
         _, pred_cov = sub_model.predict_f(X, full_cov=True)
         sample_fns = tf.transpose(
@@ -823,7 +1386,68 @@ def individual_kernel_predictions(
         )
     else:
 
-        if marginal is True:
+        if marginal is True and model.inducing_variable is not None:
+            # Additive-component posterior.
+            #
+            # The variational parameters (q_mu, q_sqrt) were fitted against
+            # the FULL kernel, so a component's contribution has to be
+            # evaluated with the full K_zz. Swapping in the sub-kernel and
+            # calling predict_f -- what this branch used to do -- rebuilds
+            # K_zz from that component alone and re-interprets q_mu against
+            # the wrong matrix. The components then do not sum to the model
+            # and the curve can come out with the wrong sign
+            # (FINDINGS.md section 29).
+            #
+            # For f = sum_i f_i with shared inducing values u at Z:
+            #   mean_i = K_i(X,Z) L^-T q_mu
+            #   cov_i  = K_i(X,X) - K_i(X,Z) Kzz^-1 K_i(Z,X)
+            #            + K_i(X,Z) L^-T S L^-1 K_i(Z,X)
+            # which is exactly what base_conditional returns when handed
+            # Kmn/Knn from the component and Kmm from the full kernel.
+            X_t = tf.convert_to_tensor(X, dtype=gpflow.default_float())
+            Z_t = tf.convert_to_tensor(
+                model.inducing_variable.Z, dtype=gpflow.default_float()
+            )
+            Kmm = model.kernel(Z_t) + tf.eye(
+                tf.shape(Z_t)[0], dtype=gpflow.default_float()
+            ) * gpflow.config.default_jitter()
+            pred_mu, pred_cov = gpflow.conditionals.util.base_conditional(
+                Kmn=sub_model.kernel(Z_t, X_t),
+                Kmm=Kmm,
+                Knn=sub_model.kernel(X_t),
+                f=model.q_mu,
+                q_sqrt=model.q_sqrt,
+                white=getattr(model, "whiten", True),
+                full_cov=True,
+            )
+            pred_cov = tf.squeeze(pred_cov, axis=0)
+            # Each panel is drawn on the response scale, so keep the model's
+            # mean function on every component as the old branch did. It is
+            # a constant offset and does not affect any component's shape.
+            pred_mu = pred_mu + model.mean_function(X_t)
+            pred_var = tf.linalg.diag_part(pred_cov)
+            try:
+                sample_fns = tf.transpose(
+                    tf.reshape(
+                        tfp.distributions.MultivariateNormalTriL(
+                            loc=tf.transpose(pred_mu),
+                            scale_tril=tf.linalg.cholesky(
+                                pred_cov
+                                + tf.eye(
+                                    tf.shape(X_t)[0],
+                                    dtype=gpflow.default_float(),
+                                )
+                                * gpflow.config.default_jitter()
+                            ),
+                        ).sample(sample_shape=num_samples),
+                        (num_samples, -1),
+                    )
+                )
+            except tf.errors.InvalidArgumentError:
+                sample_fns = tf.repeat(pred_mu, num_samples, axis=1)
+        elif marginal is True:
+            # No inducing variables (e.g. an exact GPR): fall back to the
+            # sub-kernel prediction.
             pred_mu, pred_var = sub_model.predict_f(X)
             _, pred_cov = sub_model.predict_f(X, full_cov=True)
             sample_fns = tf.transpose(

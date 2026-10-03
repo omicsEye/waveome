@@ -37,6 +37,11 @@ dependencies = [
     "ray[default]",
     # 1.13+ triggers recursion bug with numpy 1.26.x (numpy/issues/24702)
     "scipy>=1.11.0,<1.13.0",
+    # calc_permutation_pvalues fits the conditional quantile regression with
+    # statsmodels.QuantReg. Undeclared until now, and the import sits inside
+    # the function -- so a clean env would run the full permutation (~23 h on
+    # the iHMP cohort) and only then fail at the p-value step.
+    "statsmodels>=0.13.0",
     "joblib",
     "seaborn",
     "matplotlib",
