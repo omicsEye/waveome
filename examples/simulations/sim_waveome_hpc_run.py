@@ -459,9 +459,10 @@ def run_simulation(
     epsilon=0,
     alpha=1,
     random_seed=0,
-    num_jobs=-1
+    num_jobs=-1,
+    perm_checkpoint=None
 ):
-    
+
     np.random.seed(random_seed)
     
     # Create output dataframe
@@ -487,7 +488,7 @@ def run_simulation(
     # End iteration if simulated data fails
     if sim_df is None:
         print("Simulating data failed!")
-        return pd.DataFrame()
+        return pd.DataFrame(), None
 
     # Then split into training and holdout
     train_idx = sim_df.sample(frac=0.8, random_state=random_seed).index.to_numpy()
@@ -548,9 +549,14 @@ def run_simulation(
         outcome_likelihood="negativebinomial",
         Y_transform=None
     )
-    gps_sim_pen.penalized_optimization(random_seed=random_seed, num_jobs=num_jobs)
+    # Unpruned, so every outcome keeps the same candidate components and each
+    # gets a permutation statistic; hits come from those, not from pruning.
+    gps_sim_pen.penalized_optimization(
+        random_seed=random_seed, num_jobs=num_jobs, prune_components=False
+    )
 
-    # Which features were chosen?
+    # Components fitted (the candidate set, not a selection): the penalized
+    # hits are the permutation_draws below, scored after pooling replicates
     gpp_feats = retrieve_features_in_models(gps_sim_pen)
     for k, v in gpp_feats.items():
         output_df.loc[
@@ -602,6 +608,24 @@ def run_simulation(
 
     end_time = time.time()
     print(f"GP Penalized time: {end_time - start_time}")
+    start_time = end_time
+
+    # Permutation null for the penalized fit, as on iHMP. id is an adjuster:
+    # relabelling units leaves its component unchanged, so it is not tested.
+    # Only the raw draws (draw == -1 is the observed statistic) are kept:
+    # p-values and BH are computed later over all replicates of a setting
+    # pooled, not within these four outcomes.
+    gps_sim_pen.permutation_significance(
+        covariates=["treat", "time"],
+        q_target=0.10,
+        random_seed=9102,
+        num_processes=num_jobs,
+        checkpoint_path=perm_checkpoint,
+    )
+    perm_draws = gps_sim_pen.permutation_draws
+
+    end_time = time.time()
+    print(f"GP Penalized permutation time: {end_time - start_time}")
     start_time = end_time
 
     ##########################
@@ -1389,7 +1413,7 @@ def run_simulation(
     print(f"NB-ARD time: {end_time - start_time}")
     start_time = end_time
 
-    return output_df
+    return output_df, perm_draws
 
 def make_grid(run_id):
     """Cross-join of simulation settings; 32 contiguous rows per setting."""
@@ -1501,8 +1525,12 @@ def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
             f"{alpha}) is not a grid setting"
         )
 
+    # Permutation draws are checkpointed as they land, so a cell killed
+    # mid-permutation resumes them (the fits before it are deterministic)
+    perm_checkpoint = out_path + ".perm.csv"
+
     start_time = time.time()
-    sim_results = run_simulation(
+    metrics, perm_draws = run_simulation(
         input_df=input_df,
         kern_out=kern_out,
         rate=rate,
@@ -1510,14 +1538,20 @@ def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
         epsilon=epsilon,
         alpha=alpha,
         random_seed=run_id,
-        num_jobs=num_jobs
+        num_jobs=num_jobs,
+        perm_checkpoint=perm_checkpoint
     )
     print("----%.2f seconds----"%(time.time() - start_time))
 
     tmp_path = out_path + ".tmp"
     with open(tmp_path, "wb") as handle:
-        pickle.dump(sim_results, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(
+            {"metrics": metrics, "permutation_draws": perm_draws},
+            handle, protocol=pickle.HIGHEST_PROTOCOL
+        )
     os.replace(tmp_path, out_path)
+    if os.path.exists(perm_checkpoint):
+        os.remove(perm_checkpoint)
 
 
 if __name__ == "__main__":

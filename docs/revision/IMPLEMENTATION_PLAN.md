@@ -32,6 +32,19 @@ changes mid-implementation, update the tracker first, then this plan.
    → BH per stratum), so the benchmark validates the procedure actually applied.
    Known-null components are the ground truth that hits are scored against, not
    the null distribution.
+   **Scoring decided by author 2026-10-03:** penalized variant fit unpruned
+   (`prune_components=False`), `treat` and `time` tested by permutation, BH at
+   q ≤ 0.10 with each setting's 75 replicates pooled into one family per
+   stratum; `id` is an adjuster and is not tested (relabelling invariance),
+   with a parametric-bootstrap test for it as a later amendment. Search
+   variant keeps BIC selection. Scored at two levels: covariate (primary) and
+   term (supplement), plus F1.
+   A product component (treat × time) is tested under the permutation of each
+   covariate it contains, in its own stratum. Covariate-level hit = any of the
+   covariate's components rejects. Term-level interaction hit = it rejects
+   under **both** permutations, because a one-factor permutation also removes
+   that factor's main effect (the null is "covariate plays no role", not "no
+   interaction beyond main effects").
 6. **Permutation scheme**: single within-unit **circular shift** for every within-unit-
    varying covariate; **across-unit block permutation** for constant-within-unit
    covariates; **target permuted with adjusters held fixed** (roles user-supplied;

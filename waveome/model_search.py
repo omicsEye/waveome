@@ -2011,6 +2011,13 @@ class GPSearch:
         holding much of its variance between units is therefore only
         partially covered, and a warning is emitted.
 
+        A product component (e.g. treat x time) is tested under the
+        permutation of each covariate it contains, in its own stratum per
+        covariate. Permuting one factor also removes that factor's main
+        effect, so the null is "the covariate plays no role", not "no
+        interaction beyond the main effects": a rejection shows the covariate
+        contributes through that component, not effect modification as such.
+
         Draws are allocated adaptively. Every component gets `B0` screening
         draws; only those whose null is non-degenerate are topped up to `B1`.
         A component that collapses under every permutation has a point-mass
@@ -2112,7 +2119,9 @@ class GPSearch:
         for cov in covariates:
             if cov not in self.feat_names:
                 raise ValueError(f"unknown covariate {cov!r}")
-            idxs = [i for i, c in enumerate(cov_names) if c == cov]
+            # Every component that reads the covariate, products included:
+            # the permutation scrambles the column for all of them at once
+            idxs = [i for i, c in enumerate(cov_names) if cov in c.split("*")]
             if not idxs:
                 raise ValueError(f"covariate {cov!r} has no kernel components")
             targets[cov] = idxs
