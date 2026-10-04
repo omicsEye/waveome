@@ -541,3 +541,56 @@ shrinkage rather than BIC comparison, so `calc_metric` does not gate it.
 harness, because `sim_waveome_hpc_run.py` executes its driver at import. The
 mechanism test above is decisive without it. Simulation re-run is a separate
 track from the iHMP analysis.
+
+---
+
+## Count update after the collapsed-null permutation fix (2026-10-04)
+
+Relayed from the simulation-rerun session (library commit `b15e9f6`):
+`permutation_significance` no longer skips the top-up for a component whose
+observed statistic sits above a collapsed point-mass null. Those components
+stopped at B0=10, capping p at 1/11; they now get the full B1=100. One
+component crossed as a result.
+
+**Independently re-counted from `ihmp_permutation_significance.csv` before
+editing.** Every relayed number verified, and one was missing from the relay:
+
+| quantity | old | new |
+|---|---|---|
+| HBI features, q <= 0.10 (M5, M8) | 167 | **168** |
+| HBI **components**, q <= 0.10 | 168 | **169** (not in the relay) |
+| negative log BF among them | 29 | **30** (not in the relay) |
+| lin:hbi stratum | 165 | **166** |
+| distinct annotated compounds | 154 | **155** |
+| SE:hbi / lin:tfm / SE:tfm | 3 / 4 / 2 | unchanged |
+| temporal features | 6 | unchanged |
+
+New hit: `C8p_QI90`, "NH4_C16:1 MAG", lin:hbi, log_bf -2.197, q = 0.0003.
+HMDB field is "redundant ion", so it adds no distinct identifier -- a third
+ammonium adduct among the reported hits, alongside the two already footnoted
+in Table 1.
+
+**Seven sites updated in `sn-article-revised.tex`**; zero occurrences of
+"167" remain. Both PDFs recompiled clean.
+
+**Figure 5 was checked, not assumed.** The new hit's effect size is
+log2FC = -0.457, well inside the selection window (-1.585 to +2.944), so the
+top-10/bottom-10 membership is unchanged and the figure as drawn is still
+correct. Only its caption count needed updating.
+
+**One edit made on judgment:** the draw-budget churn sentence read "the count
+itself barely moved (166 to 165)". Those absolutes come from a B=60 vs B=100
+comparison predating this fix, and 166 is now the current lin:hbi count, so
+restating them would confuse rather than inform. The sentence now says "the
+total count barely moved" without absolutes. The qualitative claim, which is
+the point, is unaffected.
+
+**NOT done, needs the author:** `ihmp_waveome.ipynb` has not been re-run, so
+`all_component_results_with_significance.csv` and the four figures still
+derive from the pre-fix outputs. The figures are correct as drawn (checked
+above) but their provenance is stale.
+
+**Flagged by the relay, not actioned:** `waveome_point_by_point_response.md`
+R2.5 still promises FWER, which permutation + BH delivers as FDR, not FWER.
+That is an author-facing claim about what the method guarantees; left for the
+author.
