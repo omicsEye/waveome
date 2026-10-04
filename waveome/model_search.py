@@ -2019,11 +2019,14 @@ class GPSearch:
         contributes through that component, not effect modification as such.
 
         Draws are allocated adaptively. Every component gets `B0` screening
-        draws; only those whose null is non-degenerate are topped up to `B1`.
-        A component that collapses under every permutation has a point-mass
-        null and an observed value sitting on it, so more draws cannot change
-        its p-value -- in simulation that was ~60% of components, and skipping
-        them cut the work by roughly the same fraction.
+        draws; only those whose null is non-degenerate, or whose observed
+        value sits above a degenerate one, are topped up to `B1`. A component
+        that collapses under every permutation AND on the real data has a
+        point-mass null with the observed value on it, so more draws cannot
+        change its p-value -- in simulation that was ~60% of components, and
+        skipping them cut the work by roughly the same fraction. An observed
+        value above a point-mass null has p = 1/(1 + n draws), so it is
+        topped up like any live component.
 
         Parameters
         ----------
@@ -2240,11 +2243,17 @@ class GPSearch:
         parts = [d for d in (prior, new) if d is not None and len(d)]
         draws = pd.concat(parts, ignore_index=True) if parts else prior
 
-        sd = (draws[draws.draw >= 0]
-              .groupby(["metabolite", "covariate", "kernel_type"])["log_bf"]
-              .std())
-        need = sorted({(m, c) for (m, c, _), v in sd.items()
-                       if pd.notna(v) and v >= 1e-6})
+        keys = ["metabolite", "covariate", "kernel_type"]
+        null = draws[draws.draw >= 0].groupby(keys)["log_bf"]
+        sd = null.std()
+        # A collapsed null with the observed value ABOVE it is not settled:
+        # its p-value is 1/(1 + n draws), so it needs the top-up as well.
+        # (Same tie tolerance as calc_permutation_pvalues.)
+        excess = (draws[draws.draw == -1].groupby(keys)["log_bf"].max()
+                  - null.median())
+        need = sorted({(m, c) for (m, c, k), v in sd.items()
+                       if pd.notna(v)
+                       and (v >= 1e-6 or excess.get((m, c, k), 0) > 1e-3)})
 
         # How many draws the top-up needs is a function of how many survived
         # the screen, which is only knowable now -- so derive it rather than
