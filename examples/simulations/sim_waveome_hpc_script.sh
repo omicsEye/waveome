@@ -10,8 +10,11 @@
 #
 # Submit the large cells (units * rate >= 1000) and the small cells
 # separately, so each group can get its own resources (override any #SBATCH
-# line below on the sbatch command line, e.g. -t or --mem):
+# line below on the sbatch command line, e.g. -t or --mem). SLURM does not
+# create the log directory, and a job whose log path does not exist fails
+# with no output at all, so create it first:
 #   . $HOME/venvs/waveome/bin/activate
+#   mkdir -p logs
 #   sbatch --array=1-$(python sim_waveome_hpc_run.py --size large --cells-per-task 4 --count-tasks) \
 #       --export=ALL,SIZE=large,CELLS_PER_TASK=4 sim_waveome_hpc_script.sh
 #   sbatch --array=1-$(python sim_waveome_hpc_run.py --size small --cells-per-task 12 --count-tasks) \
@@ -19,8 +22,8 @@
 # Finished cells are skipped, so resubmitting the same command resumes.
 
 # Specify output files
-#SBATCH -o ./job_%A/sim_waveome_%a.out
-#SBATCH -e ./job_%A/sim_waveome_%a.err
+#SBATCH -o ./logs/sim_waveome_%A_%a.out
+#SBATCH -e ./logs/sim_waveome_%A_%a.err
 
 # One process per array task; each GPSearch fit runs its 4 outcomes in parallel
 #SBATCH --nodes=1
