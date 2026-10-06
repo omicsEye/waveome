@@ -106,7 +106,7 @@ Companion to `waveome_revision_tracker.md`. Keyed to each comment in the reviewe
 - **Change:** Confirm `Categorical` behavior on unseen levels; note/example. **[locked]**
 
 **R2.5 — The notion of "significance" needs closer examination; threshold, sensitivity, FWER/FDR.**
-- **Response:** We agree that our earlier use of "significant" did not match its conventional statistical meaning, and we have revised it throughout. Selection is now governed by the calibrated FDR procedure described under Major comment 5, so "selected" denotes control of the false-discovery rate rather than a p < 0.05 claim. We report sensitivity to the target FDR and, under simulation where ground truth is known, the realized family-wise error and false-discovery rates against their nominal levels. `[RESULT PENDING: the error-rate results.]`
+- **Response:** We agree that our earlier use of "significant" did not match its conventional statistical meaning, and we have revised it throughout. Selection is now governed by the calibrated FDR procedure described under Major comment 5, so "selected" denotes control of the false-discovery rate rather than a p < 0.05 claim. We report sensitivity to the target FDR and, under simulation where ground truth is known, the realized false-discovery rate against its nominal level: 0.010, 0.029 and 0.048 against nominal 0.01, 0.05 and 0.10 (bootstrap 95% CIs [0.000, 0.035], [0.000, 0.067] and [0.010, 0.094]), with power 0.884-0.893. We note that the procedure controls the false discovery rate and not the family-wise error rate; Benjamini-Hochberg is an FDR procedure, and we make no FWER claim.
 - **Change:** As R1.M5; global wording pass on "significant." **[locked / planned]**
 
 ---

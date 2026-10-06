@@ -381,3 +381,46 @@ the normalisation pass also caught five in retained text.
   comparators but none for waveome.
 - **M11.** Figures 3-4 regenerate regardless; the search variant's selections
   will move (28-34 BIC units against a 6-unit retention tolerance).
+
+### FIXED 2026-10-05 — finding 9 (revision history in the Methods), and R2.5 FWER
+
+**Finding 9 closed, reversing the earlier decision to keep it.** The Methods
+opened with "An earlier version of this work called a component significant
+when its kernel variance parameter remained above 1e-4 after optimization.
+That rule is not a test: it thresholds a shrinkage estimate, carries no null
+distribution, and controls no error rate. We have replaced it throughout..."
+
+That is response-letter prose in the archival record: a published paper has no
+"earlier version", and the passage argues with an interlocutor the reader
+cannot see. It now states the method positively:
+
+> Significance is assessed by a permutation test on individual kernel
+> components. The kernel variance plays no inferential role: a cutoff at
+> ~1e-8 serves only as a numerical pre-filter, dropping components that have
+> collapsed to the optimizer's floor.
+
+**This also closes finding 2, the only outright false statement left.** The
+sentence "We have replaced it throughout" was untrue while the simulation
+benchmark still used the old selection rule. Deleting the sentence removes the
+claim rather than deferring it to the simulation re-run. The submission
+blocker recorded on 2026-10-01 is therefore discharged, though **finding 3
+remains open**: the benchmark supplement still documents a selection rule for
+all six comparators and none for waveome.
+
+Two further pieces of self-commentary removed in the same pass: "and this has
+a consequence worth stating explicitly" (commentary on the exposition), and
+"it is therefore discussed above with the cross-sectional findings rather than
+here" (narrating the paper's own layout), now "its association with disease
+activity is therefore cross-sectional rather than temporal".
+
+Swept afterwards for "earlier version", "previously", "we have replaced", "an
+earlier", "formerly", "in the original", "is not a test", "superseded": zero
+remaining.
+
+**R2.5 FWER claim corrected.** The response promised "the realized family-wise
+error and false-discovery rates against their nominal levels". Benjamini-
+Hochberg controls FDR, not FWER, so the paper cannot report a family-wise
+error rate it does not control. The reply now gives the FDR figures
+(0.010/0.029/0.048 against 0.01/0.05/0.10, bootstrap CIs, power 0.884-0.893)
+and states explicitly that no FWER claim is made. The `[RESULT PENDING]` tag
+is discharged for this item.
