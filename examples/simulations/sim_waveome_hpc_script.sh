@@ -41,11 +41,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 
-# Use large memory queue
-# SBATCH -p highMem
-# SBATCH -p highThru
-#SBATCH -p 384gb
-# SBATCH -p defq
+# Default partition: 14-day limit, nodes with 96 GB+ (list: sinfo -o "%P %l %c %m")
+#SBATCH -p cpu
 
 # Time limit (14 days)
 #SBATCH -t 14-00:00:00
