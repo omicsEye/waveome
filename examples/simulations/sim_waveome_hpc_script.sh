@@ -1,24 +1,35 @@
 #!/bin/sh
 
-# One-time setup (login node, from examples/simulations). Installs a snapshot
-# of the library, not an editable link, so library edits cannot reach a sweep
-# that is already running; re-run the last line after changing waveome/.
+# One-time setup (login node, from examples/simulations). The environment is
+# in the lab's shared space so anyone in the group can rerun the sweep, and
+# requirements-pegasus.txt pins every dependency to the version it was built
+# with. The library itself is installed as a snapshot of this checkout, not an
+# editable link, so library edits cannot reach a sweep that is already
+# running; re-run the last line after every pull that changes waveome/. (If
+# it fails with Permission denied under build/, a stale build/ from an
+# earlier install is in the way; it is git-ignored and safe to remove.)
 #   module load gcc/12.2.0 python3/3.10.11
-#   python3 -m venv $HOME/venvs/waveome
-#   . $HOME/venvs/waveome/bin/activate
-#   pip install --upgrade pip && pip install ../../. scikit-learn
+#   umask 022
+#   python3 -m venv /GWSPH/groups/rahlab/venvs/waveome
+#   . /GWSPH/groups/rahlab/venvs/waveome/bin/activate
+#   pip install --upgrade pip
+#   pip install -c requirements-pegasus.txt ../../. scikit-learn
 #
 # Submit the large cells (units * rate >= 1000) and the small cells
 # separately, so each group can get its own resources (override any #SBATCH
 # line below on the sbatch command line, e.g. -t or --mem). SLURM does not
 # create the log directory, and a job whose log path does not exist fails
 # with no output at all, so create it first:
-#   . $HOME/venvs/waveome/bin/activate
+#   . /GWSPH/groups/rahlab/venvs/waveome/bin/activate
 #   mkdir -p logs
 #   sbatch --array=1-$(python sim_waveome_hpc_run.py --size large --cells-per-task 4 --count-tasks) \
 #       --export=ALL,SIZE=large,CELLS_PER_TASK=4 sim_waveome_hpc_script.sh
 #   sbatch --array=1-$(python sim_waveome_hpc_run.py --size small --cells-per-task 12 --count-tasks) \
 #       --export=ALL,SIZE=small,CELLS_PER_TASK=12 sim_waveome_hpc_script.sh
+# Array indices are capped by the cluster's MaxArraySize (see
+# `scontrol show config | grep -i MaxArraySize`). TASK_OFFSET is added to
+# every index, so a longer range goes in chunks: tasks 1001-2000 are
+#   sbatch --array=1-1000 --export=ALL,SIZE=...,CELLS_PER_TASK=...,TASK_OFFSET=1000 ...
 # Finished cells are skipped, so resubmitting the same command resumes.
 
 # Specify output files
@@ -58,7 +69,7 @@ module load python3/3.10.11
 # module --ignore_cache load "python3/3.10.11"
 
 # Environment built once by the setup above
-VENV=${VENV:-$HOME/venvs/waveome}
+VENV=${VENV:-/GWSPH/groups/rahlab/venvs/waveome}
 if [ ! -f "$VENV/bin/activate" ]; then
     echo "No environment at $VENV; run the one-time setup at the top of this script" >&2
     exit 1
@@ -74,4 +85,5 @@ fi
 # --num-jobs (defaults to $SLURM_CPUS_PER_TASK)
 export TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=1
 
-python sim_waveome_hpc_run.py $SLURM_ARRAY_TASK_ID --size $SIZE --cells-per-task $CELLS_PER_TASK
+TASK_ID=$((SLURM_ARRAY_TASK_ID + ${TASK_OFFSET:-0}))
+python sim_waveome_hpc_run.py $TASK_ID --size $SIZE --cells-per-task $CELLS_PER_TASK
