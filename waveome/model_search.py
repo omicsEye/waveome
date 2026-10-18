@@ -1,5 +1,6 @@
 import os
 import re
+import zlib
 
 from scipy.stats import rankdata
 import time
@@ -3216,6 +3217,7 @@ def kernel_test(
     X_holdout=None,
     Y_holdout=None,
     split=False,
+    inducing_seed=None,
 ):
     """
     This function evaluates a particular kernel selection on a set of data.
@@ -3224,6 +3226,10 @@ def kernel_test(
         X (array): design matrix
         Y (array): output matrix
         k (gpflow kernel): specified kernel
+        inducing_seed (int, optional): seeds the random choice of inducing
+            points (made only when there are more observations than
+            inducing points), so the fit does not depend on what consumed
+            the global RNG before it
 
     Outputs:
         m (gpflow model): fitted GPflow model
@@ -3237,7 +3243,9 @@ def kernel_test(
         kernel=k,
         verbose=verbose,
         penalized_options={"penalization_factor": 0.0},
-        sparse_options={},
+        sparse_options=(
+            {} if inducing_seed is None else {"random_seed": inducing_seed}
+        ),
         variational_options={
             "likelihood": likelihood,
             # "scale_value": scale_value
@@ -3308,6 +3316,100 @@ def set_feature_kernels(f, kern_list, cat_vars):
     return k_list
 
 
+def _candidate_seed(seed_base, k_info):
+    """Seed for one candidate fit, from the search seed and the kernel name.
+
+    Keyed by name rather than by fitting order, so a candidate gets the same
+    seed whether candidates are fitted one after another or concurrently.
+    """
+    if seed_base is None:
+        return None
+    return (int(seed_base) + zlib.crc32(k_info.encode())) % 2**32
+
+
+@ray.remote(max_retries=5)
+def _kernel_test_remote(X, Y, k, fit_kwargs):
+    """kernel_test as a Ray task; returns (result, error_string_or_None)."""
+    try:
+        return kernel_test(X, Y, k, **fit_kwargs), None
+    except Exception as exc:  # noqa: BLE001 - re-raised or skipped by caller
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+class _CandidateFits:
+    """The candidate kernels of one search step, fitted together.
+
+    The candidates loc_kernel_search proposes are independent fits. When Ray
+    is running (as inside run_search, where each outcome's search is itself
+    a Ray task holding one CPU) they are fitted as concurrent Ray tasks;
+    otherwise one after another, as before. Each fit is seeded from the
+    search seed and the candidate's kernel name, so the two give the same
+    models.
+
+    Workers are reused across fits (no max_calls=1): each outcome's search
+    already ran all of its fits in one process, so this recycles no less
+    often than before, and a fit at small n is shorter than starting a
+    worker.
+    """
+
+    def __init__(self, X, Y, seed_base, fit_kwargs):
+        self.X, self.Y = X, Y
+        self.seed_base = seed_base
+        self.fit_kwargs = fit_kwargs
+        self.pending = []
+
+    def add(self, k_info, kernel, depth, parent, on_error="skip"):
+        """Queue a candidate. on_error: "skip", "report" (print and skip) or
+        "raise" -- matching what each call site did with a failed fit."""
+        self.pending.append((k_info, kernel, depth, parent, on_error))
+
+    def fit(self):
+        """Fit every queued candidate; return {k_info: search entry}."""
+        def kwargs(k_info):
+            return dict(self.fit_kwargs,
+                        inducing_seed=_candidate_seed(self.seed_base, k_info))
+
+        if ray.is_initialized() and len(self.pending) > 1:
+            X_ref, Y_ref = ray.put(self.X), ray.put(self.Y)
+            outs = ray.get([
+                _kernel_test_remote.remote(X_ref, Y_ref, kern, kwargs(k_info))
+                for k_info, kern, *_ in self.pending
+            ])
+        else:
+            outs = []
+            for k_info, kern, *_, on_error in self.pending:
+                try:
+                    outs.append((kernel_test(self.X, self.Y, kern,
+                                             **kwargs(k_info)), None))
+                except Exception as exc:
+                    if on_error == "raise":
+                        raise
+                    outs.append((None, f"{type(exc).__name__}: {exc}"))
+
+        results = {}
+        for (k_info, kern, depth, parent, on_error), (res, err) in zip(
+            self.pending, outs
+        ):
+            if err is not None:
+                if on_error == "raise":
+                    raise RuntimeError(f"kernel_test failed for {k_info}: {err}")
+                if on_error == "report":
+                    print(err)
+                    print(f"Error with product kernel test {k_info}")
+                continue
+            m, bic = res
+            results[k_info] = {
+                "kernel": kern,
+                "model": m,
+                "bic": bic,
+                "depth": depth,
+                "parent": parent,
+                "try_next": True,
+            }
+        self.pending = []
+        return results
+
+
 def loc_kernel_search(
     X,
     Y,
@@ -3327,12 +3429,23 @@ def loc_kernel_search(
     X_holdout=None,
     Y_holdout=None,
     split=False,
+    seed_base=None,
 ):
     """
     This function performs the local kernel search.
+
+    The candidates are queued and fitted together at the end (concurrently
+    when Ray is running; see _CandidateFits). `seed_base` seeds each
+    candidate's fit from its kernel name.
     """
 
     bic_dict = {}
+    fits = _CandidateFits(
+        X, Y, seed_base,
+        dict(likelihood=lik, scale_value=scale_value, verbose=verbose,
+             num_restart=num_restart, random_seed=random_seed,
+             X_holdout=X_holdout, Y_holdout=Y_holdout, split=split),
+    )
 
     if verbose:
         print(f"Base kernel: {base_name}")
@@ -3388,28 +3501,7 @@ def loc_kernel_search(
                         if check_if_model_exists(k_info, prev_models):
                             continue
 
-                        m, bic = kernel_test(
-                            X,
-                            Y,
-                            k,
-                            likelihood=lik,
-                            scale_value=scale_value,
-                            verbose=verbose,
-                            num_restart=num_restart,
-                            random_seed=random_seed,
-                            X_holdout=X_holdout,
-                            Y_holdout=Y_holdout,
-                            split=split,
-                        )
-
-                        bic_dict[k_info] = {
-                            "kernel": k,
-                            "model": m,
-                            "bic": bic,
-                            "depth": depth,
-                            "parent": base_name,
-                            "try_next": True,
-                        }
+                        fits.add(k_info, k, depth, base_name)
                     except Exception:
                         None
 
@@ -3444,29 +3536,7 @@ def loc_kernel_search(
                         if check_if_model_exists(k_info, prev_models):
                             continue
 
-                        m, bic = kernel_test(
-                            X,
-                            Y,
-                            k,
-                            likelihood=lik,
-                            scale_value=scale_value,
-                            verbose=verbose,
-                            num_restart=num_restart,
-                            random_seed=random_seed,
-                            X_holdout=X_holdout,
-                            Y_holdout=Y_holdout,
-                            split=split,
-                        )
-                        #                             print(k_info)
-                        # bic_dict[k_info] = [k, m, bic, depth, base_name]
-                        bic_dict[k_info] = {
-                            "kernel": k,
-                            "model": m,
-                            "bic": bic,
-                            "depth": depth,
-                            "parent": base_name,
-                            "try_next": True,
-                        }
+                        fits.add(k_info, k, depth, base_name)
                     except Exception:
                         None
 
@@ -3478,72 +3548,33 @@ def loc_kernel_search(
                         set_trainable(k.variance, False)
                     except Exception:
                         set_trainable(k.base_kernel.variance, False)
-                    new_dict = prod_kernel_creation(
-                        X=X,
-                        Y=Y,
+                    prod_kernel_creation(
                         base_kernel=base_kern_,
                         base_name=base_name,
                         new_kernel=k,
                         prev_models=prev_models,
                         depth=depth,
-                        lik=lik,
-                        scale_value=scale_value,
-                        num_restart=num_restart,
-                        random_seed=random_seed,
-                        X_holdout=X_holdout,
-                        Y_holdout=Y_holdout,
-                        split=split,
+                        fits=fits,
                     )
-                    bic_dict.update(new_dict)
             else:
-                m, bic = kernel_test(
-                    X,
-                    Y,
-                    k,
-                    likelihood=lik,
-                    scale_value=scale_value,
-                    verbose=verbose,
-                    num_restart=num_restart,
-                    random_seed=random_seed,
-                    X_holdout=X_holdout,
-                    Y_holdout=Y_holdout,
-                    split=split,
-                )
-                # bic_dict[k_info] = [k, m, bic, depth, 'None']
-                bic_dict[k_info] = {
-                    "kernel": k,
-                    "model": m,
-                    "bic": bic,
-                    "depth": depth,
-                    "parent": "None",
-                    "try_next": True,
-                }
+                fits.add(k_info, k, depth, "None", on_error="raise")
 
+    bic_dict.update(fits.fit())
     return bic_dict
 
 
 def prod_kernel_creation(
-    X,
-    Y,
     base_kernel,
     base_name,
     new_kernel,
     depth,
-    lik,
-    scale_value=None,
-    verbose=False,
-    num_restart=5,
-    random_seed=None,
+    fits,
     prev_models=[],
-    X_holdout=None,
-    Y_holdout=None,
-    split=False,
 ):
     """
-    Produce kernel for product operation
+    Produce kernel for product operation; candidates are queued on `fits`
+    (a _CandidateFits), which loc_kernel_search fits with the rest.
     """
-
-    bic_dict = {}
 
     for feat in range(len(base_kernel.kernels)):
         temp_kernel = gpflow.utilities.deepcopy(base_kernel)
@@ -3595,37 +3626,12 @@ def prod_kernel_creation(
                 # Make sure this is something that hasn't been tested yet
                 if check_if_model_exists(k_info, prev_models):
                     continue
-                # print('fitting model')
-                m, bic = kernel_test(
-                    X,
-                    Y,
-                    temp_kernel,
-                    likelihood=lik,
-                    scale_value=scale_value,
-                    verbose=verbose,
-                    num_restart=num_restart,
-                    random_seed=random_seed,
-                    X_holdout=X_holdout,
-                    Y_holdout=Y_holdout,
-                    split=split,
-                )
-                # print(k_info)
-                # bic_dict[k_info] = [temp_kernel, m, bic, depth, base_name]
-                bic_dict[k_info] = {
-                    "kernel": temp_kernel,
-                    "model": m,
-                    "bic": bic,
-                    "depth": depth,
-                    "parent": base_name,
-                    "try_next": True,
-                }
+                fits.add(k_info, temp_kernel, depth, base_name, on_error="report")
 
             except Exception as e:
                 print(e)
                 print(f"Error with product kernel test {k_info}")
                 None
-
-    return bic_dict
 
 
 def check_if_better_metric(model_dict, depth):  # previous_dict, current_dict):
@@ -3747,6 +3753,7 @@ def prune_best_model2(
     verbose=False,
     num_restart=5,
     random_seed=None,
+    seed_base=None,
 ):
     out_dict = res_dict.copy()
 
@@ -3806,6 +3813,7 @@ def prune_best_model2(
                 verbose=verbose,
                 num_restart=num_restart,
                 random_seed=random_seed,
+                seed_base=seed_base,
             )
 
             # Skip the rest of the iteration if product was involved
@@ -3832,6 +3840,7 @@ def prune_best_model2(
                 verbose=verbose,
                 num_restart=num_restart,
                 random_seed=random_seed,
+                inducing_seed=_candidate_seed(seed_base, k_info),
             )
         # If better model found then save it
         if bic < best_bic:
@@ -3864,6 +3873,7 @@ def prune_prod_kernel(
     verbose=False,
     num_restart=5,
     random_seed=None,
+    seed_base=None,
     **kwargs,
 ):
     out_dict = res_dict.copy()
@@ -3927,6 +3937,7 @@ def prune_prod_kernel(
                 verbose=verbose,
                 num_restart=num_restart,
                 random_seed=random_seed,
+                inducing_seed=_candidate_seed(seed_base, k_info),
             )
 
             if verbose:
@@ -4022,6 +4033,7 @@ def full_kernel_search(
                 scale_value=scale_value,
                 verbose=debug,
                 num_restart=num_restart,
+                seed_base=random_seed,
             )
         else:
             # Create temporary dictionary to hold new results
@@ -4057,6 +4069,7 @@ def full_kernel_search(
                     prev_models=temp_dict.keys(),
                     verbose=debug,
                     num_restart=num_restart,
+                    seed_base=random_seed,
                 )
                 temp_dict.update(new_res)
 
@@ -4081,6 +4094,7 @@ def full_kernel_search(
                     prev_models=temp_dict.keys(),
                     verbose=debug,
                     num_restart=num_restart,
+                    seed_base=random_seed,
                 )
                 temp_dict.update(new_res)
 
@@ -4137,6 +4151,7 @@ def full_kernel_search(
                         scale_value=scale_value,
                         verbose=verbose,
                         num_restart=num_restart,
+                        seed_base=random_seed,
                     )
 
                 break
@@ -4190,6 +4205,7 @@ def full_kernel_search(
                 scale_value=scale_value,
                 verbose=verbose,
                 num_restart=num_restart,
+                seed_base=random_seed,
             )
 
         if verbose:
