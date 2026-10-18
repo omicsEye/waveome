@@ -35,7 +35,6 @@ from .utilities import (
     calc_between_unit_fraction,
     calc_residuals,
     calc_bh_qvalues,
-    calc_bic,
     calc_rsquare,
     check_if_model_exists,
     calc_permutation_pvalues,
@@ -3280,15 +3279,13 @@ def kernel_test(
         )
         bic = round(-1 * estimated_loglik, 2)
     else:
-        estimated_loglik = best_model.log_posterior_density(data=(X, Y)).numpy()
-
+        # Same BIC as the penalized path: from the ELBO, not the log
+        # posterior. The lengthscale prior every model carries would
+        # otherwise be counted on top of BIC's k*log(n) term, charging
+        # lengthscale kernels 4.5 units at lengthscale 1 and 10.5 at 0.5
+        # (see calc_metric; FINDINGS 21-22).
         bic = round(
-            calc_bic(
-                #         loglik=best_model.log_marginal_likelihood().numpy(),
-                loglik=estimated_loglik,
-                n=X.shape[0],
-                k=len(best_model.trainable_parameters),
-            ),
+            float(best_model.calc_metric(data=convert_data_to_tensors(X, Y))),
             2,
         )
 
