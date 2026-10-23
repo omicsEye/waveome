@@ -3,6 +3,7 @@ import copy
 import os
 import pickle
 import re
+import shutil
 import time
 import warnings
 
@@ -460,7 +461,8 @@ def run_simulation(
     alpha=1,
     random_seed=0,
     num_jobs=-1,
-    perm_checkpoint=None
+    perm_checkpoint=None,
+    search_checkpoint=None
 ):
 
     np.random.seed(random_seed)
@@ -640,7 +642,10 @@ def run_simulation(
         outcome_likelihood="negativebinomial",
         Y_transform=None
     )
-    gps_sim_search.run_search(random_seed=random_seed, num_jobs=num_jobs)
+    gps_sim_search.run_search(
+        random_seed=random_seed, num_jobs=num_jobs,
+        checkpoint_dir=search_checkpoint
+    )
 
     # Which features were chosen?
     gps_feats = retrieve_features_in_models(gps_sim_search)
@@ -1528,6 +1533,9 @@ def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
     # Permutation draws are checkpointed as they land, so a cell killed
     # mid-permutation resumes them (the fits before it are deterministic)
     perm_checkpoint = out_path + ".perm.csv"
+    # Likewise each outcome's search result, so a requeue loses at most the
+    # outcomes still being searched
+    search_checkpoint = out_path + ".search"
 
     start_time = time.time()
     metrics, perm_draws = run_simulation(
@@ -1539,7 +1547,8 @@ def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
         alpha=alpha,
         random_seed=run_id,
         num_jobs=num_jobs,
-        perm_checkpoint=perm_checkpoint
+        perm_checkpoint=perm_checkpoint,
+        search_checkpoint=search_checkpoint
     )
     print("----%.2f seconds----"%(time.time() - start_time))
 
@@ -1552,6 +1561,7 @@ def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
     os.replace(tmp_path, out_path)
     if os.path.exists(perm_checkpoint):
         os.remove(perm_checkpoint)
+    shutil.rmtree(search_checkpoint, ignore_errors=True)
 
 
 if __name__ == "__main__":

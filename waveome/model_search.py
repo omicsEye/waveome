@@ -1,6 +1,7 @@
 import os
 import re
 import zlib
+from urllib.parse import quote
 
 from scipy.stats import rankdata
 import time
@@ -1291,11 +1292,19 @@ class GPSearch:
         num_jobs=-1,
         verbose=False,
         debug=False,
+        checkpoint_dir=None,
     ):
         """Run search process given search operator and kernels of interest.
 
         Parameters
         ----------
+        checkpoint_dir : str, optional
+            Save each outcome's selected model here as soon as its search
+            finishes, and on a rerun load those instead of searching them
+            again. Each outcome's search is seeded on its own, so a resumed
+            run selects what an uninterrupted one would. Only valid for the
+            same data and arguments; a run with different ones needs a fresh
+            directory.
 
         Attributes
         ----------
@@ -1368,6 +1377,9 @@ class GPSearch:
             for x in range(0, len(self.out_names), num_feats_per_round)
         ]
 
+        if checkpoint_dir:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+
         print(f"Building {len(self.out_names)} models...")
         start_time = time.time()
         c = 0
@@ -1403,37 +1415,58 @@ class GPSearch:
             # Load function
             full_kernel_search_remote = ray.remote(full_kernel_search)
 
-            # Retrieve models
-            out = ray.get(
-                [
-                    full_kernel_search_remote.remote(
-                        X=self_X,
-                        Y=self_Y,
-                        kern_list=kernels,
-                        cat_vars=self_cat_vars,
-                        max_depth=max_depth,
-                        early_stopping=early_stopping,
-                        prune=prune,
-                        keep_all=keep_all,
-                        lik=self_likelihood,
-                        scale_value=self_Y_stds,
-                        metric_diff=metric_diff,
-                        num_restart=num_restart,
-                        random_seed=random_seed,
-                        verbose=verbose,
-                        debug=debug,
-                        feature_name=feat,
-                    )
-                    for feat in self.out_names
-                ]
-            )
+            # Outcomes already searched by an interrupted run
+            best = {}
+            if checkpoint_dir:
+                for feat in i:
+                    path = _search_checkpoint_path(checkpoint_dir, feat)
+                    if os.path.exists(path):
+                        with open(path, "rb") as handle:
+                            best[feat] = ray.cloudpickle.load(handle)
+                if best:
+                    print(f"resuming from {checkpoint_dir}: "
+                          f"{len(best)} outcome(s) already searched")
+
+            # Retrieve models, saving each outcome's as soon as it lands
+            pending = {
+                full_kernel_search_remote.remote(
+                    X=self_X,
+                    Y=self_Y,
+                    kern_list=kernels,
+                    cat_vars=self_cat_vars,
+                    max_depth=max_depth,
+                    early_stopping=early_stopping,
+                    prune=prune,
+                    keep_all=keep_all,
+                    lik=self_likelihood,
+                    scale_value=self_Y_stds,
+                    metric_diff=metric_diff,
+                    num_restart=num_restart,
+                    random_seed=random_seed,
+                    verbose=verbose,
+                    debug=debug,
+                    feature_name=feat,
+                ): feat
+                for feat in i
+                if feat not in best
+            }
+            while pending:
+                [ref], _ = ray.wait(list(pending), num_returns=1)
+                feat = pending.pop(ref)
+                m = ray.get(ref)
+                best[feat] = m["models"][m["best_model"]]["model"]
+                if checkpoint_dir:
+                    path = _search_checkpoint_path(checkpoint_dir, feat)
+                    with open(path + ".tmp", "wb") as handle:
+                        ray.cloudpickle.dump(best[feat], handle)
+                    os.replace(path + ".tmp", path)
 
             # TODO: Make dictionary of outcomes as lookups
             # self.search_info = {feat: mod for feat, mod in zip(self.out_names, out)}
 
             # Add models to dictionary and calculate explained values
-            for m, feat in zip(out, i):
-                self.models[feat] = m["models"][m["best_model"]]["model"]
+            for feat in i:
+                self.models[feat] = best[feat]
                 self.models[feat].get_feature_importances(
                     data=convert_data_to_tensors(
                         self.X.to_numpy(), self.Y[feat].to_numpy().reshape(-1, 1)
@@ -3322,6 +3355,11 @@ def _candidate_seed(seed_base, k_info):
     if seed_base is None:
         return None
     return (int(seed_base) + zlib.crc32(k_info.encode())) % 2**32
+
+
+def _search_checkpoint_path(checkpoint_dir, feat):
+    """File holding one outcome's selected model (outcome names can hold '/')."""
+    return os.path.join(checkpoint_dir, quote(str(feat), safe="") + ".pkl")
 
 
 @ray.remote(max_retries=5)

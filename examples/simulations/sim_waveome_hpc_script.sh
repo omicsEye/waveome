@@ -35,6 +35,9 @@
 # Specify output files
 #SBATCH -o ./logs/sim_waveome_%A_%a.out
 #SBATCH -e ./logs/sim_waveome_%A_%a.err
+# A requeued job (e.g. after a node failure) reopens the same log; append
+# rather than truncate so the earlier run's output survives
+#SBATCH --open-mode=append
 
 # One process per array task; each GPSearch fit runs its 4 outcomes in parallel
 #SBATCH --nodes=1
@@ -81,6 +84,8 @@ fi
 # One thread per Ray worker: the CPUs are already split across workers by
 # --num-jobs (defaults to $SLURM_CPUS_PER_TASK)
 export TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=1
+# Write progress and stage times to the log as they happen, not at exit
+export PYTHONUNBUFFERED=1
 
 TASK_ID=$((SLURM_ARRAY_TASK_ID + ${TASK_OFFSET:-0}))
 python sim_waveome_hpc_run.py $TASK_ID --size $SIZE --cells-per-task $CELLS_PER_TASK
