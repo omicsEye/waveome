@@ -31,6 +31,11 @@
 # every index, so a longer range goes in chunks: tasks 1001-2000 are
 #   sbatch --array=1-1000 --export=ALL,SIZE=...,CELLS_PER_TASK=...,TASK_OFFSET=1000 ...
 # Finished cells are skipped, so resubmitting the same command resumes.
+# Each setting gets 50 replicates. To extend to more (say 75), add
+# NUM_REPLICATES=75 to --export and --num-replicates 75 to the --count-tasks
+# call: only the new replicates run, since each replicate's data come from
+# its own seed. (The task-to-cell mapping depends on the count, so keep the
+# two in step.)
 
 # Specify output files
 #SBATCH -o ./logs/sim_waveome_%A_%a.out
@@ -88,4 +93,5 @@ export TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 
 TASK_ID=$((SLURM_ARRAY_TASK_ID + ${TASK_OFFSET:-0}))
-python sim_waveome_hpc_run.py $TASK_ID --size $SIZE --cells-per-task $CELLS_PER_TASK
+python sim_waveome_hpc_run.py $TASK_ID --size $SIZE --cells-per-task $CELLS_PER_TASK \
+    ${NUM_REPLICATES:+--num-replicates $NUM_REPLICATES}

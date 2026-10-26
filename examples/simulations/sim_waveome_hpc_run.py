@@ -1,15 +1,24 @@
 # Libraries
 import copy
+import functools
+import glob
+import hashlib
+import importlib.metadata
 import os
 import pickle
+import platform
 import re
 import shutil
+import socket
+import subprocess
+import threading
 import time
 import warnings
 
 import gpflow
 import numpy as np
 import pandas as pd
+import psutil
 import statsmodels as sm
 import tensorflow as tf
 from joblib import Parallel, delayed
@@ -452,6 +461,78 @@ def calc_kl_all(n, p, x, y, est_m, m_type, log_y=False, y_pred = None, y_std = N
 
 # Wrap everything in a large function
 @ignore_warnings(category=ConvergenceWarning)
+class StageResources:
+    """Wall time, CPU time and peak memory of each stage of a cell (R1.M7).
+
+    Covers this process and all its descendants -- the Ray and joblib workers
+    that do the fitting -- by sampling them every `interval` seconds on a
+    background thread. CPU time is user + system, summed over processes; a
+    worker that exits is counted up to its last sample, so stages made of
+    many very short-lived workers (the smallest cells) read slightly low.
+    Peak memory is RSS summed over processes, as sacct's MaxRSS is, so pages
+    the workers share (TensorFlow's libraries) are counted once per worker.
+    """
+
+    def __init__(self, interval=1.0):
+        self.interval = interval
+        self.rows = []
+        self._root = psutil.Process()
+        self._cpu = {}  # (pid, create_time) -> last seen CPU seconds
+        self._lock = threading.Lock()
+        self._peak = 0
+        self._sample()
+        self._stage_cpu = self._total_cpu()
+        self._stage_wall = time.time()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _sample(self):
+        try:
+            procs = [self._root] + self._root.children(recursive=True)
+        except psutil.Error:
+            procs = [self._root]
+        rss = 0
+        with self._lock:
+            for proc in procs:
+                try:
+                    with proc.oneshot():
+                        t = proc.cpu_times()
+                        self._cpu[(proc.pid, proc.create_time())] = t.user + t.system
+                        rss += proc.memory_info().rss
+                except psutil.Error:
+                    pass  # exited between listing and reading
+            self._peak = max(self._peak, rss)
+
+    def _total_cpu(self):
+        with self._lock:
+            return sum(self._cpu.values())
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            self._sample()
+
+    def lap(self, stage):
+        """Close the current stage under `stage`, and start the next."""
+        self._sample()
+        now, cpu = time.time(), self._total_cpu()
+        with self._lock:
+            peak, self._peak = self._peak, 0
+        self.rows.append({
+            "stage": stage,
+            "wall_s": now - self._stage_wall,
+            "cpu_s": cpu - self._stage_cpu,
+            "peak_rss_gb": peak / 2**30,
+        })
+        self._stage_wall, self._stage_cpu = now, cpu
+
+    def close(self):
+        """Stop sampling; one row per stage."""
+        self._stop.set()
+        self._thread.join()
+        return pd.DataFrame(self.rows)
+
+
 def run_simulation(
     input_df=None,
     kern_out=None,
@@ -490,7 +571,7 @@ def run_simulation(
     # End iteration if simulated data fails
     if sim_df is None:
         print("Simulating data failed!")
-        return pd.DataFrame(), None
+        return pd.DataFrame(), None, None
 
     # Then split into training and holdout
     train_idx = sim_df.sample(frac=0.8, random_state=random_seed).index.to_numpy()
@@ -538,6 +619,7 @@ def run_simulation(
 
     # Track timing for each model
     start_time = time.time()
+    resources = StageResources()
 
     ###########################
     # Perform GP penalization #
@@ -611,6 +693,7 @@ def run_simulation(
     end_time = time.time()
     print(f"GP Penalized time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("penalized")
 
     # Permutation null for the penalized fit, as on iHMP. id is an adjuster:
     # relabelling units leaves its component unchanged, so it is not tested.
@@ -629,6 +712,7 @@ def run_simulation(
     end_time = time.time()
     print(f"GP Penalized permutation time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("permutation")
 
     ##########################
     # Then perform GP search #
@@ -702,6 +786,7 @@ def run_simulation(
     end_time = time.time()
     print(f"GP search time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("search")
 
     ###############################
     # Then perform mixed modeling #
@@ -792,6 +877,7 @@ def run_simulation(
     end_time = time.time()
     print(f"Mixed LM time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("mixed_lm")
 
     #######################
     # Then perform NB GLM #
@@ -927,6 +1013,7 @@ def run_simulation(
     end_time = time.time()
     print(f"NB-GLM time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("nb_glm")
 
     ####################
     # Then perform GAM #
@@ -1055,6 +1142,7 @@ def run_simulation(
     end_time = time.time()
     print(f"GAM time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("gam")
 
     ######################
     # Then perform LASSO #
@@ -1181,6 +1269,7 @@ def run_simulation(
     end_time = time.time()
     print(f"LASSO time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("lasso")
 
     #######################
     # Then perform GP-ARD #
@@ -1302,6 +1391,7 @@ def run_simulation(
     end_time = time.time()
     print(f"ARD time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("ard")
 
     ##########################
     # Then perform GP-ARD-NB #
@@ -1417,8 +1507,11 @@ def run_simulation(
     end_time = time.time()
     print(f"NB-ARD time: {end_time - start_time}")
     start_time = end_time
+    resources.lap("nb_ard")
 
-    return output_df, perm_draws
+    resources = resources.close()
+    resources["n_train"] = len(train_df)
+    return output_df, perm_draws, resources
 
 def make_grid(run_id):
     """Cross-join of simulation settings; 32 contiguous rows per setting."""
@@ -1501,6 +1594,84 @@ def list_cells(num_replicates, size="all"):
     return sorted(cells, key=lambda c: -c[1] * c[2])
 
 
+def _tree_sha256(root, rel_paths):
+    """One hash over the given files under `root` (None if any is missing)."""
+    h = hashlib.sha256()
+    for rel in rel_paths:
+        path = os.path.join(root, rel)
+        if not os.path.isfile(path):
+            return None
+        h.update(rel.encode())
+        with open(path, "rb") as handle:
+            h.update(handle.read())
+    return h.hexdigest()
+
+
+@functools.lru_cache(maxsize=1)
+def provenance():
+    """The code and environment this process computes cells with.
+
+    Stored with every cell, so each result can be traced to the exact code
+    that produced it. The library is hashed both as installed and as it
+    stands in this checkout: they differ when the checkout was updated
+    without reinstalling (see sim_waveome_hpc_script.sh), and then the cells
+    are not running the checkout's code.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def git(*args):
+        try:
+            return subprocess.run(
+                ["git", "-C", here, *args], capture_output=True, text=True,
+                timeout=60, check=True
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    installed = os.path.dirname(os.path.abspath(waveome.__file__))
+    rel_paths = sorted(
+        os.path.relpath(path, installed)
+        for path in glob.glob(os.path.join(installed, "**", "*.py"), recursive=True)
+    )
+    installed_sha = _tree_sha256(installed, rel_paths)
+    checkout_sha = _tree_sha256(os.path.join(here, "..", "..", "waveome"), rel_paths)
+    if installed_sha != checkout_sha:
+        print(f"WARNING: the installed waveome ({installed}) differs from this "
+              "checkout's; reinstall it (see sim_waveome_hpc_script.sh)")
+
+    cpu_model = platform.processor()
+    try:
+        with open("/proc/cpuinfo") as handle:
+            cpu_model = next(
+                line.split(":", 1)[1].strip()
+                for line in handle if line.startswith("model name")
+            )
+    except (OSError, StopIteration):
+        pass
+
+    versions = {}
+    for name in ["waveome", "numpy", "scipy", "pandas", "statsmodels",
+                 "scikit-learn", "tensorflow", "tensorflow-probability",
+                 "gpflow", "ray", "psutil"]:
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            versions[name] = None
+
+    dirty = git("status", "--porcelain", "--untracked-files=no")
+    return {
+        "git_commit": git("rev-parse", "HEAD"),
+        "git_dirty": None if dirty is None else bool(dirty),
+        "waveome_path": installed,
+        "waveome_sha256": installed_sha,
+        "checkout_waveome_sha256": checkout_sha,
+        "python": platform.python_version(),
+        "packages": versions,
+        "host": socket.gethostname(),
+        "cpu_model": cpu_model,
+    }
+
+
 def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
     """Run one setting and replicate, writing its own pickle.
 
@@ -1537,8 +1708,11 @@ def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
     # outcomes still being searched
     search_checkpoint = out_path + ".search"
 
+    # Up front, so a stale install is reported before hours of compute
+    prov = provenance()
+
     start_time = time.time()
-    metrics, perm_draws = run_simulation(
+    metrics, perm_draws, resources = run_simulation(
         input_df=input_df,
         kern_out=kern_out,
         rate=rate,
@@ -1555,7 +1729,16 @@ def run_cell(rate, units, epsilon, alpha, run_id, out_dir, num_jobs):
     tmp_path = out_path + ".tmp"
     with open(tmp_path, "wb") as handle:
         pickle.dump(
-            {"metrics": metrics, "permutation_draws": perm_draws},
+            {
+                "metrics": metrics,
+                "permutation_draws": perm_draws,
+                "resources": resources,
+                "provenance": {
+                    **prov,
+                    "num_jobs": num_jobs,
+                    "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+                },
+            },
             handle, protocol=pickle.HIGHEST_PROTOCOL
         )
     os.replace(tmp_path, out_path)
@@ -1578,7 +1761,9 @@ if __name__ == "__main__":
                     help="1-based task id; runs cells "
                     "[(task_id-1)*cells_per_task, task_id*cells_per_task)")
     ap.add_argument("--cells-per-task", type=int, default=12)
-    ap.add_argument("--num-replicates", type=int, default=75)
+    # 50 replicates per setting; rerunning with 75 adds replicates 50-74 and
+    # skips the finished cells (each replicate's data come from its run_id)
+    ap.add_argument("--num-replicates", type=int, default=50)
     ap.add_argument("--size", choices=["all", "small", "large"], default="all",
                     help=f"only cells with units * rate below (small) or at "
                     f"least (large) {LARGE_CELL_OBS}")
