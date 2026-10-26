@@ -45,6 +45,12 @@ changes mid-implementation, update the tracker first, then this plan.
    under **both** permutations, because a one-factor permutation also removes
    that factor's main effect (the null is "covariate plays no role", not "no
    interaction beyond main effects").
+   **Amended by author 2026-10-26:** **50** replicates per setting, not 75,
+   pooled the same way. Permutation testing in every cell raised the cost per
+   cell (a 6,400-observation cell takes ~5–7 days on 12 CPUs); 50 replicates
+   widen the per-setting intervals by only ~20% relative to 75. The sweep can
+   be extended to 75 later without rerunning anything (each replicate's data
+   come from its own seed and finished cells are skipped).
 6. **Permutation scheme**: single within-unit **circular shift** for every within-unit-
    varying covariate; **across-unit block permutation** for constant-within-unit
    covariates; **target permuted with adjusters held fixed** (roles user-supplied;
