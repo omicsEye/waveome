@@ -22,10 +22,13 @@
 # with no output at all, so create it first:
 #   . /GWSPH/groups/rahlab/venvs/waveome/bin/activate
 #   mkdir -p logs
-#   sbatch --array=1-$(python sim_waveome_hpc_run.py --size large --cells-per-task 4 --count-tasks) \
-#       --export=ALL,SIZE=large,CELLS_PER_TASK=4 sim_waveome_hpc_script.sh
-#   sbatch --array=1-$(python sim_waveome_hpc_run.py --size small --cells-per-task 12 --count-tasks) \
-#       --export=ALL,SIZE=small,CELLS_PER_TASK=12 sim_waveome_hpc_script.sh
+#   sbatch --array=1-$(python sim_waveome_hpc_run.py --size large --cells-per-task 1 --count-tasks) \
+#       --cpus-per-task=12 --mem=32G \
+#       --export=ALL,SIZE=large,CELLS_PER_TASK=1 sim_waveome_hpc_script.sh
+#   sbatch --array=1-$(python sim_waveome_hpc_run.py --size small --cells-per-task 1 --count-tasks) \
+#       --mem=16G --export=ALL,SIZE=small,CELLS_PER_TASK=1 sim_waveome_hpc_script.sh
+# One cell per task: a 6,400-observation cell takes ~3 days on 12 CPUs, so
+# several per task would approach the 14-day limit.
 # Array indices are capped by the cluster's MaxArraySize (see
 # `scontrol show config | grep -i MaxArraySize`). TASK_OFFSET is added to
 # every index, so a longer range goes in chunks: tasks 1001-2000 are

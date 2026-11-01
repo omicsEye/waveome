@@ -459,6 +459,50 @@ def calc_kl_all(n, p, x, y, est_m, m_type, log_y=False, y_pred = None, y_std = N
     # return np.sum(kl_div(p_x, q_x))
     return np.mean(np.log(p_x / q_x))
 
+
+# NB-ARD uses waveome's own sparse approximation (SparseGP in
+# model_classes.py): every training row as a fixed inducing point when there
+# are at most this many, otherwise a seeded random subset of this size that is
+# trained. An exact variational GP has a parameter per pair of training rows
+# and does not finish at 6,400 observations.
+NB_ARD_INDUCING = 500
+
+
+def nb_ard_inducing_points(x, random_seed):
+    """Inducing points for NB-ARD, and whether to train them."""
+    n = x.shape[0]
+    if n <= NB_ARD_INDUCING:
+        return x.copy(), False
+    rng = np.random.default_rng([9102, random_seed])
+    idx = rng.choice(n, size=NB_ARD_INDUCING, replace=False)
+    return x[idx].copy(), True
+
+
+def fit_nb_ard(x, y, inducing, train_inducing):
+    """Sparse variational GP, ARD squared-exponential kernel, NB likelihood."""
+    model = gpflow.models.SVGP(
+        kernel=gpflow.kernels.SquaredExponential(
+            lengthscales=np.ones(x.shape[1])
+        ),
+        likelihood=waveome.likelihoods.NegativeBinomial(),
+        inducing_variable=inducing,
+        num_data=x.shape[0],
+    )
+    gpflow.utilities.set_trainable(model.inducing_variable, train_inducing)
+    data = (
+        tf.convert_to_tensor(x, dtype=tf.dtypes.double),
+        tf.convert_to_tensor(np.reshape(y, (-1, 1)), dtype=tf.dtypes.double),
+    )
+    # Optimize hyperparameters
+    try:
+        gpflow.optimizers.Scipy().minimize(
+            model.training_loss_closure(data),
+            model.trainable_variables
+        )
+    except:
+        pass
+    return model
+
 # Wrap everything in a large function
 @ignore_warnings(category=ConvergenceWarning)
 class StageResources:
@@ -1397,28 +1441,18 @@ def run_simulation(
     # Then perform GP-ARD-NB #
     ##########################
     print("NB-ARD")
+    nb_ard_inducing, nb_ard_train_inducing = nb_ard_inducing_points(
+        lm_train_X_dummies_int_scaled, random_seed
+    )
     for o in output_names:
 
         # Fit model
-        gp_ard_nb = gpflow.models.VGP(
-            data=(
-                tf.convert_to_tensor(lm_train_X_dummies_int_scaled, dtype=tf.dtypes.double),
-                tf.convert_to_tensor(train_df[o].values.reshape(-1, 1), dtype=tf.dtypes.double)
-            ),
-            kernel=gpflow.kernels.SquaredExponential(
-                lengthscales=np.ones(lm_train_X_dummies_int_scaled.shape[1])
-            ),
-            likelihood=waveome.likelihoods.NegativeBinomial()
+        gp_ard_nb = fit_nb_ard(
+            lm_train_X_dummies_int_scaled,
+            train_df[o].values,
+            nb_ard_inducing,
+            nb_ard_train_inducing
         )
-
-        # Optimize hyperparameters
-        try:
-            gpflow.optimizers.Scipy().minimize(
-                gp_ard_nb.training_loss,
-                gp_ard_nb.trainable_variables
-            )
-        except:
-            pass
 
         # Get features that have a low lengthscale value
         # (i.e. smaller than +/- 3 or 6 given standardization)
