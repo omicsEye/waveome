@@ -468,6 +468,21 @@ def calc_kl_all(n, p, x, y, est_m, m_type, log_y=False, y_pred = None, y_std = N
 NB_ARD_INDUCING = 500
 
 
+def ard_initial_lengthscales(x):
+    """Starting lengthscales for ARD and NB-ARD: sqrt(columns) for each.
+
+    The inputs are standardized, so two rows differ by about 2 per column in
+    squared distance. With every lengthscale at 1 the kernel between distinct
+    rows is ~exp(-columns), zero at the hundreds of columns the id dummies and
+    their interactions give, and the lengthscales get no gradient and never
+    leave their start -- which passes the selection rule (0.01 < ls < 6), so
+    nearly every feature was selected. At sqrt(columns) the kernel starts near
+    exp(-1) and the data decide.
+    """
+    d = x.shape[1]
+    return np.full(d, np.sqrt(d))
+
+
 def nb_ard_inducing_points(x, random_seed):
     """Inducing points for NB-ARD, and whether to train them."""
     n = x.shape[0]
@@ -482,7 +497,7 @@ def fit_nb_ard(x, y, inducing, train_inducing):
     """Sparse variational GP, ARD squared-exponential kernel, NB likelihood."""
     model = gpflow.models.SVGP(
         kernel=gpflow.kernels.SquaredExponential(
-            lengthscales=np.ones(x.shape[1])
+            lengthscales=ard_initial_lengthscales(x)
         ),
         likelihood=waveome.likelihoods.NegativeBinomial(),
         inducing_variable=inducing,
@@ -1328,7 +1343,7 @@ def run_simulation(
                 tf.convert_to_tensor(lm_train_df[o].values.reshape(-1, 1), dtype=tf.dtypes.double)
             ),
             kernel=gpflow.kernels.SquaredExponential(
-                lengthscales=np.ones(lm_train_X_dummies_int_scaled.shape[1])
+                lengthscales=ard_initial_lengthscales(lm_train_X_dummies_int_scaled)
             ),
         )
 

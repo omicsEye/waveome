@@ -44,11 +44,12 @@ def make_data(n, d=6):
 
 
 def old_vgp(x, y):
-    """The harness's previous NB-ARD fit, verbatim apart from names."""
+    """The harness's previous exact NB-ARD fit, from the same starting lengthscales."""
     m = gpflow.models.VGP(
         data=(tf.convert_to_tensor(x, dtype=tf.dtypes.double),
               tf.convert_to_tensor(y.reshape(-1, 1), dtype=tf.dtypes.double)),
-        kernel=gpflow.kernels.SquaredExponential(lengthscales=np.ones(x.shape[1])),
+        kernel=gpflow.kernels.SquaredExponential(
+            lengthscales=harness.ard_initial_lengthscales(x)),
         likelihood=waveome.likelihoods.NegativeBinomial(),
     )
     gpflow.optimizers.Scipy().minimize(m.training_loss, m.trainable_variables)
