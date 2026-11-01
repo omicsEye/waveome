@@ -264,6 +264,42 @@ call. Applying that rule to the selection-scored cells only would keep it intact
 - **Needs from you (Decision 6):** whether Pegasus has MATLAB with a license usable from
   batch jobs.
 
+## 8b. iHMP-scale calibration for squared-exponential components (internal review issue 3)
+
+**Stresses:** error control and power for SE components, where most of the
+manuscript's nonlinear findings sit (bilirubin, metronidazole, nervonic acid).
+
+This runs at iHMP scale (49 participants, about 5 visits each), not on the main
+grid. It reuses the two existing scripts.
+
+**What exists:**
+
+| Script | Result | Limitation |
+|---|---|---|
+| `sim_fdr_stage2.py` (FINDINGS 25) | Linear stratum realized FDR 0.010 / 0.029 / 0.048 at q 0.01 / 0.05 / 0.10, power 0.88–0.89. SE stratum: 0 false out of 288 | Only linear effects are planted, so the SE stratum is a pure null: error control is untested with SE signal present |
+| `sim_se_power.py` (FINDINGS 23) | SE power 93.5% (72/77), no false discoveries; M = 150 | Ran before the BIC fix. Smallest effect 0.20 (component SD, log scale), above where real candidates sit (proline 0.18) |
+
+**Proposed:**
+
+1. **Rerun `sim_se_power.py` against the current code, with weaker effects.**
+   - Extend the amplitude grid down to about 0.10, so the power curve covers
+     where real SE candidates sit.
+   - Report power by amplitude and by lengthscale.
+2. **Stage 2 with SE true positives.**
+   - Add within-participant SE effects to some of the true-positive outcomes,
+     beside the linear ones.
+   - Report realized FDR and power for the SE and linear strata separately,
+     each at q 0.01, 0.05 and 0.10.
+   - This is the SE error-control check the review asks for.
+3. **Report the gaps the review lists:**
+   - the number of simulated outcomes (M) and replicates behind each CI;
+   - the effect sizes behind each power figure;
+   - an honest statement that the q = 0.01 CI ([0.000, 0.035]) does not
+     establish calibration at that level.
+
+Both are small next to the main sweep (the earlier SE run took 108 min). They use
+the library as installed, so they can run during the sweep.
+
 ## 9. Grid, cost, and decisions
 
 ### Cell counts at 50 replicates
@@ -333,6 +369,7 @@ resources table.
 | R4 | Regime D likelihoods and ZINB-truth KL (T5 check) | All three likelihoods fit, permute and produce selections on a smoke cell; KL is zero for the true distribution against itself |
 | R5 | GPcounts wrapper | Install dry run against `requirements-pegasus.txt`; one- and two-sample calls on a smoke cell |
 | R6 | LonGP attempt | Depends on Decision 6 |
+| R6b | SE calibration at iHMP scale (section 8b): weaker-effect SE power rerun; Stage 2 with SE true positives | Power curve reaches amplitude 0.10; SE-stratum realized FDR reported with SE signal present, with M and effect sizes stated |
 | R7 | Measurement pilot on Pegasus, then the final submission | Per-stage resources for each regime level; cost table above replaced with measured numbers |
 
 R1–R5 are local code and tests; none of them touches the main sweep. R7 can run while the
