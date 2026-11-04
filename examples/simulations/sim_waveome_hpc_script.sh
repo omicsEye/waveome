@@ -23,10 +23,10 @@
 #   . /GWSPH/groups/rahlab/venvs/waveome/bin/activate
 #   mkdir -p logs
 #   sbatch --array=1-$(python sim_waveome_hpc_run.py --size large --cells-per-task 1 --count-tasks) \
-#       --cpus-per-task=12 --mem=32G \
+#       --cpus-per-task=12 --mem=64G \
 #       --export=ALL,SIZE=large,CELLS_PER_TASK=1 sim_waveome_hpc_script.sh
 #   sbatch --array=1-$(python sim_waveome_hpc_run.py --size small --cells-per-task 1 --count-tasks) \
-#       --mem=16G --export=ALL,SIZE=small,CELLS_PER_TASK=1 sim_waveome_hpc_script.sh
+#       --mem=24G --export=ALL,SIZE=small,CELLS_PER_TASK=1 sim_waveome_hpc_script.sh
 # One cell per task: a 6,400-observation cell takes ~3 days on 12 CPUs, so
 # several per task would approach the 14-day limit.
 # Array indices are capped by the cluster's MaxArraySize (see
@@ -94,6 +94,12 @@ fi
 export TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=1
 # Write progress and stage times to the log as they happen, not at exit
 export PYTHONUNBUFFERED=1
+# Each task gets its own Ray directory. Ray defaults to /tmp/ray, shared by
+# every task on the node, and tasks sharing it deleted each other's session
+# files mid-run (FileNotFoundError under /tmp/ray/session_*).
+export RAY_TMPDIR=/tmp/ray_$SLURM_JOB_ID
+mkdir -p "$RAY_TMPDIR"
+trap 'rm -rf "$RAY_TMPDIR"' EXIT
 
 TASK_ID=$((SLURM_ARRAY_TASK_ID + ${TASK_OFFSET:-0}))
 python sim_waveome_hpc_run.py $TASK_ID --size $SIZE --cells-per-task $CELLS_PER_TASK \
