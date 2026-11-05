@@ -200,6 +200,11 @@ double-counted the lengthscale prior. Both are gone.
   Pearson residual, Spearman, permute unit means (20,000 draws), BH.
   **Result: 0/564 for both covariates** — a null result that needs reporting,
   since it bounds what the cross-sectional HBI claims can mean.
+  **Updated 2026-11-04 (FINDINGS 30):** the refit now also drops the
+  participant components. Methods and the result paragraph in
+  sn-article-revised.tex updated: strongest |rho| 0.48, p = 0.0004; 0/564
+  either way; HBI's 75 nominal p<0.05 vs ~28 by chance noted as diffuse
+  signal, not a test.
 - [x] **M14. DONE.** Multiplicity structure stated. 564 metabolites x 2 kernels x
   2 covariates; BH applied within each of the four strata. The submitted text
   has no multiplicity control at all.
