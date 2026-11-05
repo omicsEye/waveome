@@ -2099,3 +2099,52 @@ spread is **4.3e-14**, and `HILn_QI9`'s `lin[hbi]` now reads RISING
 Note for anyone writing similar code: `kernel.K(X, Z)` does NOT apply
 `active_dims` slicing -- only `kernel(X, Z)` does. Using `.K` silently
 computes the kernel over every column.
+
+## 30. Between-subject test: the refit now drops the unit term too (2026-11-03)
+
+Internal review issue 4. Section 15's refit dropped the covariate's own
+components but kept the participant kernel. With the covariate gone, that
+kernel absorbs part of each subject's mean -- the signal the test looks for
+-- shrinking it by roughly sigma2_e / (sigma2_e + n_u sigma2_id). With equal
+visit counts the factor is the same for every subject and the Spearman ranks
+are untouched; with unequal counts (iHMP: 1-8 visits, mostly 4-6) it
+reorders subjects and costs power. Validity was never at stake: the
+covariate is absent from the refit and subjects are permuted. A second gap:
+only components labelled exactly as the covariate were dropped, so its
+interactions (e.g. `id*hbi`, `hbi*time`) stayed in. The iHMP model has none.
+
+**Change.** `between_subject_significance(drop_unit_components=True)`, now
+the default, drops every component involving the covariate or the unit
+column. False reproduces the old construction. A refit with nothing left
+returns the centred outcome (any constant-mean residual is affine in y, so
+the unit-mean ranks are the same).
+
+**iHMP, current fit, both constructions** (seed 9102, 20,000 draws;
+`examples/iHMP/between_subject_issue4_compare.py`):
+
+| covariate | construction | q<0.05 | q<0.10 | min p | p<0.05 (chance ~28) |
+|---|---|---|---|---|---|
+| hbi | old | 0/564 | 0/564 | 0.0015 | 83 |
+| hbi | new | 0/564 | 0/564 | 0.0004 | 75 |
+| time_from_max | old | 0/564 | 0/564 | 0.0085 | 12 |
+| time_from_max | new | 0/564 | 0/564 | 0.0057 | 16 |
+
+The section 15 zero holds on the current fit and does not depend on the
+construction. About half the metabolites give identical statistics under
+both (likely those whose participant component had collapsed; not checked);
+|rho| rank correlation between constructions is 0.95 (hbi) and 0.93
+(time_from_max). The largest change is HILp_QI1048:hbi, |rho| 0.31 -> 0.48,
+q 0.31 -> 0.23.
+
+**Wording.** hbi has ~3x more p<0.05 than chance under either construction:
+a diffuse between-subject association that no single metabolite carries
+past BH at n=49. Correlated metabolites inflate such counts, so this is not
+a global test -- but "genuinely null" (section 15) overstates it; "no
+individual metabolite detected" is accurate. time_from_max is consistent
+with chance.
+
+Acceptance: `tests/test_between_subject_unit_components.py` -- the drop set
+includes the unit term and interactions; with 1-8 visits per unit the new
+construction raises mean |rho| on true effects (0.572 -> 0.604, 6/6
+detected under both) with 1/6 nulls at p<0.05; an empty refit returns the
+centred outcome.

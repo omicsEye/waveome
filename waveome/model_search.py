@@ -148,6 +148,10 @@ def _subject_residuals_remote(model, X, y, drop_idx, resid_type):
     residuals -- that is what the subject-level test then looks for.
     """
     try:
+        if len(drop_idx) == len(model.kernel.kernels):
+            # Nothing left to fit. Any residual from a constant mean is an
+            # affine map of y, which leaves the unit-mean ranks unchanged.
+            return (y - y.mean()).ravel(), None
         data = convert_data_to_tensors(X, y.reshape(-1, 1))
         m = gpflow.utilities.deepcopy(model)
         for i in sorted(drop_idx, reverse=True):
@@ -159,6 +163,21 @@ def _subject_residuals_remote(model, X, y, drop_idx, resid_type):
             m, X=data[0], Y=data[1], resid_type=resid_type).ravel(), None
     except Exception as exc:  # noqa: BLE001 - reported per task, not raised
         return None, str(exc)
+
+
+def _between_subject_drop_idx(cov_names, cov, unit_name, drop_unit_components):
+    """Components the between-subject refit drops for covariate `cov`.
+
+    With drop_unit_components (the default in between_subject_significance),
+    every component involving `cov` or the unit column, interactions
+    included: a per-unit term left in the refit would absorb the very
+    between-unit signal the test looks for. Without it, only the components
+    labelled exactly `cov` (the earlier behaviour, kept for comparison).
+    """
+    if drop_unit_components:
+        return [i for i, c in enumerate(cov_names)
+                if cov in c.split("*") or unit_name in c.split("*")]
+    return [i for i, c in enumerate(cov_names) if c == cov]
 
 
 def _component_covariate_names(kernel_name, feat_names):
@@ -2415,6 +2434,7 @@ class GPSearch:
         ray_dashboard=False,
         ray_logging=False,
         verbose=True,
+        drop_unit_components=True,
     ):
         """Subject-level significance -- the complement to
         `permutation_significance`.
@@ -2428,9 +2448,11 @@ class GPSearch:
         untested. This covers it.
 
         Per (outcome, covariate):
-          1. refit with ALL of that covariate's kernel components dropped, so
-             the residuals retain whatever the rest of the model cannot
-             explain -- including any covariate signal, which is the point
+          1. refit with ALL of that covariate's kernel components dropped,
+             and every unit-specific component too, so the residuals retain
+             whatever the rest of the model cannot explain -- including any
+             covariate signal, which is the point (a unit term left in would
+             absorb it)
           2. reduce each unit to two numbers: mean covariate, mean residual
           3. Spearman correlation across units (rank-based, since a clinical
              index is typically bounded and discrete -- hbi has 14 distinct
@@ -2458,6 +2480,15 @@ class GPSearch:
             cost almost nothing -- an earlier version used 200 and floored
             every p-value at 5e-3, 56x above the threshold, reporting a
             meaningless zero.
+        drop_unit_components : bool
+            True (default) drops every component involving the covariate or
+            the unit column, interactions included, as step 1 describes.
+            False drops only the components labelled exactly as the
+            covariate -- the earlier behaviour, kept so results can be
+            compared. It leaves the unit kernel in the refit, which absorbs
+            part of each unit's mean, shrinking it by a factor that depends
+            on the unit's number of observations; with unequal counts that
+            reorders the units and costs power (validity is unaffected).
 
         Returns
         -------
@@ -2475,11 +2506,13 @@ class GPSearch:
         unit_ids = X[:, self.unit_idx]
         units = np.unique(unit_ids)
 
+        unit_name = self.feat_names[self.unit_idx]
         targets = {}
         for cov in covariates:
             if cov not in self.feat_names:
                 raise ValueError(f"unknown covariate {cov!r}")
-            idxs = [i for i, c in enumerate(cov_names) if c == cov]
+            idxs = _between_subject_drop_idx(
+                cov_names, cov, unit_name, drop_unit_components)
             if not idxs:
                 raise ValueError(f"covariate {cov!r} has no kernel components")
             targets[cov] = idxs
