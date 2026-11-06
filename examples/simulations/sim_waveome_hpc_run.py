@@ -186,7 +186,9 @@ def sim_data(
             likelihood_params[k] = {
                 "p": p_,
                 "n": n_,
-                "alpha": alpha_
+                "alpha": alpha_,
+                # True latent signal, before noise (for sim_snr_table.py)
+                "f": f_,
             }
 
             # Now get observed values
@@ -1566,8 +1568,13 @@ def make_grid(run_id):
     """Cross-join of simulation settings; 32 contiguous rows per setting."""
     rate_list = [2, 4, 8, 16]
     units_list = [10, 50, 100, 500]
-    epsilon_list = [0, 1, 10]
-    alpha_list = [1, 10, 100]
+    # Latent noise sd (eps) and NB overdispersion (alpha), chosen so each knob
+    # alone takes the signal share (R^2 of log(y+1) on the true latent signal)
+    # from ~40% to ~10-20%, and the hardest setting is ~4%. sim_snr_table.py
+    # computes the table. The earlier eps=10 and alpha=100 left <1% signal,
+    # and eps=10 overflowed int64 counts.
+    epsilon_list = [0, 1, 2]
+    alpha_list = [0.5, 2, 10]
     model_list = [
         "waveome_penalized", "waveome_search",
         "mixed_lm", "glm",
