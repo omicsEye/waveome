@@ -67,10 +67,21 @@ condition. No extra reference runs are needed.
 
 The 6,400 cells are left out: they are about 60% of the main sweep's cost.
 
-**Noise.** Fixed at `epsilon = 1`, `alpha = 1`. The regime should be the only source of
-difficulty, so it runs where the main-grid methods have signal to lose. This is provisional:
-if the main sweep shows waveome already struggling at that setting, the anchor moves.
-**(Decision 1.)**
+**Noise.** Every regime runs at three settings on the diagonal of the main noise grid
+(`sim_snr_table.py` gives the signal shares; decided, Decision 1):
+
+| Setting | `epsilon` | `alpha` | Signal share |
+|---|---|---|---|
+| Easy | 0 | 0.5 | ≈ 47% |
+| Medium | 1 | 2 | ≈ 20% |
+| Hard | 2 | 10 | ≈ 4% |
+
+- Each setting is a main-grid cell, so a regime's effect is a paired difference against
+  the plain simulation at the same noise, size and seed.
+- Three points show whether a regime's damage grows as the signal weakens. Separating
+  the two noise sources is left to the main grid, which crosses them.
+- The full 3 × 3 would cost about three times as much again and add only that
+  separation.
 
 **Signal strength.**
 
@@ -306,13 +317,17 @@ the library as installed, so they can run during the sweep.
 
 | Regime | Levels | Sizes | Cells | waveome fits per cell |
 |---|---|---|---|---|
-| A misspecified | 1 | 3 | 150 | 1 |
-| B change point | 1 | 3 | 150 | 1 |
-| C correlated | 3 (ρ) | 3 | 450 | 1 |
-| D zero inflation | 3 (π) | 3 | 450 | 3 likelihoods |
-| E noise covariates | 3 (p) | 2 | 300 | 1, with 2–6× permutation cost |
-| Splits | 2 | 3 | 300 | 1 (no permutation, if Decision 5) |
-| **Total** | | | **1,800** | |
+Every regime runs at the three noise settings of section 2.
+
+| Regime | Levels | Sizes | Cells | waveome fits per cell |
+|---|---|---|---|---|
+| A misspecified | 1 | 3 | 450 | 1 |
+| B change point | 1 | 3 | 450 | 1 |
+| C correlated | 3 (ρ) | 3 | 1,350 | 1 |
+| D zero inflation | 3 (π) | 3 | 1,350 | 3 likelihoods |
+| E noise covariates | 3 (p) | 2 | 900 | 1, with 2–6× permutation cost |
+| Splits | 2 | 3 | 900 | 1 (no permutation, if Decision 5) |
+| **Total** | | | **5,400** | |
 
 ### Cost: rough, to be replaced by measurement
 
@@ -333,12 +348,15 @@ On that basis:
 
 | Regime | CPU-hours |
 |---|---|
-| A, B | ≈ 15k each |
-| C | ≈ 45k |
-| D | ≈ 90k |
-| E | ≈ 55k |
-| Splits | ≈ 15–30k |
-| **Total** | **≈ 250k**, about 20% of the main sweep's 1.2–1.5M |
+| A, B | ≈ 45k each |
+| C | ≈ 135k |
+| D | ≈ 270k |
+| E | ≈ 165k |
+| Splits | ≈ 45–90k |
+| **Total** | **≈ 750k**, about half the main sweep's 1.2–1.5M |
+
+If that is too much, the hard setting can run at 160 and 640 obs only, or the splits at
+the medium setting only.
 
 GPcounts and LonGP are not included. Before the full submission, a measurement pilot (one
 replicate per regime level at 640 and 1,600) will replace these numbers using each cell's
@@ -346,8 +364,8 @@ resources table.
 
 ### Decisions needed
 
-1. **Noise anchor:** `epsilon = 1, alpha = 1` for every regime, revisited after the main
-   sweep. Alternative: run each regime at two noise settings, which doubles the cost.
+1. **Noise:** decided. Every regime runs at the three diagonal settings of section 2
+   (easy, medium, hard), about three times the cost of a single anchor.
 2. **Regime C second pair** (unit-level covariate correlated with `treat`): include or
    skip? Recommended: skip unless R2.m4 needs a binary example.
 3. **Regime D covariate-dependent zeros:** include or skip? Recommended: skip. Constant π
