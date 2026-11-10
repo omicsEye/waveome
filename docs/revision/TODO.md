@@ -32,6 +32,59 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
 
   **Nothing downstream changes.** No re-run, no regeneration.
 
+- [ ] **A2. Non-finite permutation draws — SCOPED, needs sign-off (touches
+  the null construction, a frozen decision).**
+  *Found:* main sweep, Nov 2026. Two small cells (eps 0, alpha 10) failed
+  after all their draws finished. Of 356 and 538 draws, 1 and 6 were NaN,
+  all for y2's time components.
+
+  *Cause:* `_permutation_draw_remote` returns
+  `-0.5 * (bic_full - bic_reduced)`. When a refit's BIC is NaN, that value
+  is NaN, and no exception is raised. The NaN is therefore saved as an
+  ordinary draw rather than counted as failed. Three consequences:
+  1. **Crash at the end.** `calc_permutation_pvalues` passes the pooled
+     draws to `sm.QuantReg`. It raises `MissingDataError` ("exog contains
+     inf or nans"), which ends `permutation_significance` after every draw
+     is done. The draws survive only in the checkpoint.
+  2. **Duplicate rows on resume.** The checkpoint loader's `dropna` treats
+     NaN rows as torn lines. Their draws are rerun with the same seed, come
+     out NaN again, and are appended a second time.
+  3. **NaN observed statistic.** If the observed statistic (draw -1) is NaN,
+     the p-value for that component is undefined rather than flagged.
+
+  *Proposed fix:* treat a non-finite value the way an exception is already
+  treated, as a failed draw.
+  - In `_permutation_draw_remote`, leave a non-finite component out of
+    `out` and return an error note.
+  - In `_collect`, still write the draw's finite components and add
+    partial failures to `n_fail`, so the progress line reports them.
+  - If an observed statistic is non-finite, report that component as
+    untestable (warning plus a NaN p-value), rather than dropping it
+    silently.
+  - Leave `calc_permutation_pvalues` unchanged: with clean draws it never
+    sees a NaN.
+
+  *Changes results?* Only where NaN draws exist. The current iHMP results
+  have none. `examples/iHMP/output/ihmp_permutation_draws.csv` (Oct 4;
+  99,496 rows over 564 metabolites, 2,256 of them observed statistics) has
+  0 non-finite `log_bf` and 0 duplicate draws. The within-subject draw files
+  and the pre-Oct-4 archive are also clean, and the run log reports 0 failed
+  draws. So the fix changes nothing already reported. It still protects the
+  planned iHMP rerun.
+
+  *Acceptance:*
+  - A test with a draw that yields NaN for one component. It must not
+    raise, must leave the NaN out of `permutation_draws`, must count it as
+    failed, and must give the same p-values as a run with that draw removed.
+  - Resuming from a checkpoint that holds NaN rows adds no duplicates.
+  - The existing permutation tests still pass.
+
+  *Sweep side (already handled):* `sim_waveome_hpc_run.py` catches this one
+  error once the draws exist and keeps the raw draws unchanged. When draws
+  are pooled for the simulation p-values, the aggregation must apply the
+  same rule: drop non-finite draws, then remove duplicate
+  (outcome, covariate, kernel, draw) rows.
+
 ## B. Notebook work (unblocked -- A1 needs no re-run)
 
 - [x] ~~B1. Regenerate~~ — not needed; A1 changes no results.

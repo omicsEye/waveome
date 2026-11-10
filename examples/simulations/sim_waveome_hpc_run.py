@@ -29,7 +29,7 @@ from sklearn.preprocessing import OneHotEncoder, PolynomialFeatures, StandardSca
 from sklearn.utils._testing import ignore_warnings
 from statsmodels.formula.api import glm, mixedlm
 from statsmodels.gam.api import BSplines, GLMGam
-from statsmodels.tools.sm_exceptions import ConvergenceWarning
+from statsmodels.tools.sm_exceptions import ConvergenceWarning, MissingDataError
 from tqdm import tqdm
 
 import waveome
@@ -761,13 +761,23 @@ def run_simulation(
     # Only the raw draws (draw == -1 is the observed statistic) are kept:
     # p-values and BH are computed later over all replicates of a setting
     # pooled, not within these four outcomes.
-    gps_sim_pen.permutation_significance(
-        covariates=["treat", "time"],
-        q_target=0.10,
-        random_seed=9102,
-        num_processes=num_jobs,
-        checkpoint_path=perm_checkpoint,
-    )
+    try:
+        gps_sim_pen.permutation_significance(
+            covariates=["treat", "time"],
+            q_target=0.10,
+            random_seed=9102,
+            num_processes=num_jobs,
+            checkpoint_path=perm_checkpoint,
+        )
+    except MissingDataError:
+        # A refit whose BIC is NaN gives a NaN draw, and the in-cell p-value
+        # step (quantile regression) rejects it. The draws are already saved
+        # and this script only keeps them, so carry on; how NaN draws are
+        # treated is decided where p-values are pooled over replicates.
+        if getattr(gps_sim_pen, "permutation_draws", None) is None:
+            raise
+        n_bad = int((~np.isfinite(gps_sim_pen.permutation_draws.log_bf)).sum())
+        print(f"Permutation p-values skipped: {n_bad} non-finite draw(s) kept as is")
     perm_draws = gps_sim_pen.permutation_draws
 
     end_time = time.time()
