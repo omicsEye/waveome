@@ -134,6 +134,12 @@ def _permutation_draw_remote(model, X, y, unit_ids, col, targets, seed):
             reduced.num_trainable_params = np.nan
             reduced.optimize_params(data=data, optimizer=optimizer)
             out[idx] = float(-0.5 * (bic_full - _bic(reduced)))
+        # A refit whose BIC is NaN or inf gives no usable statistic. The whole
+        # draw fails, as if it had raised: nothing is written for it, and a
+        # resumed run re-queues it rather than keeping part of a draw.
+        bad = [idx for idx, v in out.items() if not np.isfinite(v)]
+        if bad:
+            return None, f"non-finite log_bf for component(s) {bad}"
         return out, None
     except Exception as exc:  # noqa: BLE001 - reported per draw, not raised
         return None, str(exc)
@@ -2358,11 +2364,28 @@ class GPSearch:
         ray.shutdown()
         self.permutation_draws = draws
 
+        # A failed observed draw (an error, or a non-finite refit) leaves its
+        # components with no statistic to test. Say so rather than letting
+        # them drop out of the results unnoticed.
+        has_obs = set(zip(draws.loc[draws.draw == -1, "metabolite"],
+                          draws.loc[draws.draw == -1, "covariate"]))
+        untestable = [(m, c) for c in covariates for m in names
+                      if (m, c) not in has_obs]
+        if untestable:
+            warnings.warn(
+                f"permutation_significance: {len(untestable)} (outcome, "
+                "covariate) pair(s) have no observed statistic -- the refit "
+                "on the real data failed or was non-finite -- so their "
+                f"components get no p-value: {untestable[:10]}"
+                + (" ..." if len(untestable) > 10 else ""))
+
         out = []
         for (cov, kt), g in draws.groupby(["covariate", "kernel_type"]):
             obs = g[g.draw == -1].set_index("metabolite")["log_bf"].to_dict()
             nul = {m: v["log_bf"].to_numpy()
                    for m, v in g[g.draw >= 0].groupby("metabolite")}
+            if not any(m in nul for m in obs):
+                continue
             res = calc_permutation_pvalues(obs, nul)
             res["q_value"] = calc_bh_qvalues(res["p_value"].to_numpy())
             res = res.reset_index().rename(columns={"key": "metabolite"})

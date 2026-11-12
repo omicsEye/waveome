@@ -32,8 +32,11 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
 
   **Nothing downstream changes.** No re-run, no regeneration.
 
-- [ ] **A2. Non-finite permutation draws — SCOPED, needs sign-off (touches
-  the null construction, a frozen decision).**
+- [x] **A2. Non-finite permutation draws — DONE 2026-11-11.** Author
+  approved option 1: a non-finite draw is dropped, the same as a draw that
+  raised an error. (The rule touches the frozen null construction, hence the
+  sign-off. The alternative, counting a NaN draw as at least as extreme as
+  the observed value, was declined.)
   *Found:* main sweep, Nov 2026. Two small cells (eps 0, alpha 10) failed
   after all their draws finished. Of 356 and 538 draws, 1 and 6 were NaN,
   all for y2's time components.
@@ -52,17 +55,20 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
   3. **NaN observed statistic.** If the observed statistic (draw -1) is NaN,
      the p-value for that component is undefined rather than flagged.
 
-  *Proposed fix:* treat a non-finite value the way an exception is already
-  treated, as a failed draw.
-  - In `_permutation_draw_remote`, leave a non-finite component out of
-    `out` and return an error note.
-  - In `_collect`, still write the draw's finite components and add
-    partial failures to `n_fail`, so the progress line reports them.
-  - If an observed statistic is non-finite, report that component as
-    untestable (warning plus a NaN p-value), rather than dropping it
-    silently.
-  - Leave `calc_permutation_pvalues` unchanged: with clean draws it never
-    sees a NaN.
+  *Fix (`waveome/model_search.py`):*
+  - `_permutation_draw_remote`: a draw with any non-finite component fails
+    whole, returning an error note, exactly like a draw that raised. It is
+    counted in the progress line's "failed", nothing is written for it, and
+    a resumed run re-queues it. That reruns the same seed, which fails
+    again, so no rows are added.
+  - This differs from the scope above, which kept a NaN draw's finite
+    components. Keeping part of a draw breaks resume: the loader treats a
+    draw with too few rows as truncated, reruns it, and appends duplicates.
+    Dropping the whole draw is also exactly how errored draws are treated.
+  - `permutation_significance` warns, naming them, when an (outcome,
+    covariate) pair has no observed statistic. Its components get no
+    p-value.
+  - `calc_permutation_pvalues` is unchanged.
 
   *Changes results?* Only where NaN draws exist. The current iHMP results
   have none. `examples/iHMP/output/ihmp_permutation_draws.csv` (Oct 4;
@@ -72,18 +78,25 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done
   draws. So the fix changes nothing already reported. It still protects the
   planned iHMP rerun.
 
-  *Acceptance:*
-  - A test with a draw that yields NaN for one component. It must not
-    raise, must leave the NaN out of `permutation_draws`, must count it as
-    failed, and must give the same p-values as a run with that draw removed.
-  - Resuming from a checkpoint that holds NaN rows adds no duplicates.
-  - The existing permutation tests still pass.
+  *Acceptance (`tests/test_permutation_nonfinite.py`, passing; it fails
+  on the old code with the sweep's `MissingDataError`):*
+  - A model forced to return NaN BICs: 3 of 6 null draws fail. The run
+    finishes, and the draws kept are exactly an unforced run's draws minus
+    the failed ones. Nothing non-finite reaches the draws, the checkpoint or
+    the p-values.
+  - An outcome whose observed refit is NaN gets a warning and no p-value.
+    The other outcomes are unaffected.
+  - A resume adds no rows and gives the same p-values.
+  - The existing permutation tests pass (collapsed null, interactions,
+    resume, and the shipped-p-values guard).
 
-  *Sweep side (already handled):* `sim_waveome_hpc_run.py` catches this one
-  error once the draws exist and keeps the raw draws unchanged. When draws
-  are pooled for the simulation p-values, the aggregation must apply the
-  same rule: drop non-finite draws, then remove duplicate
-  (outcome, covariate, kernel, draw) rows.
+  *Sweep side:*
+  - `sim_waveome_hpc_run.py` still catches the old error, for the running
+    sweep, which uses the library installed before this fix.
+  - `sim_aggregate.py` applies the same rule to those cells: it drops
+    duplicate draws, and drops whole any draw with a non-finite component.
+  - Reinstall the library on the cluster only when no sweep jobs are
+    running.
 
 ## B. Notebook work (unblocked -- A1 needs no re-run)
 
