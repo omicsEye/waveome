@@ -27,6 +27,13 @@
 #       --export=ALL,SIZE=large,CELLS_PER_TASK=1 sim_waveome_hpc_script.sh
 #   sbatch --array=1-$(python sim_waveome_hpc_run.py --size small --cells-per-task 1 --count-tasks) \
 #       --mem=24G --export=ALL,SIZE=small,CELLS_PER_TASK=1 sim_waveome_hpc_script.sh
+# The largest cells (500 units x rate 16, large tasks 1-450) need more: at
+# 64G with 12 CPUs, their permutation step ran out of memory after 19 h to
+# 3 days. Give those tasks 8 CPUs and 90G (fewer parallel model copies, more
+# memory each; every cpu node has at least 96 GB):
+#   sbatch --array=1-450 --cpus-per-task=8 --mem=90G \
+#       --export=ALL,SIZE=large,CELLS_PER_TASK=1 sim_waveome_hpc_script.sh
+# and the rest of the large tasks with --array=451-<count> as above.
 # One cell per task: a 6,400-observation cell takes ~3 days on 12 CPUs, so
 # several per task would approach the 14-day limit.
 # Array indices are capped by the cluster's MaxArraySize (see
