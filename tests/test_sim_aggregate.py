@@ -87,26 +87,31 @@ def check_norm_and_baseline_calls():
 def check_clean_draws():
     d = make_draws(0, np.random.default_rng(9102))
     n = len(d)
+    # Rows 5 and 6 are draws 4 and 5 of (y1, treat), whose draws each have
+    # two components (kernel 1 and 3): a non-finite one drops the whole draw
     d.loc[5, "log_bf"] = np.nan
     d.loc[6, "log_bf"] = np.inf
     d = pd.concat([d, d.iloc[[7, 8]]], ignore_index=True)  # two duplicates
     clean, counts = agg.clean_draws(d)
-    assert len(clean) == n - 2
-    assert counts.n_duplicate.sum() == 2 and counts.n_nonfinite.sum() == 2
+    assert len(clean) == n - 4
+    assert counts.n_duplicate.sum() == 2 and counts.n_nonfinite.sum() == 4
     assert np.isfinite(clean.log_bf).all()
-    print("[ok] duplicate and non-finite draws dropped and counted")
+    gone = clean.query("metabolite == 'y1' and covariate == 'treat' and draw in [4, 5]")
+    assert gone.empty, "a draw with a non-finite component was kept in part"
+    print("[ok] duplicate draws and whole non-finite draws dropped and counted")
 
 
 def check_penalized_calls():
     rng = np.random.default_rng(9102)
     draws = pd.concat([make_draws(r, rng) for r in range(20)], ignore_index=True)
-    # Replicate 0's y1 time statistic is non-finite: dropped, so no test, no call
+    # Replicate 0's y1 time statistic is non-finite: its observed draw (both
+    # time components) is dropped, so neither is tested or called
     nan_row = ((draws.run_id == 0) & (draws.metabolite == "y1")
                & (draws.covariate == "time") & (draws.kernel_idx == 2) & (draws.draw == -1))
     draws.loc[nan_row, "log_bf"] = np.nan
     draws, _ = agg.clean_draws(draws)
     tests = agg.penalized_tests(draws, q=0.10)
-    assert len(tests) == 20 * 4 * 4 - 1
+    assert len(tests) == 20 * 4 * 4 - 2
     built = tests.apply(lambda r: (r.metabolite, r.covariate, r.kernel_idx) in STRONG, axis=1)
     assert tests.hit[built].all() and not tests.hit[~built].any()
     metrics = pd.concat([make_metrics(r, {}) for r in range(20)], ignore_index=True)

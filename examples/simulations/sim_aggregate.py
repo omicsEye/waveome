@@ -29,10 +29,10 @@ treat*time; supplement). `id` is an adjuster and is not scored, so terms
 involving it count only at the covariate level, through their other factor.
 
 Permutation draws are cleaned first: duplicate draws (a resumed cell reruns
-draws whose value was NaN and appends them again) are removed, and
-non-finite draws are dropped like draws that raised an error (TODO A2). A
-test whose observed statistic is non-finite has no p-value and is not
-called.
+draws whose value was NaN and appends them again) are removed, and a draw
+with any non-finite component is dropped whole, as the library now treats
+it like a draw that raised an error (TODO A2). A test whose observed
+statistic is non-finite has no p-value and is not called.
 
 Usage, from examples/simulations (on the cluster, or on a copy of cells/):
     python sim_aggregate.py --cells ./sim_waveome_output/cells \\
@@ -117,9 +117,17 @@ def load_cells(cell_dir):
 
 
 def clean_draws(draws):
-    """Drop duplicate and non-finite draws; return the rest and per-cell counts."""
+    """Drop duplicate and non-finite draws; return the rest and per-cell counts.
+
+    A draw with any non-finite component is dropped whole (every component
+    of that outcome, covariate and draw), as the library now fails such a
+    draw (TODO A2); cells run before that fix still hold its finite rows.
+    """
     dup = draws.duplicated(DRAW_KEY)
-    bad = ~np.isfinite(draws["log_bf"].astype(float)) & ~dup
+    draw = [k for k in DRAW_KEY if k != "kernel_idx"]
+    nonfinite = (~np.isfinite(draws["log_bf"].astype(float))).groupby(
+        [draws[k] for k in draw]).transform("any")
+    bad = nonfinite & ~dup
     cell = SETTING + ["run_id"]
     counts = (draws.assign(n_draws=1, n_duplicate=dup, n_nonfinite=bad)
               .groupby(cell)[["n_draws", "n_duplicate", "n_nonfinite"]].sum()
