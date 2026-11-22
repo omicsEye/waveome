@@ -1,5 +1,4 @@
 # Libraries
-import copy
 import functools
 import glob
 import hashlib
@@ -28,7 +27,6 @@ from sklearn.linear_model import LassoCV
 from sklearn.preprocessing import OneHotEncoder, PolynomialFeatures, StandardScaler
 from sklearn.utils._testing import ignore_warnings
 from statsmodels.formula.api import glm, mixedlm
-from statsmodels.gam.api import BSplines, GLMGam
 from statsmodels.tools.sm_exceptions import ConvergenceWarning, MissingDataError
 from tqdm import tqdm
 
@@ -594,6 +592,222 @@ class StageResources:
         return pd.DataFrame(self.rows)
 
 
+def simulate_split(kern_out, rate, num_units, epsilon, alpha, random_seed):
+    """One cell's data and its 80/20 train/holdout split, with the true
+    likelihood parameters of each part. Deterministic in random_seed, so
+    sim_baseline_refit.py can regenerate a finished cell's data. All None if the
+    data simulation fails."""
+    sim_df, sim_dict = sim_data(
+        kern_out=kern_out,
+        random_seed=random_seed,
+        num_units=num_units,
+        rate=rate,
+        eps=epsilon,
+        alpha=alpha
+    )
+    if sim_df is None:
+        return None, None, None, None, None
+
+    # Then split into training and holdout
+    train_idx = sim_df.sample(frac=0.8, random_state=random_seed).index.to_numpy()
+    train_df = sim_df.iloc[train_idx]
+    holdout_df = sim_df.iloc[sim_df.index.difference(train_idx)]
+    #print(f"{train_df.shape=}, {holdout_df.shape=}")
+
+    train_dict = {}
+    holdout_dict = {}
+    for k, v in sim_dict.items():
+        train_dict[k] = {}
+        holdout_dict[k] = {}
+
+        for k2, v2 in v.items():
+            if k2 != "alpha":
+                train_dict[k][k2] = v2[train_idx]
+                holdout_dict[k][k2] = v2[holdout_df.index.to_numpy()]
+            else:
+                train_dict[k][k2] = v2
+                holdout_dict[k][k2] = v2
+    return sim_df, train_df, holdout_df, train_dict, holdout_dict
+
+
+def fit_nb_glm(o, train_df, holdout_df, train_dict, holdout_dict):
+    """Population-average NB GLM for outcome `o`: time, treat and their
+    interaction, with standard errors clustered by unit.
+
+    Treatment is assigned per unit, so per-unit effects would absorb it. The
+    earlier formula had them (id, id x time, id x treat), its design had more
+    columns than rank, no fit produced standard errors, and nothing was ever
+    selected. Within-unit correlation is left to the clustered standard
+    errors instead, with Wald tests on t / F with units - 1 degrees of
+    freedom. (With few units, clustered tests still reject a null term more
+    often than 5%: ~12-17% at 10 units and ~7% at 40, against 15-20% and
+    ~8% with normal-theory tests.) A term that does not vary in the training
+    data (every unit in one arm) is left out. The dispersion is chosen from 1-10 by
+    log-likelihood, terms with Wald p < 0.05 are selected, and the model is
+    refit on them.
+
+    Returns the selected terms, train/holdout KL and MSE, and a status: "ok",
+    "no_fit" (no dispersion fit; training-mean prediction) or "wald_failed"
+    (nothing selected; the full model's prediction).
+    """
+    terms = [t for t in ["time", "treat"] if train_df[t].nunique() > 1]
+    if len(terms) == 2:
+        terms.append("time:treat")
+
+    def fit(rhs, a):
+        return glm(
+            formula=f"{o} ~ {rhs}",
+            data=train_df,
+            family=sm.genmod.families.NegativeBinomial(alpha=a)
+        ).fit(cov_type="cluster", cov_kwds={"groups": train_df.id}, use_t=True)
+
+    best, best_ll, best_alpha = None, -np.inf, None
+    for a in np.arange(start=1, stop=11):
+        try:
+            m = fit("+".join(terms) or "1", a)
+        except Exception:
+            continue
+        if m.llf > best_ll:
+            best, best_ll, best_alpha = m, m.llf, a
+
+    status, features, final = "ok", [], best
+    if best is None:
+        status = "no_fit"
+    elif terms:
+        try:
+            pvalue = best.wald_test_terms(scalar=True).table["pvalue"]
+        except Exception:
+            status = "wald_failed"
+        else:
+            selected = [t for t in terms if pvalue[t] < 0.05]
+            features = [t.replace(":", "*") for t in selected]
+            if selected != terms:
+                try:
+                    final = fit("+".join(selected) or "1", best_alpha)
+                except Exception:
+                    pass  # keep the full model
+
+    out = {"features": ",".join(features), "status": status}
+    for part, df, true in [("train", train_df, train_dict), ("holdout", holdout_df, holdout_dict)]:
+        if final is None:
+            hat = np.repeat(train_df[o].mean(), repeats=df.shape[0])
+        else:
+            hat = final.predict(df)
+        # est_m=None: the KL uses dispersion 1, as it always has for the GLM
+        out[f"{part}_kl"] = calc_kl_all(
+            n=true[o]["n"],
+            p=true[o]["p"],
+            x=df[["id", "treat", "time"]],
+            y=df[o],
+            est_m=None,
+            m_type="glm",
+            y_pred=hat
+        )
+        out[f"{part}_mse"] = mean_squared_error(y_true=df[o], y_pred=hat)
+    return out
+
+
+def fit_nb_gam(o, train_df, holdout_df, train_dict, holdout_dict):
+    """NB GAM for outcome `o`: an intercept per unit, a cubic B-spline in time
+    (4 columns, unpenalized) and a treatment-specific linear time slope, with
+    model-based standard errors.
+
+    The earlier GAM (statsmodels GLMGam: unit effects, treat, a penalized
+    12-column spline) could not separate treat from the unit effects, had no
+    treatment-by-time term, and called time when any one spline column had
+    p < 0.05. statsmodels has no test of a penalized smooth that accounts for
+    the penalty, and with one joint test the penalized spline rarely called a
+    real time trend (~4-42% at 40 units, against ~89% here). The unit
+    intercepts absorb treat, so a treat main effect is not tested. Null
+    terms are called in ~1% of datasets. Units whose training counts are all
+    zero carry no information on time and are left out of the fit; they
+    predict ~0. A holdout unit without training rows gets the mean fitted
+    intercept, and holdout times are clipped to the training range (the
+    spline's knots). The dispersion is chosen from 1-10 by log-likelihood,
+    the time spline and time:treat are tested jointly (Wald, p < 0.05), and
+    the model is refit on the selected terms.
+
+    Returns the selected terms, train/holdout KL and MSE, and a status: "ok",
+    "no_fit" (no dispersion fit; training-mean prediction) or "wald_failed"
+    (nothing selected; the full model's prediction).
+    """
+    nonzero = train_df.groupby("id")[o].transform("max") > 0
+    fit_df = train_df[nonzero].assign(uid=lambda x: x["id"].astype(str))
+    spline = "bs(time, df=4)"
+    terms = [spline] + (["time:treat"] if fit_df["treat"].nunique() > 1 else [])
+
+    def fit(rhs, a):
+        return glm(
+            formula=f"{o} ~ 0 + C(uid) + {rhs}" if rhs else f"{o} ~ 0 + C(uid)",
+            data=fit_df,
+            family=sm.genmod.families.NegativeBinomial(alpha=a)
+        ).fit()
+
+    best, best_ll, best_alpha = None, -np.inf, None
+    for a in np.arange(start=1, stop=11):
+        if fit_df.empty:
+            break
+        try:
+            m = fit("+".join(terms), a)
+        except Exception:
+            continue
+        if np.isfinite(m.llf) and m.llf > best_ll:
+            best, best_ll, best_alpha = m, m.llf, a
+
+    status, features, final = "ok", [], best
+    if best is None:
+        status = "no_fit"
+    else:
+        try:
+            pvalue = best.wald_test_terms(scalar=True).table["pvalue"]
+            selected = [t for t in terms if pvalue[t] < 0.05]
+        except Exception:
+            status = "wald_failed"
+        else:
+            features = ["time" if t == spline else t.replace(":", "*") for t in selected]
+            if selected != terms:
+                try:
+                    final = fit("+".join(selected), best_alpha)
+                except Exception:
+                    pass  # keep the full model
+
+    def predict(df):
+        if final is None:
+            return np.repeat(train_df[o].mean(), repeats=df.shape[0])
+        # The linear predictor without the unit intercept (from a reference
+        # unit), plus each unit's own intercept, or the mean one if it has none
+        df = df.assign(
+            uid=df["id"].astype(str),
+            time=df["time"].clip(lower=fit_df["time"].min(), upper=fit_df["time"].max())
+        )
+        units = fit_df["uid"].unique()
+        ref = units[0]
+        intercept = pd.Series(
+            np.log(np.asarray(final.predict(df.iloc[[0] * len(units)].assign(uid=units)))),
+            index=units
+        )
+        eta = (np.log(np.asarray(final.predict(df.assign(uid=ref)))) - intercept[ref]
+               + df["uid"].map(intercept).fillna(intercept.mean()).to_numpy())
+        all_zero = (~df["uid"].isin(units) & df["id"].isin(train_df["id"])).to_numpy()
+        return np.where(all_zero, 1e-3, np.exp(eta))
+
+    out = {"features": ",".join(features), "status": status}
+    for part, df, true in [("train", train_df, train_dict), ("holdout", holdout_df, holdout_dict)]:
+        hat = predict(df)
+        # est_m=None: the KL uses dispersion 1, as it always has for the GAM
+        out[f"{part}_kl"] = calc_kl_all(
+            n=true[o]["n"],
+            p=true[o]["p"],
+            x=df[["id", "treat", "time"]],
+            y=df[o],
+            est_m=None,
+            m_type="gam",
+            y_pred=hat
+        )
+        out[f"{part}_mse"] = mean_squared_error(y_true=df[o], y_pred=hat)
+    return out
+
+
 def run_simulation(
     input_df=None,
     kern_out=None,
@@ -620,39 +834,14 @@ def run_simulation(
 
     # First simulate some data
     print("Simulating data")
-    sim_df, sim_dict = sim_data(
-        kern_out=kern_out,
-        random_seed=random_seed,
-        num_units=num_units,
-        rate=rate,
-        eps=epsilon,
-        alpha=alpha
+    sim_df, train_df, holdout_df, train_dict, holdout_dict = simulate_split(
+        kern_out, rate, num_units, epsilon, alpha, random_seed
     )
 
     # End iteration if simulated data fails
     if sim_df is None:
         print("Simulating data failed!")
         return pd.DataFrame(), None, None
-
-    # Then split into training and holdout
-    train_idx = sim_df.sample(frac=0.8, random_state=random_seed).index.to_numpy()
-    train_df = sim_df.iloc[train_idx]
-    holdout_df = sim_df.iloc[sim_df.index.difference(train_idx)]
-    #print(f"{train_df.shape=}, {holdout_df.shape=}")
-
-    train_dict = {}
-    holdout_dict = {}
-    for k, v in sim_dict.items():
-        train_dict[k] = {}
-        holdout_dict[k] = {}
-
-        for k2, v2 in v.items():
-            if k2 != "alpha":
-                train_dict[k][k2] = v2[train_idx]
-                holdout_dict[k][k2] = v2[holdout_df.index.to_numpy()]
-            else:
-                train_dict[k][k2] = v2
-                holdout_dict[k][k2] = v2
 
     # Also make transformations for Gaussian output models
     lm_train_df = (
@@ -676,7 +865,6 @@ def run_simulation(
     )
 
     # Get the full list of IDs
-    id_list = sorted(set(sim_df.id)) #.astype(str)))
 
     # Track timing for each model
     start_time = time.time()
@@ -954,132 +1142,14 @@ def run_simulation(
     # Then perform NB GLM #
     #######################
     print("NB GLM")
-    # Go through each output
     for o in output_names:
-        best_nb = None
-        best_nb_ll = -np.inf
-        best_alpha = None
-        # Find best alpha value based on log-likelihood
-        for a in np.arange(start=1, stop=11):
-
-            m_nb_glm = glm(
-                formula = f"{o} ~ C(id, levels=id_list) + time + treat + C(id, levels=id_list) * time + C(id, levels=id_list) * treat + time * treat",
-                data = train_df,
-                family = sm.genmod.families.NegativeBinomial(alpha=a)
-            )
-
-            try:
-                m_nb_glm = m_nb_glm.fit(cov_type="cluster", cov_kwds={"groups": train_df.id})
-            except:
-                try:
-                    m_nb_glm = m_nb_glm.fit(method="lbfgs")
-                except:
-                    continue
-
-            if m_nb_glm.llf > best_nb_ll:
-                best_nb_ll = m_nb_glm.llf
-                best_nb = copy.copy(m_nb_glm)
-                best_alpha = a
-
-        if best_nb is not None:
-            # Find significant features from model
-            # Make sure we can do a wald test - not possible if covariance matrix ill-defined
-            try:
-                wt_nb = best_nb.wald_test_terms(scalar=True)
-                wt_nb = set([
-                    x.replace("C(", "").replace(", levels=id_list)", "").replace(", levels=id", "").replace(":", "*")
-                    for x in wt_nb.table.query("pvalue < 0.05").index.tolist()
-                ])
-                if "Intercept" in wt_nb:
-                    wt_nb.remove("Intercept")
-                wt_nb = list(wt_nb)
-
-                # Reft model to only significant features
-                # New formula
-                if len(wt_nb) > 0:
-                    exog_form = '+'.join(
-                        [x for x in best_nb.wald_test_terms(scalar=True).table.query("pvalue < 0.05").index if x != 'Intercept' ])
-                else:
-                    exog_form = "1"
-                fe_form = f"{o} ~ {exog_form}"
-                best_nb_updated = glm(
-                    formula = fe_form,
-                    data = train_df,
-                    family = sm.genmod.families.NegativeBinomial(alpha=best_alpha)
-                )
-                try:
-                    best_nb_updated = best_nb_updated.fit(cov_type="cluster", cov_kwds={"groups": train_df.id})
-                except:
-                    try:
-                        best_nb_updated = best_nb_updated.fit()
-                    except:
-                        best_nb_updated = best_nb
-            except:
-                best_nb_updated = best_nb
-                wt_nb = []
-            output_df.loc[
-                (output_df["model"] == "glm") & (output_df["output"] == o),
-                    "features"
-                ] = ",".join(wt_nb) if isinstance(wt_nb, list) else wt_nb
-        
-        # Calculate and store training KL and MSE
-        nb_train_kl, nb_train_mse = np.nan, np.nan
-        nb_holdout_kl, nb_holdout_mse = np.nan, np.nan
-        try:
-            nb_train_hat = best_nb_updated.predict(
-                train_df
-            )
-        except:
-            nb_train_hat = np.repeat(
-                train_df[o].mean(),
-                repeats=train_df.shape[0]
-            )
-
-        nb_train_kl = calc_kl_all(
-            n=train_dict[o]["n"],
-            p=train_dict[o]["p"],
-            x=train_df[["id", "treat", "time"]],
-            y=train_df[o],
-            est_m=None,
-            m_type="glm",
-            y_pred=nb_train_hat
-        )
-        nb_train_mse = mean_squared_error(
-            y_true=train_df[o],
-            y_pred=nb_train_hat
-        )
+        glm_out = fit_nb_glm(o, train_df, holdout_df, train_dict, holdout_dict)
+        if glm_out["status"] != "ok":
+            print(f"NB GLM {o}: {glm_out['status']}")
         output_df.loc[
             (output_df["model"] == "glm") & (output_df["output"] == o),
-            ["train_kl", "train_mse"]
-        ] = nb_train_kl, nb_train_mse
-
-        # Calculate and store holdout KL and MSE
-        try:
-            nb_holdout_hat = best_nb_updated.predict(
-                holdout_df
-            )
-        except:
-            nb_holdout_hat = np.repeat(
-                train_df[o].mean(),
-                repeats=holdout_df.shape[0]
-            )
-        nb_holdout_kl = calc_kl_all(
-            n=holdout_dict[o]["n"],
-            p=holdout_dict[o]["p"],
-            x=holdout_df[["id", "treat", "time"]],
-            y=holdout_df[o],
-            est_m=None,
-            m_type="glm",
-            y_pred=nb_holdout_hat
-        )
-        nb_holdout_mse = mean_squared_error(
-            y_true=holdout_df[o],
-            y_pred=nb_holdout_hat
-        )
-        output_df.loc[
-            (output_df["model"] == "glm") & (output_df["output"] == o),
-            ["holdout_kl", "holdout_mse"]
-        ] = nb_holdout_kl, nb_holdout_mse
+            ["features", "train_kl", "train_mse", "holdout_kl", "holdout_mse"]
+        ] = [glm_out[k] for k in ["features", "train_kl", "train_mse", "holdout_kl", "holdout_mse"]]
 
     end_time = time.time()
     print(f"NB-GLM time: {end_time - start_time}")
@@ -1090,126 +1160,15 @@ def run_simulation(
     # Then perform GAM #
     ####################
     print("GAM")
-    # Truncate time in holdout set for gam, else knot error
-    gam_holdout_df = (
-        holdout_df
-        .assign(
-            time = lambda x: x["time"].clip(
-                lower=train_df["time"].min(),
-                upper=train_df["time"].max()
-            )
-        )
-    )
-
-
     for o in output_names:
-
-        # Create spline object
-        bs = BSplines(train_df["time"], df=12, degree=3)
-
-        best_gam = None
-        best_gam_ll = -np.inf
-        best_gam_alpha = None
-        for a in np.arange(start=1, stop=11):
-
-            gam_bs = GLMGam.from_formula(
-                f'{o} ~ C(id, levels=id_list) + treat',
-                data=train_df,
-                smoother=bs,
-                family=sm.genmod.families.NegativeBinomial(alpha=a)
-            )
-
-            # Set penalization amound
-            try:
-                gam_bs.alpha = gam_bs.select_penweight_kfold()[0]
-            except:
-                continue
-
-            # Fit model
-            try:
-                fit_gam = gam_bs.fit()
-            except:
-                continue
-
-            if fit_gam.llf > best_gam_ll:
-                best_gam_ll = fit_gam.llf
-                best_gam = copy.copy(fit_gam)
-                best_gam_alpha = a
-
-        if best_gam is not None:
-            # Which terms are significant?
-            wt_gam = best_gam.wald_test_terms(scalar=True)
-            gam_feats = set([ x.split("_")[0].split("[")[0].replace("C(", "").replace(", levels=id_list)", "").replace(", levels=id", "") for x in wt_gam.table.query("pvalue < 0.05").index.tolist()])
-            if "Intercept" in gam_feats:
-                gam_feats.remove("Intercept")
-            gam_feats = list(gam_feats)
-
-            output_df.loc[
-                (output_df["model"] == "gam") & (output_df["output"] == o),
-                    "features"
-            ] = ",".join(gam_feats) if isinstance(gam_feats, list) else gam_feats
-
-        gam_train_kl, gam_train_mse = np.nan, np.nan
-        gam_holdout_kl, gam_holdout_mse = np.nan, np.nan
-
-        # Calculate and store training KL and MSE
-        try:
-            gam_train_hat = best_gam.predict(
-                exog = train_df[["id", "treat"]],
-                exog_smooth = train_df["time"]
-            )
-        except AttributeError:
-            gam_train_hat = np.repeat(
-                train_df[o].mean(),
-                repeats=train_df.shape[0]
-            )
-        gam_train_kl = calc_kl_all(
-            n=train_dict[o]["n"],
-            p=train_dict[o]["p"],
-            x=train_df[["id", "treat", "time"]],
-            y=train_df[o],
-            est_m=None,
-            m_type="gam",
-            y_pred=gam_train_hat
-        )
-        gam_train_mse = mean_squared_error(
-            y_true=train_df[o],
-            y_pred=gam_train_hat
-        )
+        gam_out = fit_nb_gam(o, train_df, holdout_df, train_dict, holdout_dict)
+        if gam_out["status"] != "ok":
+            print(f"NB GAM {o}: {gam_out['status']}")
         output_df.loc[
             (output_df["model"] == "gam") & (output_df["output"] == o),
-            ["train_kl", "train_mse"]
-        ] = gam_train_kl, gam_train_mse
+            ["features", "train_kl", "train_mse", "holdout_kl", "holdout_mse"]
+        ] = [gam_out[k] for k in ["features", "train_kl", "train_mse", "holdout_kl", "holdout_mse"]]
 
-        # Calculate and store holdout KL and MSE
-        try:
-            gam_holdout_hat = best_gam.predict(
-                exog = gam_holdout_df[["id", "treat"]],
-                exog_smooth = gam_holdout_df["time"]
-            )
-        except AttributeError:
-            gam_holdout_hat = np.repeat(
-                train_df[o].mean(),
-                repeats=holdout_df.shape[0]
-            )
-        gam_holdout_kl = calc_kl_all(
-            n=holdout_dict[o]["n"],
-            p=holdout_dict[o]["p"],
-            x=gam_holdout_df[["id", "treat", "time"]],
-            y=holdout_df[o],
-            est_m=best_gam,
-            m_type="gam",
-            y_pred=gam_holdout_hat
-        )
-        gam_holdout_mse = mean_squared_error(
-            y_true=holdout_df[o],
-            y_pred=gam_holdout_hat
-        )
-        output_df.loc[
-            (output_df["model"] == "gam") & (output_df["output"] == o),
-            ["holdout_kl", "holdout_mse"]
-        ] = gam_holdout_kl, gam_holdout_mse
-    
     end_time = time.time()
     print(f"GAM time: {end_time - start_time}")
     start_time = end_time

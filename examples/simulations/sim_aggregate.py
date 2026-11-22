@@ -36,7 +36,8 @@ statistic is non-finite has no p-value and is not called.
 
 Usage, from examples/simulations (on the cluster, or on a copy of cells/):
     python sim_aggregate.py --cells ./sim_waveome_output/cells \\
-        --out-dir ./sim_waveome_output/aggregate
+        --out-dir ./sim_waveome_output/aggregate \\
+        --baseline-refit ./sim_waveome_output/baseline_refit.csv
 """
 import argparse
 import glob
@@ -234,6 +235,23 @@ def score(calls):
     return counts.sort_values(by + ["output"]).reset_index(drop=True)
 
 
+def use_baseline_refit(metrics, refit):
+    """Swap the cells' GLM and GAM rows for sim_baseline_refit.py's verified rows."""
+    cell = SETTING + ["run_id"]
+    models = ["glm", "gam"]
+    ok = refit[refit.verified.astype(bool)]
+    old_cells = metrics.loc[metrics.model.isin(models), cell].drop_duplicates()
+    n_missing = len(old_cells.merge(ok[cell].drop_duplicates(), how="left",
+                                    indicator=True).query("_merge == 'left_only'"))
+    n_bad = refit.loc[~refit.verified.astype(bool), cell].drop_duplicates().shape[0]
+    metrics = pd.concat([metrics[~metrics.model.isin(models)],
+                         ok[[c for c in metrics.columns if c in ok.columns]]],
+                        ignore_index=True)
+    note = (f"glm, gam: refit rows for {ok[cell].drop_duplicates().shape[0]} cells; "
+            f"{n_missing} cells have no GLM or GAM rows ({n_bad} failed the data check)")
+    return metrics, note
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--cells", default="./sim_waveome_output/cells")
@@ -241,11 +259,18 @@ def main():
     ap.add_argument("--q", type=float, default=0.10, help="BH target")
     ap.add_argument("--jobs", type=int, default=1,
                     help="families (setting x stratum) tested in parallel")
+    ap.add_argument("--baseline-refit", help="sim_baseline_refit.py output: its "
+                    "verified rows replace the cells' GLM and GAM rows (the "
+                    "sweep's original GLM never selected anything, and its GAM "
+                    "could not test treat or treat x time); cells without one "
+                    "get no GLM or GAM rows")
     args = ap.parse_args()
 
     status, metrics, draws = load_cells(args.cells)
     if not len(status):
         raise SystemExit(f"no cell pickles in {args.cells}")
+    if args.baseline_refit:
+        metrics, refit_note = use_baseline_refit(metrics, pd.read_csv(args.baseline_refit))
     draws, counts = clean_draws(draws)
     status = status.merge(counts, on=SETTING + ["run_id"], how="left")
     tests = penalized_tests(draws, args.q, args.jobs)
@@ -266,6 +291,8 @@ def main():
     print(f"cells: {len(ok)} ok, {int((status.status == 'empty').sum())} empty "
           f"(data simulation failed), over {status.groupby(SETTING).ngroups} settings")
     print(f"commits: {status.commit.value_counts().to_dict()}")
+    print(refit_note if args.baseline_refit
+          else "glm, gam: the cells' own rows (no --baseline-refit)")
     print(f"draws dropped: {int(status.n_duplicate.sum())} duplicate, "
           f"{int(status.n_nonfinite.sum())} non-finite, "
           f"in {int((status.n_nonfinite > 0).sum())} cells")
