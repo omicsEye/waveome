@@ -15,6 +15,9 @@ Reads every cell pickle written by sim_waveome_hpc_run.py and writes, to
   scores.csv          TP / FP / FN / TN, sensitivity, specificity, precision,
                       F1 and realized FDR, per setting, method, level and
                       outcome (outcome "all" pools the four)
+  fit_failures.csv    per setting and method, how many fits failed, for the
+                      methods that record it (the refit GLM and GAM); a
+                      failed fit makes no calls, which is scored as such
 
 Penalized variant (author's decisions, IMPLEMENTATION_PLAN frozen decision 5):
 draws are pooled over all replicates of a setting, one family per
@@ -252,12 +255,30 @@ def use_baseline_refit(metrics, refit):
     n_missing = len(old_cells.merge(ok[cell].drop_duplicates(), how="left",
                                     indicator=True).query("_merge == 'left_only'"))
     n_bad = refit.loc[~refit.verified.astype(bool), cell].drop_duplicates().shape[0]
+    ok = ok.rename(columns={"status": "fit_status"})
     metrics = pd.concat([metrics[~metrics.model.isin(models)],
-                         ok[[c for c in metrics.columns if c in ok.columns]]],
+                         ok[[c for c in metrics.columns if c in ok.columns] + ["fit_status"]]],
                         ignore_index=True)
     note = (f"glm, gam: refit rows for {ok[cell].drop_duplicates().shape[0]} cells; "
             f"{n_missing} cells have no GLM or GAM rows ({n_bad} failed the data check)")
     return metrics, note
+
+
+def fit_failures(metrics):
+    """Fits per setting and method, and how many failed: "no_fit" (no model;
+    training-mean prediction) or "wald_failed" (a model, but no tests). Only
+    methods whose rows carry a fit_status; the others do not record one."""
+    cols = ["n_fits", "no_fit", "wald_failed", "failure_rate"]
+    if "fit_status" not in metrics:
+        return pd.DataFrame(columns=SETTING + ["model"] + cols)
+    m = metrics.dropna(subset=["fit_status"])
+    out = (m.assign(no_fit=m.fit_status == "no_fit", wald_failed=m.fit_status == "wald_failed")
+           .groupby(SETTING + ["model"])
+           .agg(n_fits=("fit_status", "size"), no_fit=("no_fit", "sum"),
+                wald_failed=("wald_failed", "sum"))
+           .reset_index())
+    out["failure_rate"] = (out.no_fit + out.wald_failed) / out.n_fits
+    return out
 
 
 def main():
@@ -284,6 +305,7 @@ def main():
     tests = penalized_tests(draws, args.q, args.jobs)
     calls = pd.DataFrame(penalized_calls(tests, metrics) + method_calls(metrics))
     scores = score(calls)
+    failures = fit_failures(metrics)
 
     os.makedirs(args.out_dir, exist_ok=True)
     status.to_csv(os.path.join(args.out_dir, "cell_status.csv"), index=False)
@@ -293,6 +315,7 @@ def main():
                     for c in ["cov_called", "term_called"]}
                  ).to_csv(os.path.join(args.out_dir, "calls.csv"), index=False)
     scores.to_csv(os.path.join(args.out_dir, "scores.csv"), index=False)
+    failures.to_csv(os.path.join(args.out_dir, "fit_failures.csv"), index=False)
 
     pd.set_option("display.width", 200)
     ok = status[status.status == "ok"]
@@ -307,6 +330,12 @@ def main():
     n_obs = int((draws.draw == -1).sum()) if len(draws) else 0
     print(f"penalized tests: {len(tests)} with a p-value "
           f"({n_obs - len(tests)} observed statistics without a usable null)")
+    if len(failures):
+        f = failures.groupby("model")[["n_fits", "no_fit", "wald_failed"]].sum()
+        f["failure_rate"] = (f.no_fit + f.wald_failed) / f.n_fits
+        print("failed fits (scored as no calls; per setting in fit_failures.csv; "
+              "the other methods do not record failures):")
+        print(f.round(3).to_string())
     pooled = scores[scores.output == "all"]
     summ = (pooled.groupby(["level", "method"])[["tp", "fp", "fn", "tn"]].sum())
     tp, fp, fn, tn = (summ[c] for c in ["tp", "fp", "fn", "tn"])

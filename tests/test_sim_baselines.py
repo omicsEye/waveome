@@ -186,6 +186,11 @@ def check_refit_end_to_end():
             assert set(new.run_id) == {3} and len(new) == 4, model
         assert (swapped.model == "lasso").sum() == 8
         assert "1 cells have no GLM or GAM rows (1 failed the data check)" in note, note
+        # The refit's fit status is carried through for the failure table
+        assert swapped.loc[swapped.model.isin(["glm", "gam"]), "fit_status"].notna().all()
+        assert swapped.loc[swapped.model == "lasso", "fit_status"].isna().all()
+        f = agg.fit_failures(swapped)
+        assert sorted(f.model) == ["gam", "glm"] and (f.n_fits == 4).all(), f
     print("[ok] refit marks a mismatched cell unverified, resumes, and aggregation uses verified rows")
 
 

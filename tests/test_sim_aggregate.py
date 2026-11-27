@@ -8,7 +8,8 @@ Synthetic inputs with known answers:
   4. pooled permutation tests call exactly the components built to be
      significant, an interaction only when it rejects under both covariates,
      and a test with a non-finite observed statistic is not called;
-  5. confusion counts and F1 / FDR match a hand count;
+  5. confusion counts and F1 / FDR match a hand count, and failed fits are
+     counted per setting and method;
   6. the whole script runs end to end on synthetic cell pickles, including
      an empty cell.
 
@@ -152,6 +153,19 @@ def check_scores():
     print("[ok] confusion counts, F1 and FDR match a hand count; untestable terms left out")
 
 
+def check_fit_failures():
+    m = make_metrics(0, {"glm": {o: "" for o in ["y1", "y2", "y3", "y4"]},
+                         "lasso": {o: "time" for o in ["y1", "y2", "y3", "y4"]}})
+    assert len(agg.fit_failures(m)) == 0  # no method records a fit status
+    m["fit_status"] = None
+    m.loc[m.model == "glm", "fit_status"] = ["ok", "no_fit", "wald_failed", "ok"]
+    f = agg.fit_failures(m)
+    assert f.model.tolist() == ["glm"], f  # lasso records none
+    r = f.iloc[0]
+    assert (r.n_fits, r.no_fit, r.wald_failed, r.failure_rate) == (4, 1, 1, 0.5)
+    print("[ok] failed fits counted per setting and method, only where recorded")
+
+
 def check_end_to_end():
     rng = np.random.default_rng(9102)
     feats = {"glm": {o: "time" for o in ["y1", "y2", "y3", "y4"]}}
@@ -187,7 +201,27 @@ def check_end_to_end():
         pen = s[(s.method == "waveome_penalized") & (s.level == "covariate")
                 & (s.output == "all")].iloc[0]
         assert (pen.tp, pen.fp, pen.fn, pen.tn) == (12 * 4, 0, 12 * 2, 12 * 2)
-    print("[ok] end to end on synthetic cell pickles, empty cell reported")
+        assert len(pd.read_csv(os.path.join(out, "fit_failures.csv"))) == 0
+
+        # With refit GLM and GAM rows: one GAM fit of the 48 failed
+        refit = pd.DataFrame([dict(**SETTING, run_id=r, output=o, model=m, features="time",
+                                   train_kl=0.1, holdout_kl=0.1, train_mse=1.0, holdout_mse=1.0,
+                                   status="ok", verified=True)
+                              for r in range(12) for m in ["glm", "gam"]
+                              for o in ["y1", "y2", "y3", "y4"]])
+        refit.loc[(refit.model == "gam") & (refit.run_id == 0) & (refit.output == "y1"),
+                  ["status", "features"]] = ["no_fit", ""]
+        refit.to_csv(os.path.join(tmp, "refit.csv"), index=False)
+        p = subprocess.run([sys.executable, os.path.join(SIM, "sim_aggregate.py"),
+                            "--cells", cells, "--out-dir", out,
+                            "--baseline-refit", os.path.join(tmp, "refit.csv")],
+                           capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+        f = pd.read_csv(os.path.join(out, "fit_failures.csv")).set_index("model")
+        assert f.n_fits.to_dict() == {"gam": 48, "glm": 48}
+        assert f.no_fit.to_dict() == {"gam": 1, "glm": 0}
+        assert "failed fits" in p.stdout, p.stdout
+    print("[ok] end to end on synthetic cell pickles, empty cell reported, failed fits tabled")
 
 
 def main():
@@ -195,6 +229,7 @@ def main():
     check_clean_draws()
     check_penalized_calls()
     check_scores()
+    check_fit_failures()
     check_end_to_end()
     print("\nall checks passed")
 
