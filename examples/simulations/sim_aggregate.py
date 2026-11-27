@@ -27,6 +27,8 @@ method's calls are the terms it selected (the `features` column).
 Scoring levels: covariate (treat, time; primary) and term (treat, time,
 treat*time; supplement). `id` is an adjuster and is not scored, so terms
 involving it count only at the covariate level, through their other factor.
+A term a method cannot test (the GAM's treat main effect) is left out of
+that method's scores.
 
 Permutation draws are cleaned first: duplicate draws (a resumed cell reruns
 draws whose value was NaN and appends them again) are removed, and a draw
@@ -68,6 +70,11 @@ TERM_TRUTH = {"y1": {"time"}, "y2": {"time"},
               "y3": {"treat*time"}, "y4": {"treat*time"}}
 COV_TRUTH = {o: {c for t in ts for c in t.split("*")}
              for o, ts in TERM_TRUTH.items()}
+# (method, level, candidate) a method cannot test, left out of its scores
+# rather than counted as correctly not called: the GAM's unit intercepts
+# absorb a treat main effect (it still calls the treat covariate through
+# treat*time)
+UNTESTABLE = {("gam", "term", "treat")}
 FACTOR_ORDER = ["id", "treat", "time"]
 PENALIZED = "waveome_penalized"
 CELL_RE = re.compile(r"cell_rate([\d.]+)_units(\d+)_eps([\d.]+)_alpha([\d.]+)_run(\d+)\.pickle$")
@@ -212,8 +219,9 @@ def score(calls):
         for c in cands:
             t = calls.output.map(lambda o: c in truth[o])
             k = calls[col].map(lambda s: c in s)
-            rows.append(calls[SETTING + ["method", "output"]].assign(
-                level=level, tp=t & k, fp=~t & k, fn=t & ~k, tn=~t & ~k))
+            part = calls[SETTING + ["method", "output"]].assign(
+                level=level, tp=t & k, fp=~t & k, fn=t & ~k, tn=~t & ~k)
+            rows.append(part[~part.method.map(lambda m: (m, level, c) in UNTESTABLE)])
     d = pd.concat(rows, ignore_index=True)
     by = SETTING + ["method", "level"]
     counts = pd.concat([

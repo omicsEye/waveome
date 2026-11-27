@@ -142,7 +142,14 @@ def check_scores():
     term = s[(s.level == "term") & (s.output == "all")].iloc[0]
     # y1: time TP, treat TN, treat*time TN. y3: treat*time FN, treat TN, time TN.
     assert (term.tp, term.fp, term.fn, term.tn) == (1, 0, 1, 4)
-    print("[ok] confusion counts, F1 and FDR match a hand count")
+    # The GAM cannot test a treat main effect: its two treat TNs are left out
+    # at the term level, and its covariate-level counts are unchanged
+    s = agg.score(calls.assign(method="gam"))
+    cov = s[(s.level == "covariate") & (s.output == "all")].iloc[0]
+    assert (cov.tp, cov.fp, cov.fn, cov.tn) == (2, 1, 1, 0)
+    term = s[(s.level == "term") & (s.output == "all")].iloc[0]
+    assert (term.tp, term.fp, term.fn, term.tn) == (1, 0, 1, 2)
+    print("[ok] confusion counts, F1 and FDR match a hand count; untestable terms left out")
 
 
 def check_end_to_end():
